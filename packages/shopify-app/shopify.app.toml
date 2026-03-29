@@ -1,6 +1,6 @@
 # This file stores configurations for your Shopify app.
 
-client_id = ""
+client_id = "c8e7076def1723e9d26b004da69cd8b7"
 name = "CustomerPanel AI"
 
 [access_scopes]
