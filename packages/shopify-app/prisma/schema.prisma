@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Shopify session storage (required by @shopify/shopify-app-remix)
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// Merchant store record
+model Store {
+  id           String   @id @default(cuid())
+  shopDomain   String   @unique
+  accessToken  String
+  planTier     PlanTier @default(FREE)
+  mtBudgetUsed Int      @default(0)
+  shopType     String? // e.g. "pet_supplies", "cigars", "apparel"
+  installedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  simulations Simulation[]
+  competitors CompetitorWatch[]
+}
+
+// Each simulation run
+model Simulation {
+  id          String           @id @default(cuid())
+  storeId     String
+  productUrl  String
+  productJson Json?
+  status      SimulationStatus @default(PENDING)
+  phase       Int              @default(0) // 0=queued 1=vibe 2=debate 3=done
+  mtCost      Int              @default(0)
+  score       Int? // Customer Confidence Score 0-100
+  imageScore  Int? // Moondream2 visual quality 0-100
+  reportJson  Json?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  store     Store      @relation(fields: [storeId], references: [id])
+  agentLogs AgentLog[]
+}
+
+// Individual agent debate lines (Swarm Feed)
+model AgentLog {
+  id           String   @id @default(cuid())
+  simulationId String
+  agentId      String // e.g. "cluster_1_agent_3"
+  archetype    String // BudgetOptimizer | BrandLoyalist | etc.
+  phase        Int // 1=vibe 2=debate 3=consensus
+  verdict      String // BUY | REJECT | ABSTAIN
+  reasoning    String
+  createdAt    DateTime @default(now())
+
+  simulation Simulation @relation(fields: [simulationId], references: [id])
+
+  @@index([simulationId])
+}
+
+// Competitor watch list (Enterprise tier)
+model CompetitorWatch {
+  id          String    @id @default(cuid())
+  storeId     String
+  productUrl  String
+  lastScanned DateTime?
+  lastScore   Int?
+  createdAt   DateTime  @default(now())
+
+  store Store @relation(fields: [storeId], references: [id])
+}
+
+enum PlanTier {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum SimulationStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
