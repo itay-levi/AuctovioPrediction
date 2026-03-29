@@ -1,0 +1,27 @@
+services:
+  mirofish:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile
+    container_name: customerpanel-engine
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: customerpanel-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
