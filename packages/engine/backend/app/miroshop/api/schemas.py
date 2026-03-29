@@ -22,9 +22,23 @@ class DeltaRequest(BaseModel):
     productJson: dict
     agentCount: int
     callbackUrl: str
-    overrides: dict          # {"price": 29.99, "shipping_days": 3}
+    deltaParams: dict        # {"price": 29.99, "shippingDays": 3}
 
 
 class ClassifyRequest(BaseModel):
     shopDomain: str
-    catalogMetadata: dict    # from extractCatalogMetadata()
+    sampleProductTitles: list[str]
+
+
+class SynthesizeAgentLog(BaseModel):
+    archetype: str
+    phase: int
+    vote: str           # BUY | REJECT | ABSTAIN
+    reasoning: str
+
+
+class SynthesizeRequest(BaseModel):
+    simulation_id: str
+    product_title: str
+    niche: str
+    agent_logs: list[SynthesizeAgentLog]

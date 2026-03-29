@@ -13,6 +13,11 @@ export async function canRunSimulation(
   shopDomain: string,
   storeId: string
 ): Promise<{ allowed: boolean; reason?: string }> {
+  // Skip all budget/limit checks in development
+  if (process.env.NODE_ENV === "development") {
+    return { allowed: true };
+  }
+
   const budget = await getMtBudgetStatus(shopDomain);
   if (!budget) return { allowed: false, reason: "Store not found" };
 
@@ -74,6 +79,7 @@ export async function createSimulation(
 
   // Trigger engine async (fire and forget — results come via callback)
   const callbackUrl = `${appUrl}/webhooks/engine/callback`;
+  console.log(`[Engine] Triggering simulation ${simulation.id} → ${process.env.ENGINE_URL}/miroshop/simulate`);
   triggerSimulation({
     simulationId: simulation.id,
     shopDomain,
@@ -83,7 +89,8 @@ export async function createSimulation(
     agentCount,
     callbackUrl,
   }).catch((err: unknown) => {
-    console.error(`[Engine] Failed to trigger simulation ${simulation.id}:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Engine] ❌ Simulation ${simulation.id} failed to trigger: ${msg}`);
     db.simulation
       .update({
         where: { id: simulation.id },

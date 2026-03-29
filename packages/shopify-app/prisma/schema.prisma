@@ -28,33 +28,41 @@ model Session {
 }
 
 model Store {
-  id           String            @id @default(cuid())
-  shopDomain   String            @unique
-  accessToken  String
-  planTier     PlanTier          @default(FREE)
-  mtBudgetUsed Int               @default(0)
-  shopType     String?
-  installedAt  DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  competitors  CompetitorWatch[]
-  simulations  Simulation[]
+  id              String            @id @default(cuid())
+  shopDomain      String            @unique
+  accessToken     String
+  planTier        PlanTier          @default(FREE)
+  mtBudgetUsed    Int               @default(0)
+  shopType        String?
+  healthScore     Int?
+  lastWeeklyScan  DateTime?
+  installedAt     DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  competitors     CompetitorWatch[]
+  simulations     Simulation[]
 }
 
 model Simulation {
-  id          String           @id @default(cuid())
-  storeId     String
-  productUrl  String
-  productJson Json?
-  status      SimulationStatus @default(PENDING)
-  phase       Int              @default(0)
-  mtCost      Int              @default(0)
-  score       Int?
-  imageScore  Int?
-  reportJson  Json?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  agentLogs   AgentLog[]
-  store       Store            @relation(fields: [storeId], references: [id])
+  id                   String           @id @default(cuid())
+  storeId              String
+  productUrl           String
+  productJson          Json?
+  status               SimulationStatus @default(PENDING)
+  phase                Int              @default(0)
+  mtCost               Int              @default(0)
+  score                Int?
+  imageScore           Int?
+  reportJson           Json?
+  originalSimulationId String?          // set on delta/what-if runs
+  deltaParams          Json?            // {price?, shippingDays?} overrides
+  synthesisText        String?          // Compressed Intelligence Report text
+  synthesisGeneratedAt DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  agentLogs            AgentLog[]
+  store                Store            @relation(fields: [storeId], references: [id])
+  original             Simulation?      @relation("DeltaRuns", fields: [originalSimulationId], references: [id])
+  deltas               Simulation[]     @relation("DeltaRuns")
 }
 
 model AgentLog {

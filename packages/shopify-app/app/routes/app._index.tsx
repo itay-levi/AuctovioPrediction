@@ -1,5 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
+import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
   Page,
   Layout,
@@ -15,7 +16,7 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { getStore, getMtBudgetStatus, MT_LIMITS, SIM_LIMITS } from "../services/store.server";
+import { getStore, getMtBudgetStatus, MT_LIMITS, SIM_LIMITS } from "../services/store.server"; // server-only — only used in loader
 import { getRecentSimulations } from "../services/simulation.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -30,15 +31,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ),
   ]);
 
-  return { shopDomain, store, budget, recentSims };
+  const tier = (budget?.tier ?? "FREE") as keyof typeof MT_LIMITS;
+  return {
+    shopDomain,
+    store,
+    budget,
+    recentSims,
+    mtLimit: MT_LIMITS[tier],
+    simLimit: SIM_LIMITS[tier],
+    isDev: process.env.NODE_ENV === "development",
+  };
 };
 
 export default function Dashboard() {
-  const { store, budget, recentSims } = useLoaderData<typeof loader>();
+  const { store, budget, recentSims, mtLimit, simLimit, isDev } = useLoaderData<typeof loader>();
 
   const tierLabel = budget?.tier ?? "FREE";
   const mtUsed = budget?.used ?? 0;
-  const mtLimit = budget?.limit ?? MT_LIMITS.FREE;
   const mtPct = Math.round((mtUsed / mtLimit) * 100);
 
   return (
@@ -46,8 +55,8 @@ export default function Dashboard() {
       <TitleBar title="CustomerPanel AI" />
       <BlockStack gap="500">
 
-        {/* Budget bar */}
-        {mtPct >= 80 && (
+        {/* Budget bar — hidden in development */}
+        {mtPct >= 80 && !isDev && (
           <Banner tone={mtPct >= 100 ? "critical" : "warning"}>
             <Text as="p" variant="bodyMd">
               {mtPct >= 100
@@ -156,7 +165,7 @@ export default function Dashboard() {
                     <InlineStack align="space-between">
                       <Text as="span" variant="bodyMd">Analyses / month</Text>
                       <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {SIM_LIMITS[tierLabel as keyof typeof SIM_LIMITS]}
+                        {simLimit}
                       </Text>
                     </InlineStack>
                     <InlineStack align="space-between">
@@ -203,4 +212,9 @@ export default function Dashboard() {
       </BlockStack>
     </Page>
   );
+}
+
+
+export function ErrorBoundary() {
+  return <RouteErrorBoundary />;
 }

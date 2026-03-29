@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
+import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
   Page,
   Layout,
@@ -17,7 +18,7 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
 import { authenticate } from "../shopify.server";
-import { getStore, getMtBudgetStatus, AGENT_COUNTS } from "../services/store.server";
+import { getStore, getMtBudgetStatus, AGENT_COUNTS } from "../services/store.server"; // server-only
 import { fetchProducts } from "../services/products.server";
 import {
   canRunSimulation,
@@ -37,7 +38,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const estimatedMt = budget ? await estimateSimulationCost(budget.tier) : 0;
 
-  return { products, store, budget, estimatedMt };
+  const tier = (budget?.tier ?? "FREE") as keyof typeof AGENT_COUNTS;
+  return { products, store, budget, estimatedMt, agentCount: AGENT_COUNTS[tier], isDev: process.env.NODE_ENV === "development" };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -83,7 +85,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function SimulatePage() {
-  const { products, budget, estimatedMt } = useLoaderData<typeof loader>();
+  const { products, budget, estimatedMt, agentCount, isDev } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const [selectedProduct, setSelectedProduct] = useState<string>("");
 
@@ -96,7 +98,7 @@ export default function SimulatePage() {
   ];
 
   const selectedProductData = products.find((p) => p.id === selectedProduct);
-  const canRun = !!selectedProduct && (budget?.remaining ?? 0) >= estimatedMt;
+  const canRun = !!selectedProduct && (isDev || (budget?.remaining ?? 0) >= estimatedMt);
 
   return (
     <Page>
@@ -117,7 +119,7 @@ export default function SimulatePage() {
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">Select a Product</Text>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  Your customer panel will honestly critique this listing — price, visuals, description, and delivery.
+                  Choose any product from your catalog — no theme configuration, no A/B setup, no control group needed. Pick a product and run your panel check right now.
                 </Text>
 
                 <Select
@@ -175,7 +177,7 @@ export default function SimulatePage() {
                 <Text as="h2" variant="headingMd">Analysis Details</Text>
                 <InlineStack align="space-between">
                   <Text as="span" variant="bodyMd">Panel size</Text>
-                  <Badge>{AGENT_COUNTS[budget?.tier ?? "FREE"]} agents</Badge>
+                  <Badge>{agentCount} agents</Badge>
                 </InlineStack>
                 <InlineStack align="space-between">
                   <Text as="span" variant="bodyMd">Budget cost</Text>
@@ -217,4 +219,8 @@ export default function SimulatePage() {
       </Layout>
     </Page>
   );
+}
+
+export function ErrorBoundary() {
+  return <RouteErrorBoundary />;
 }

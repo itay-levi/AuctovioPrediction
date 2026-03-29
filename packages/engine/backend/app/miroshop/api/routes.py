@@ -18,7 +18,7 @@ from ..services.niche_classifier import NicheClassifier
 from ..services.shopify_ingestion import ingest_product
 from ..services.debate_orchestrator import DebateOrchestrator
 from ..services.callback_service import post_phase_update
-from .schemas import SimulateRequest, ClassifyRequest
+from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest
 
 logger = logging.getLogger("miroshop.routes")
 bp = Blueprint("miroshop", __name__, url_prefix="/miroshop")
@@ -121,6 +121,54 @@ def simulate():
     return jsonify({"queued": True, "estimatedMtCost": estimated_mt}), 202
 
 
+@bp.post("/simulate/delta")
+@_require_auth
+def simulate_delta():
+    try:
+        req = DeltaRequest(**request.get_json(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Apply delta overrides to productJson before ingestion
+    product_json = dict(req.productJson)
+    delta = req.deltaParams
+
+    if delta.get("price") is not None:
+        # Override variant prices with the what-if price
+        variants = product_json.get("variants", [])
+        if isinstance(variants, list):
+            product_json["variants"] = [
+                {**v, "price": str(delta["price"])} for v in variants
+            ]
+
+    # Inject shipping days as metadata for the debate
+    if delta.get("shippingDays") is not None:
+        product_json["__shipping_days_override__"] = delta["shippingDays"]
+
+    # Create a modified SimulateRequest-like object
+    sim_req = SimulateRequest(
+        simulationId=req.simulationId,
+        shopDomain=req.shopDomain,
+        shopType=req.shopType,
+        productUrl=product_json.get("onlineStoreUrl", ""),
+        productJson=product_json,
+        agentCount=req.agentCount,
+        callbackUrl=req.callbackUrl,
+    )
+
+    archetype_contexts = {}
+    estimated_mt = req.agentCount * 2 * 3
+
+    thread = threading.Thread(
+        target=_run_simulation,
+        args=(sim_req, archetype_contexts),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"queued": True, "estimatedMtCost": estimated_mt}), 202
+
+
 @bp.post("/classify")
 @_require_auth
 def classify():
@@ -131,13 +179,71 @@ def classify():
 
     llm = LLMClient()
     classifier = NicheClassifier(llm)
-    classification = classifier.classify(req.catalogMetadata)
-    contexts = classifier.generate_archetype_contexts(classification, ARCHETYPES)
+    # Build a simple catalog metadata dict from the product titles
+    catalog_metadata = {"product_titles": req.sampleProductTitles}
+    classification = classifier.classify(catalog_metadata)
 
-    return jsonify({
-        "classification": classification,
-        "archetypeContexts": contexts,
-    })
+    return jsonify({"niche": classification.get("niche", "general_retail")})
+
+
+@bp.post("/synthesize")
+@_require_auth
+def synthesize():
+    try:
+        req = SynthesizeRequest(**request.get_json(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    llm = LLMClient()
+
+    # Build the debate transcript
+    transcript_lines = []
+    for log in req.agent_logs:
+        verdict_emoji = "✅" if log.vote == "BUY" else "❌" if log.vote == "REJECT" else "⬜"
+        transcript_lines.append(
+            f"[Phase {log.phase}] {log.archetype.replace('_', ' ').title()} — "
+            f"{verdict_emoji} {log.vote}: {log.reasoning}"
+        )
+    transcript = "\n".join(transcript_lines)
+
+    buy_count = sum(1 for l in req.agent_logs if l.vote == "BUY")
+    total = len(req.agent_logs)
+
+    prompt = f"""You are a professional focus-group moderator writing a client-ready intelligence report.
+You have just moderated a panel of {total} AI agents representing {req.niche} customers who evaluated this product listing: "{req.product_title}".
+
+Panel outcome: {buy_count} out of {total} panelists said they would buy.
+
+Here is the full panel transcript:
+
+{transcript}
+
+Write a 400-600 word moderator's report. Follow these rules exactly:
+1. Write in first person as the moderator ("The panel raised...", "Our agents flagged...", "The majority noted...")
+2. Lead with objections first — what stopped people from buying
+3. Use ONLY decision language: "panel responded", "agents flagged", "the majority noted", "our simulation surfaced"
+4. NEVER use: "will convert", "predict", "forecast", "will sell", "guarantee"
+5. Reference specific data points from the transcript (price figures, missing elements, exact objections)
+6. End with a clear "What would make them buy" paragraph
+7. Write as if presenting to the merchant, not describing an AI system
+
+Respond with valid JSON only, no markdown:
+{{"synthesis": "your 400-600 word report here", "top_themes": ["theme1", "theme2", "theme3"], "what_would_make_them_buy": "one paragraph", "panel_profile": "one sentence describing the simulated panel"}}"""
+
+    try:
+        result = llm.chat_json(prompt)
+        synthesis_text = result.get("synthesis", "")
+        if not synthesis_text:
+            raise ValueError("Empty synthesis returned")
+        return jsonify({
+            "synthesis": synthesis_text,
+            "top_themes": result.get("top_themes", []),
+            "what_would_make_them_buy": result.get("what_would_make_them_buy", ""),
+            "panel_profile": result.get("panel_profile", ""),
+        })
+    except Exception as e:
+        logger.exception(f"Synthesis failed for {req.simulation_id}: {e}")
+        return jsonify({"error": f"Synthesis failed: {str(e)}"}), 500
 
 
 @bp.get("/health")

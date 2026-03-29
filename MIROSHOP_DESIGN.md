@@ -45,6 +45,8 @@ This section is **non-negotiable**. It governs every product decision, every UI 
 - **NOT a prediction tool.** We do not predict the future. We do not claim "your product will convert at X%". Shopify bans apps that make sales predictions or revenue forecasts because they mislead merchants.
 - **NOT a guarantee.** We do not say "if you do X, you will sell Y more units."
 - **NOT a market research tool.** We are not surveying real humans or scraping real consumer data.
+- **NOT a live-session simulator.** We never send synthetic browser sessions through your store. Competing tools create phantom add-to-carts, fake checkout events, and beginning-checkout conversions that contaminate your Google Analytics and corrupt your funnel data. MiroShop agents work entirely in AI space — your analytics stay completely clean.
+- **NOT an A/B testing tool.** You do not need two themes, a control group, or any changes to your live store. One product listing is enough to run a full panel check, right now.
 
 ### What This App IS
 
@@ -71,6 +73,8 @@ The output is not a prediction. It is **structured customer intelligence** that 
 | "Your product will perform better" | "Your simulated panel raised fewer objections" |
 | "ROI prediction" | "Decision confidence" |
 | "Market success rate" | "Panel buy rate" |
+| "Run a simulation on your store" | "Run a panel check on your listing" |
+| "Simulated sessions / synthetic traffic" | "AI panel evaluation (your analytics are unaffected)" |
 
 ### Why Agents MUST NOT Just Agree
 
@@ -686,6 +690,9 @@ Revenue-weighted so that optimizing high-revenue products moves the score meanin
 | Report: agent quotes | No | Yes | Yes |
 | Report: historical trends | No | Yes (8 weeks) | Yes (full history) |
 | Report: PDF export | No | No | Yes |
+| Analytics-Safe guarantee | Yes (all tiers) | Yes | Yes |
+| Intelligence Export (CSV / JSON) | No | Yes — all agent reasoning | Yes + full debate transcript |
+| Compressed Intelligence Report | No | Yes (text, copyable) | Yes (text + PDF download) |
 | Sanity-check agent | No | Yes | Yes |
 | Queue priority | Lowest | Normal | Highest |
 | Support | Docs only | Email, 48h | Dedicated onboarding, 24h |
@@ -740,6 +747,59 @@ All UI copy follows the language rules from Section 0. No prediction language an
 - Result: before/after Customer Confidence Score + which specific objections were resolved
 - Copy: *"Lowering price by $5 resolved 8 Budget Optimizer objections (from 14 to 6)"*
 - Gated behind Pro — Free users see: *"Explore how changes affect your panel — upgrade to Pro"*
+
+**Analytics-Safe Badge** (persistent — shown on every simulation result, all tiers)
+- Inline banner below the Customer Confidence Score, neutral grey/blue tone:
+  *"Your store's live analytics were not affected by this panel check."*
+- Tap/click reveals tooltip:
+  *"MiroShop agents evaluate your product listing data only. No synthetic browser sessions were sent to your store. Your Google Analytics, add-to-cart events, Facebook Pixel, and conversion tracking are completely unaffected."*
+- This is a reassurance signal, not a warning — use a checkmark icon, not a warning triangle
+- Never hidden, never dismissible — always visible so merchants never have to wonder
+
+**Intelligence Export** (Pro and Enterprise; greyed with upgrade CTA for Free)
+- Positioned at the bottom of ResultsPage, below the Friction Report cards
+- Three actions in a Polaris ButtonGroup:
+
+```
+[ Download CSV ]    [ Download JSON ]    [ Generate Intelligence Report ]
+```
+
+  - **Download CSV** — all agent reasoning rows as a spreadsheet:
+    columns: `agent_index`, `archetype`, `phase`, `vote`, `reasoning`, `confidence`
+  - **Download JSON** — full simulation payload matching the engine callback schema
+  - **Generate Intelligence Report** — triggers Compressed Intelligence synthesis (see Gap 9)
+
+**Compressed Intelligence Report** (outcome of "Generate Intelligence Report" button)
+- Single LLM synthesis call to engine `POST /synthesize`
+- 10–15 second generation time; show a Polaris Spinner with label *"Your panel moderator is writing the summary…"*
+- Result displayed in a full-width Polaris Card below the export buttons:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  📋 Panel Intelligence Report                                     │
+│  ────────────────────────────────────────────────────────────────│
+│  What your customer panel told us                                 │
+│  [400-600 word narrative synthesis written as a professional      │
+│   focus-group moderator — not as an AI]                          │
+│                                                                   │
+│  The three things they kept coming back to                        │
+│  1. [Top friction theme]                                          │
+│  2. [Second theme]                                                │
+│  3. [Third theme]                                                 │
+│                                                                   │
+│  What would make them buy                                         │
+│  [Concrete, specific recommendations derived from agent debate]   │
+│                                                                   │
+│  Panel profile snapshot                                           │
+│  [Who these simulated customers are — niche + archetype summary]  │
+│                                                                   │
+│  [ Copy to clipboard ]          [ Download PDF — Enterprise only ]│
+└──────────────────────────────────────────────────────────────────┘
+```
+
+- Framing: *"This is what a professional focus group moderator would write after reviewing all panel member responses."*
+- Token cost: ~5 MT (one synthesis call, ~3,000 tokens input/output) — included in tier MT budget
+- Synthesis result stored in `simulations.synthesis_text` — never regenerated unless explicitly requested again
 
 ---
 
@@ -2271,4 +2331,188 @@ This card turns a potential "this doesn't work" churn moment into a "MiroShop is
 | **Email renders broken in Outlook 2021** | Medium | Medium | React Email components use email-safe HTML only. Litmus testing required before first send. No CSS Grid, no Flexbox in email. |
 | **Mobile WebView localStorage unavailable (SSE lastEventId)** | Low | Medium | `lastEventId` stored in React state (memory) as fallback — works for current session even if localStorage is blocked |
 
-*End of MiroShop AI Design Document v1.5*
+---
+
+## Gap 9: Analytics Contamination, Intelligence Export & Competitive Positioning
+
+### Critical Gaps Addressed in v1.6
+- **Gap 9a:** Zero Analytics Contamination — explicit guarantee and UI signal
+- **Gap 9b:** Intelligence Export — raw data ownership for merchants
+- **Gap 9c:** Compressed Intelligence Report — LLM synthesis of full panel debate
+- **Gap 9d:** No A/B setup required — single-listing positioning
+
+---
+
+### The Problem (sourced from competitor app reviews)
+
+Competing simulation tools (e.g. SimGym) send real browser sessions through the merchant's live storefront to collect data. This creates measurable, documented harm:
+
+- **Phantom add-to-cart events** appear in Google Analytics
+- **False beginning-checkout conversions** corrupt funnel data
+- **Fake session counts** distort traffic reports and heatmaps
+- Merchants cannot distinguish real customer behaviour from synthetic noise
+- The tool requires **two live themes** configured for A/B comparison before any analysis can start — creating an install barrier and ongoing maintenance burden
+
+A second gap, confirmed by the same user base: merchants want to **own the raw output**. After seeing 50 agents debate their product, they want to extract that intelligence and use it elsewhere — in their own LLM workflows, their team docs, their ad briefs.
+
+---
+
+### Gap 9a — Zero Analytics Contamination Guarantee
+
+**How MiroShop works (and why this matters for positioning):**
+
+MiroShop agents evaluate the product listing data fetched once via the Shopify Admin API. They never:
+- Make HTTP requests to the merchant's storefront
+- Trigger any browser events (page views, add-to-carts, checkout initiations)
+- Fire any analytics tags (Google Analytics, Facebook Pixel, Google Ads conversion, Hotjar, Clarity)
+- Create any sessions in any session-recording tool
+
+This is a structural property of the architecture, not a configuration choice. It is a permanent guarantee.
+
+**Where the guarantee must appear:**
+
+| Touchpoint | Copy |
+|-----------|------|
+| App Store listing (first paragraph) | "MiroShop never sends synthetic traffic to your store. Your Google Analytics, conversion events, and ad tracking stay completely clean." |
+| Onboarding explainer (Gap 8) | "✅ Your live analytics are never affected — no fake sessions, no phantom events." |
+| Analytics-Safe Badge (Chapter 10) | Persistent inline callout on every results page |
+| Weekly email footer | One-line: "Panel checks never affect your store's live traffic or analytics." |
+| App Store review response template | Proactively address if any reviewer raises analytics questions |
+
+---
+
+### Gap 9b — Intelligence Export
+
+Merchants want to take the raw agent reasoning out of MiroShop and use it in their own workflows. This is the most-requested feature missing from every competing tool.
+
+**Export formats (available on Pro and Enterprise):**
+
+| Format | Contents | Use case |
+|--------|----------|---------|
+| CSV | One row per agent: `agent_index`, `archetype`, `phase`, `vote`, `reasoning`, `confidence`, `round` | Paste into spreadsheets, import into BI tools, feed to custom LLMs |
+| JSON | Full simulation payload — matches the engine callback schema exactly | Developer integrations, custom analysis pipelines |
+
+**Implementation:**
+- Both exports are generated on the Worker from the `agent_logs` table — no engine call needed
+- New Worker route: `GET /api/simulation/:id/export?format=csv|json`
+- Requires authenticated session (same as polling endpoint)
+- No MT cost — data is already stored
+
+---
+
+### Gap 9c — Compressed Intelligence Report
+
+The highest-value export: a human-readable synthesis of everything the agents said, written as if by a professional focus group moderator.
+
+**Engine endpoint:**
+
+```
+POST /synthesize
+Headers: Authorization: Bearer <ENGINE_SECRET>
+Body:
+{
+  "simulation_id": "uuid",
+  "product_title": "string",
+  "niche": "string",
+  "agent_logs": [
+    {
+      "archetype": "budget_optimizer",
+      "phase": "consensus",
+      "vote": "reject",
+      "reasoning": "At $42.99 this is 18% above...",
+      "confidence": 0.82
+    }
+    // ... all agents
+  ]
+}
+
+Response:
+{
+  "synthesis": "string (400-600 words, moderator voice)",
+  "top_themes": ["Price is 18% above niche average", "No visible reviews", "Missing size guide"],
+  "what_would_make_them_buy": "string",
+  "panel_profile": "string"
+}
+```
+
+**Synthesis prompt design:**
+- Instruct the LLM to write as a professional focus-group moderator compiling a client-ready report
+- Explicitly NOT as an AI summarizing data
+- Lead with what the panel objected to (objections-first rule from Section 0)
+- No prediction language — use "panel responded", "agents flagged", "the majority noted"
+- Output must reference specific product data points (price, images, description gaps)
+- Validated by same anti-generic-feedback rule as agent outputs (>50 words, specific data reference)
+
+**Token cost:** ~5 MT per synthesis (~3,000 tokens input + output). Included in tier MT budget — no extra charge.
+
+**Storage:** Add `synthesis_text TEXT` column to `simulations` table. Once generated, it is stored permanently and never regenerated unless the merchant explicitly clicks "Regenerate." This prevents accidental MT spend.
+
+**DB migration:** `007_simulation_synthesis.sql`
+
+```sql
+ALTER TABLE simulations ADD COLUMN synthesis_text TEXT;
+ALTER TABLE simulations ADD COLUMN synthesis_generated_at TIMESTAMPTZ;
+```
+
+---
+
+### Gap 9d — No A/B Setup Required
+
+MiroShop analyzes any single product listing on demand. No theme changes. No control group. No comparison required. This is the core interaction model.
+
+**Where to make this explicit:**
+
+- Onboarding explainer (Gap 8): add bullet *"✅ Works on your current live listing — no theme changes, no A/B setup, no control group needed. Pick a product, run your panel."*
+- App Store listing: *"No setup required. Pick any product and run your first panel check in under 60 seconds."*
+- SimulationPage empty state: *"Choose any product from your catalog — no theme configuration or comparison needed."*
+
+---
+
+### Updated Tier Feature Table (v1.6 — Gap 9 additions)
+
+| Feature | Free | Pro ($29.90/mo) | Enterprise ($89/mo) |
+|---------|------|-----------------|---------------------|
+| Analytics-Safe guarantee | Yes (all tiers) | Yes | Yes |
+| Intelligence Export (CSV / JSON) | No | Yes — all agent reasoning | Yes + full debate transcript |
+| Compressed Intelligence Report | No | Yes (text, copyable) | Yes (text + PDF download) |
+
+---
+
+### Updated Implementation Phases (v1.6 additions)
+
+**Phase 3 additions (Inference Engine):**
+- Add `POST /synthesize` endpoint to MiroFish Flask blueprint — 2 days
+- Synthesis prompt: focus-group-moderator framing, objections-first, no prediction language — 0.5 days
+- `synthesis_text` + `synthesis_generated_at` column migration (`007_simulation_synthesis.sql`) — 0.5 days
+
+**Phase 4 additions (Integration):**
+- Worker export route: `GET /api/simulation/:id/export?format=csv|json` — 1 day
+- Synthesis trigger route: `POST /api/simulation/:id/synthesize` — 0.5 days
+- Store synthesis result in Neon on completion — 0.5 days
+
+**Phase 5 additions (Dashboard):**
+- Analytics-Safe Badge component (persistent, all tiers) — 0.5 days
+- Intelligence Export ButtonGroup (CSV, JSON) — 1 day
+- Compressed Intelligence Report trigger + Spinner + display Card — 1.5 days
+- "Regenerate" button with MT cost warning modal — 0.5 days
+- No-setup-required copy in SimulationPage empty state — 0.5 days
+
+**App Store listing (pre-submission, Phase 7):**
+- Lead paragraph: analytics-safe guarantee
+- Feature bullet: "No A/B setup required — analyze any single listing instantly"
+- Feature bullet: "Export full panel intelligence as CSV, JSON, or PDF"
+
+---
+
+### Updated Risk Register (v1.6 additions)
+
+| Risk | Severity | Likelihood | Mitigation |
+|------|----------|-----------|------------|
+| **Synthesis LLM produces generic output** | Medium | Medium | Same anti-generic-feedback validation as agent outputs: >50 words, specific product data reference required. Retry once if validation fails. |
+| **Merchant regenerates synthesis repeatedly (MT drain)** | Low | Low | "Regenerate" shows MT cost warning modal: "This will use 5 MT. Your synthesis from [date] will be replaced." One-click confirm required. |
+| **CSV export exposes data merchant didn't intend to share** | Low | Low | Export is session-authenticated; only the shop's own simulation data is accessible. No cross-store data risk. |
+| **Competitor tool copies analytics-safe claim** | Low | Medium | Our guarantee is structural (architecture), not a setting — it cannot be faked. Document the architectural reason in the App Store listing for credibility. |
+
+---
+
+*End of MiroShop AI Design Document v1.6*

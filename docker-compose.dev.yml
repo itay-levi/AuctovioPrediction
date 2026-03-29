@@ -13,10 +13,11 @@ services:
       - OLLAMA_NUM_PARALLEL=2                   # max 2 concurrent inference requests
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
       timeout: 10s
-      retries: 5
+      retries: 8
+      start_period: 20s
 
   # ── MiroFish Engine — CustomerPanel AI debate engine ────────────────────────
   engine:
@@ -32,7 +33,7 @@ services:
     environment:
       - LLM_API_KEY=ollama
       - LLM_BASE_URL=http://ollama:11434/v1     # uses Ollama container (not localhost)
-      - LLM_MODEL_NAME=llama3:8b-instruct
+      - LLM_MODEL_NAME=llama3:8b
       - ZEP_API_KEY=${ZEP_API_KEY}
       - ENGINE_API_KEY=${ENGINE_SECRET}
       - SHOPIFY_APP_API_KEY=${ENGINE_SECRET}
@@ -66,19 +67,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── cloudflared — public tunnel to MiroFish engine ──────────────────────────
-  # Use this so your Shopify app can reach the engine from any network.
-  # Option A (quick, no account): uses trycloudflare.com (URL changes every restart)
-  # Option B (stable):  set TUNNEL_TOKEN in .env.docker after: cloudflared tunnel create cp-engine
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cp_tunnel
-    command: >
-      tunnel --no-autoupdate
-      ${TUNNEL_TOKEN:+run --token ${TUNNEL_TOKEN}}
-      ${TUNNEL_TOKEN:-url http://engine:8000}
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
-    depends_on:
-      - engine
-    restart: unless-stopped
+  # ── cloudflared tunnel is run externally via named tunnel (auctovio-dev) ────
+  # engine.auctovio.com → localhost:8000
+  # dev.auctovio.com    → localhost:3457  (Shopify app)
+  # Run: cloudflared tunnel run auctovio-dev

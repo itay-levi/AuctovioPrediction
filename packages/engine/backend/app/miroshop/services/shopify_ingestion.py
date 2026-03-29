@@ -47,8 +47,15 @@ def ingest_product(product_json: dict, shop_domain: str) -> ProductBrief:
     Convert Shopify product JSON (from Admin GraphQL) into a ProductBrief
     that can be read and debated by the agent panel.
     """
-    variants = [e["node"] if "node" in e else e for e in product_json.get("variants", {}).get("edges", product_json.get("variants", []))]
-    images = [e["node"] if "node" in e else e for e in product_json.get("images", {}).get("edges", product_json.get("images", []))]
+    raw_variants = product_json.get("variants", [])
+    if isinstance(raw_variants, dict):
+        raw_variants = raw_variants.get("edges", [])
+    variants = [e["node"] if isinstance(e, dict) and "node" in e else e for e in raw_variants]
+
+    raw_images = product_json.get("images", [])
+    if isinstance(raw_images, dict):
+        raw_images = raw_images.get("edges", [])
+    images = [e["node"] if isinstance(e, dict) and "node" in e else e for e in raw_images]
     tags = product_json.get("tags", [])
 
     price_min, price_max = _extract_price(variants)
