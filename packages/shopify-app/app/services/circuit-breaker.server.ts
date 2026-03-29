@@ -18,6 +18,12 @@ export class CircuitBreaker {
   }
 
   async execute<T>(fn: () => Promise<T>): Promise<T> {
+    // In development, bypass the circuit breaker entirely so a restarted engine
+    // is immediately available without waiting for the 60 s reset window.
+    if (process.env.NODE_ENV === "development") {
+      return fn();
+    }
+
     if (this.state === "OPEN") {
       if (Date.now() - this.lastFailureTime >= this.resetTimeout) {
         this.state = "HALF_OPEN";

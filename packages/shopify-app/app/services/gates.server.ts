@@ -5,6 +5,9 @@ import { getStore } from "./store.server";
 const TIER_ORDER: Record<PlanTier, number> = { FREE: 0, PRO: 1, ENTERPRISE: 2 };
 
 export async function requireTier(shopDomain: string, minimum: PlanTier): Promise<void> {
+  // In development, bypass all billing gates so every feature is accessible
+  if (process.env.NODE_ENV === "development") return;
+
   const store = await getStore(shopDomain);
   const current = store?.planTier ?? "FREE";
   if (TIER_ORDER[current] < TIER_ORDER[minimum]) {

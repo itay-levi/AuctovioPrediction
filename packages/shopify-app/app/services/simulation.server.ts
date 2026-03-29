@@ -62,7 +62,12 @@ export async function createSimulation(
   tier: PlanTier,
   appUrl: string
 ) {
-  const agentCount = AGENT_COUNTS[tier];
+  // DEV_AGENT_COUNT lets you tune locally without changing tier logic.
+  // e.g. DEV_AGENT_COUNT=10 in .env gives better signal than 5 but runs faster than 25.
+  const devCount = process.env.NODE_ENV === "development" && process.env.DEV_AGENT_COUNT
+    ? parseInt(process.env.DEV_AGENT_COUNT, 10)
+    : null;
+  const agentCount = devCount ?? AGENT_COUNTS[tier];
   const estimatedMt = agentCount * MT_ESTIMATE_PER_AGENT;
 
   // Create DB record
@@ -141,6 +146,8 @@ export async function updateSimulationFromCallback(
     agentLogs?: {
       agentId: string;
       archetype: string;
+      archetypeName?: string;
+      archetypeEmoji?: string;
       phase: number;
       verdict: string;
       reasoning: string;
@@ -165,6 +172,8 @@ export async function updateSimulationFromCallback(
           simulationId,
           agentId: log.agentId,
           archetype: log.archetype,
+          archetypeName: log.archetypeName ?? null,
+          archetypeEmoji: log.archetypeEmoji ?? null,
           phase: log.phase,
           verdict: log.verdict,
           reasoning: log.reasoning,

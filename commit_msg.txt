@@ -1,0 +1,13 @@
+wip: NOT FULLY WORKING NEED OPTIMIZATION
+
+- Per-vote live callbacks: UI now updates after each individual agent vote
+- Hard wall-clock timeout for LLM calls (150s) with shutdown(wait=False)
+- partial=True callback mode: single attempt, no retry, for live updates
+- SKIP_ARCHETYPE_GEN=1 in docker-compose to bypass LLM archetype gen on CPU
+- Dynamic archetypes: archetype_generator.py, niche_contexts.py, context_builder.py
+- AgentLog schema: archetypeName + archetypeEmoji fields added
+- Dev billing gate bypass when NODE_ENV=development
+- Circuit breaker bypass in dev mode
+- Neon cold-start fix: Prisma transaction timeout raised to 30s
+- engine.server.ts: AbortSignal.timeout(10s) on simulate fetch
+- DEV_AGENT_COUNT=2 for fast local smoke-tests

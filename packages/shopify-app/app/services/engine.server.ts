@@ -62,6 +62,7 @@ export async function triggerSimulation(
       method: "POST",
       headers: headers(),
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000), // engine must accept within 10s (just queue, not run)
     });
 
     if (!res.ok) {

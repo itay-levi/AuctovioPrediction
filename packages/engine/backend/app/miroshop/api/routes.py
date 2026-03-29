@@ -13,11 +13,11 @@ from flask import Blueprint, request, jsonify
 
 from ...config import Config
 from ...utils.llm_client import LLMClient
-from ..archetypes.definitions import ARCHETYPES
 from ..services.niche_classifier import NicheClassifier
 from ..services.shopify_ingestion import ingest_product
 from ..services.debate_orchestrator import DebateOrchestrator
 from ..services.callback_service import post_phase_update
+from ..services.archetype_generator import generate_archetypes
 from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest
 
 logger = logging.getLogger("miroshop.routes")
@@ -40,20 +40,32 @@ def _require_auth(f):
     return decorated
 
 
-def _run_simulation(req: SimulateRequest, archetype_contexts: dict):
-    """Runs in a background thread — calls back to Shopify app after each phase."""
+def _run_simulation(req: SimulateRequest, archetypes: list | None):
+    """
+    Runs in a background thread — calls back to Shopify app after each phase.
+    `archetypes` is None when called from the /simulate endpoint (generation happens here
+    inside the thread so the HTTP response returns immediately).
+    """
     llm = LLMClient()
 
-    def callback_fn(phase: int, votes: list, score=None, friction=None, summary=None):
-        status = "RUNNING" if phase < 3 else "COMPLETED"
+    # Generate product-specific archetypes inside the thread so the HTTP endpoint
+    # returns 202 instantly rather than blocking for 30+ seconds.
+    if archetypes is None:
+        archetypes = generate_archetypes(llm, req.productJson, count=5)
+
+    def callback_fn(phase: int, votes: list, score=None, friction=None, summary=None, partial: bool = False):
+        # partial=True means a single vote came in — fire-and-forget, no retry
+        status = "RUNNING" if (phase < 3 or partial) else "COMPLETED"
         report_json = None
-        if phase == 3 and friction is not None:
+        if phase == 3 and not partial and friction is not None:
             report_json = {"friction": friction, "summary": summary}
 
         agent_logs = [
             {
                 "agentId": v["agent_id"],
                 "archetype": v["archetype_id"],
+                "archetypeName": v.get("archetype_name", v["archetype_id"]),
+                "archetypeEmoji": v.get("archetype_emoji", "🧑"),
                 "phase": v["phase"],
                 "verdict": v["verdict"],
                 "reasoning": v["reasoning"],
@@ -72,8 +84,9 @@ def _run_simulation(req: SimulateRequest, archetype_contexts: dict):
             status=status,
             score=score,
             report_json=report_json,
-            actual_mt_cost=mt_so_far if phase == 3 else None,
+            actual_mt_cost=mt_so_far if (phase == 3 and not partial) else None,
             agent_logs=agent_logs,
+            partial=partial,
         )
 
     try:
@@ -81,9 +94,10 @@ def _run_simulation(req: SimulateRequest, archetype_contexts: dict):
         orchestrator = DebateOrchestrator(
             llm=llm,
             agent_count=req.agentCount,
+            archetypes=archetypes,
             callback_fn=callback_fn,
         )
-        orchestrator.run(brief, archetype_contexts)
+        orchestrator.run(brief)
     except Exception as e:
         logger.exception(f"Simulation {req.simulationId} failed: {e}")
         post_phase_update(
@@ -103,17 +117,15 @@ def simulate():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-    # Archetype contexts should be passed in productJson.__archetype_contexts__
-    # or fetched from DB. For simplicity we pass empty (uses base personas).
-    archetype_contexts = req.productJson.pop("__archetype_contexts__", {})
+    req.productJson.pop("__archetype_contexts__", None)  # remove legacy field if present
 
-    # Estimate MT cost
-    estimated_mt = req.agentCount * 2 * 3  # 3 phases
+    # Archetype generation happens inside the thread (see _run_simulation).
+    # Returning 202 immediately so the Shopify app isn't kept waiting.
+    estimated_mt = req.agentCount * 2 * 3 + 1
 
-    # Fire simulation in background thread
     thread = threading.Thread(
         target=_run_simulation,
-        args=(req, archetype_contexts),
+        args=(req, None),   # None → archetypes generated inside thread
         daemon=True,
     )
     thread.start()
@@ -156,12 +168,11 @@ def simulate_delta():
         callbackUrl=req.callbackUrl,
     )
 
-    archetype_contexts = {}
-    estimated_mt = req.agentCount * 2 * 3
+    estimated_mt = req.agentCount * 2 * 3 + 1
 
     thread = threading.Thread(
         target=_run_simulation,
-        args=(sim_req, archetype_contexts),
+        args=(sim_req, None),   # None → archetypes generated inside thread
         daemon=True,
     )
     thread.start()

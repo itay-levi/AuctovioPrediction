@@ -24,6 +24,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     agentLogs?: {
       agentId: string;
       archetype: string;
+      archetypeName?: string;
+      archetypeEmoji?: string;
       phase: number;
       verdict: string;
       reasoning: string;

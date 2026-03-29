@@ -18,7 +18,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const store = await getStore(session.shop);
 
-  if (!store || (store.planTier !== "PRO" && store.planTier !== "ENTERPRISE")) {
+  const isDev = process.env.NODE_ENV === "development";
+  if (!store || (!isDev && store.planTier !== "PRO" && store.planTier !== "ENTERPRISE")) {
     return Response.json({ error: "Pro or Enterprise plan required" }, { status: 403 });
   }
 

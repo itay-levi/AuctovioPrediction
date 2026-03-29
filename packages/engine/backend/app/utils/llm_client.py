@@ -27,9 +27,12 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
         
+        # 90 s per request — Ollama on CPU can be slow but anything beyond
+        # 90 s is likely stuck; fail fast and fall back rather than hanging forever.
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            timeout=90.0,
         )
     
     def chat(

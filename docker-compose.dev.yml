@@ -41,6 +41,10 @@ services:
       - FLASK_PORT=8000
       - FLASK_DEBUG=true
       - SECRET_KEY=${ENGINE_SECRET}
+      # Skip LLM-based archetype generation — llama3:8b on CPU takes 4+ min per
+      # attempt and returns empty JSON. Static archetypes work fine for local dev.
+      # Remove or set to 0 on a GPU server / production where a capable model is used.
+      - SKIP_ARCHETYPE_GEN=1
     depends_on:
       ollama:
         condition: service_healthy

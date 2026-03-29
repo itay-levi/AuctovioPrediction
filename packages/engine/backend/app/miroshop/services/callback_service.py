@@ -26,6 +26,7 @@ def post_phase_update(
     report_json: Optional[dict] = None,
     actual_mt_cost: Optional[int] = None,
     agent_logs: Optional[list] = None,
+    partial: bool = False,  # True → fire-and-forget, 1 attempt, non-blocking
 ) -> bool:
     payload = {
         "simulationId": simulation_id,
@@ -47,7 +48,8 @@ def post_phase_update(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    for attempt in range(MAX_RETRIES):
+    max_attempts = 1 if partial else MAX_RETRIES
+    for attempt in range(max_attempts):
         try:
             resp = requests.post(
                 callback_url,
@@ -63,9 +65,10 @@ def post_phase_update(
         except Exception as e:
             logger.warning(f"Callback attempt {attempt + 1} failed: {e}")
 
-        if attempt < MAX_RETRIES - 1:
+        if attempt < max_attempts - 1:
             sleep = BACKOFF_BASE ** (attempt + 1)
             time.sleep(sleep)
 
-    logger.error(f"All {MAX_RETRIES} callback attempts failed for simulation {simulation_id}")
+    if not partial:
+        logger.error(f"All {max_attempts} callback attempts failed for simulation {simulation_id}")
     return False

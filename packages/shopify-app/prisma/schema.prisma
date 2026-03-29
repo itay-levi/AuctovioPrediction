@@ -66,15 +66,17 @@ model Simulation {
 }
 
 model AgentLog {
-  id           String     @id @default(cuid())
-  simulationId String
-  agentId      String
-  archetype    String
-  phase        Int
-  verdict      String
-  reasoning    String
-  createdAt    DateTime   @default(now())
-  simulation   Simulation @relation(fields: [simulationId], references: [id])
+  id             String     @id @default(cuid())
+  simulationId   String
+  agentId        String
+  archetype      String     // archetype id (snake_case)
+  archetypeName  String?    // display name from dynamic generation e.g. "The Weekend Warrior"
+  archetypeEmoji String?    // emoji from dynamic generation e.g. "🏂"
+  phase          Int
+  verdict        String
+  reasoning      String
+  createdAt      DateTime   @default(now())
+  simulation     Simulation @relation(fields: [simulationId], references: [id])
 
   @@index([simulationId])
 }
