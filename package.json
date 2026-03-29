@@ -1,0 +1,15 @@
+{
+  "name": "customer-panel-ai",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=packages/shopify-app",
+    "build": "npm run build --workspace=packages/shopify-app",
+    "deploy": "npm run deploy --workspace=packages/shopify-app"
+  },
+  "engines": {
+    "node": ">=20.19 <22 || >=22.12"
+  }
+}
