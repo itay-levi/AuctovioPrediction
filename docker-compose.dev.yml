@@ -1,0 +1,84 @@
+services:
+
+  # ── Ollama — local LLM inference (free, CPU mode) ───────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cp_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - H:/CustomerPanel/models:/root/.ollama   # models stored on H: drive
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h                   # keep model loaded in RAM between calls
+      - OLLAMA_NUM_PARALLEL=2                   # max 2 concurrent inference requests
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── MiroFish Engine — CustomerPanel AI debate engine ────────────────────────
+  engine:
+    build:
+      context: ./packages/engine
+      dockerfile: Dockerfile.dev
+    container_name: cp_engine
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./packages/engine/backend:/app/backend  # live reload during dev
+      - H:/CustomerPanel/logs:/app/logs
+    environment:
+      - LLM_API_KEY=ollama
+      - LLM_BASE_URL=http://ollama:11434/v1     # uses Ollama container (not localhost)
+      - LLM_MODEL_NAME=llama3:8b-instruct
+      - ZEP_API_KEY=${ZEP_API_KEY}
+      - ENGINE_API_KEY=${ENGINE_SECRET}
+      - SHOPIFY_APP_API_KEY=${ENGINE_SECRET}
+      - FLASK_HOST=0.0.0.0
+      - FLASK_PORT=8000
+      - FLASK_DEBUG=true
+      - SECRET_KEY=${ENGINE_SECRET}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/miroshop/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── Redis — simulation queue + MT budget counters ───────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cp_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - H:/CustomerPanel/redis:/data            # persist queue state on H: drive
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── cloudflared — public tunnel to MiroFish engine ──────────────────────────
+  # Use this so your Shopify app can reach the engine from any network.
+  # Option A (quick, no account): uses trycloudflare.com (URL changes every restart)
+  # Option B (stable):  set TUNNEL_TOKEN in .env.docker after: cloudflared tunnel create cp-engine
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cp_tunnel
+    command: >
+      tunnel --no-autoupdate
+      ${TUNNEL_TOKEN:+run --token ${TUNNEL_TOKEN}}
+      ${TUNNEL_TOKEN:-url http://engine:8000}
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - engine
+    restart: unless-stopped
