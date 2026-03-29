@@ -7,7 +7,7 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - H:/CustomerPanel/models:/root/.ollama   # models stored on H: drive
+      - H:/Dev/DockerStorage/models:/root/.ollama   # models stored on H: drive
     environment:
       - OLLAMA_KEEP_ALIVE=24h                   # keep model loaded in RAM between calls
       - OLLAMA_NUM_PARALLEL=2                   # max 2 concurrent inference requests
@@ -28,7 +28,7 @@ services:
       - "8000:8000"
     volumes:
       - ./packages/engine/backend:/app/backend  # live reload during dev
-      - H:/CustomerPanel/logs:/app/logs
+      - H:/Dev/DockerStorage/logs:/app/logs
     environment:
       - LLM_API_KEY=ollama
       - LLM_BASE_URL=http://ollama:11434/v1     # uses Ollama container (not localhost)
@@ -57,7 +57,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - H:/CustomerPanel/redis:/data            # persist queue state on H: drive
+      - H:/Dev/DockerStorage/redis:/data            # persist queue state on H: drive
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     healthcheck:
