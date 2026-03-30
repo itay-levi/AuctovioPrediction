@@ -24,6 +24,7 @@ export interface TriggerSimulationPayload {
   productJson: unknown;
   agentCount: number; // 5 | 25 | 50 based on plan tier
   callbackUrl: string;
+  focusAreas?: string[]; // e.g. ["trust_credibility", "price_value"]
 }
 
 export interface DeltaSimulationPayload {
@@ -35,6 +36,10 @@ export interface DeltaSimulationPayload {
   agentCount: number;
   deltaParams: { price?: number; shippingDays?: number };
   callbackUrl: string;
+  priority?: number;             // 0=initial, 1=what-if (lower)
+  originalScore?: number;        // for comparison insight generation
+  originalFriction?: unknown;
+  originalTrustAudit?: unknown;
 }
 
 export interface SimulationPhaseResult {

@@ -147,7 +147,7 @@ def generate_archetypes(
         for attempt in range(2):
             raw = llm.chat(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.8,   # high creativity for diverse personas
+                temperature=0.4,   # lowered for panel consistency across re-runs
                 max_tokens=1000,
             )
             if raw and raw.strip():

@@ -12,6 +12,7 @@ class SimulateRequest(BaseModel):
     productJson: dict
     agentCount: int          # 5 | 25 | 50
     callbackUrl: str
+    focusAreas: list[str] = []  # e.g. ["trust_credibility", "price_value"]
 
 
 class DeltaRequest(BaseModel):
@@ -23,6 +24,12 @@ class DeltaRequest(BaseModel):
     agentCount: int
     callbackUrl: str
     deltaParams: dict        # {"price": 29.99, "shippingDays": 3}
+    focusAreas: list[str] = []
+    priority: int = 1                           # 0=initial scan, 1=what-if (lower priority)
+    # Original simulation context for comparison insight generation
+    originalScore: Optional[int] = None
+    originalFriction: Optional[dict] = None
+    originalTrustAudit: Optional[dict] = None
 
 
 class ClassifyRequest(BaseModel):

@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")       // pooled — used by Prisma queries at runtime
+  directUrl = env("DIRECT_DATABASE_URL") // direct — used by prisma db push / migrate
 }
 
 model Session {
@@ -57,6 +58,10 @@ model Simulation {
   deltaParams          Json?            // {price?, shippingDays?} overrides
   synthesisText        String?          // Compressed Intelligence Report text
   synthesisGeneratedAt DateTime?
+  focusAreas           Json?            // ["trust_credibility", "price_value"]
+  recommendations      Json?            // [{priority, title, impact, the_why}]
+  trustAudit           Json?            // trust audit result from engine
+  comparisonInsight    String?          // AI explanation of what-if score delta
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   agentLogs            AgentLog[]
@@ -66,17 +71,22 @@ model Simulation {
 }
 
 model AgentLog {
-  id             String     @id @default(cuid())
-  simulationId   String
-  agentId        String
-  archetype      String     // archetype id (snake_case)
-  archetypeName  String?    // display name from dynamic generation e.g. "The Weekend Warrior"
-  archetypeEmoji String?    // emoji from dynamic generation e.g. "🏂"
-  phase          Int
-  verdict        String
-  reasoning      String
-  createdAt      DateTime   @default(now())
-  simulation     Simulation @relation(fields: [simulationId], references: [id])
+  id                String     @id @default(cuid())
+  simulationId      String
+  agentId           String
+  archetype         String     // archetype id (snake_case)
+  archetypeName     String?    // display name e.g. "Budget Optimizer"
+  archetypeEmoji    String?    // emoji e.g. "💰"
+  personaName       String?    // human name e.g. "Marcus"
+  personaAge        Int?       // e.g. 34
+  personaOccupation String?    // e.g. "Professional Athlete"
+  personaMotivation String?    // e.g. "Values Durability"
+  nicheConcern      String?    // "Why I'm here" — product-specific concern
+  phase             Int
+  verdict           String
+  reasoning         String
+  createdAt         DateTime   @default(now())
+  simulation        Simulation @relation(fields: [simulationId], references: [id])
 
   @@index([simulationId])
 }

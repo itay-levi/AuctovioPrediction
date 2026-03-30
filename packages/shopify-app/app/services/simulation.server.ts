@@ -60,7 +60,8 @@ export async function createSimulation(
   productUrl: string,
   productJson: unknown,
   tier: PlanTier,
-  appUrl: string
+  appUrl: string,
+  focusAreas: string[] = []
 ) {
   // DEV_AGENT_COUNT lets you tune locally without changing tier logic.
   // e.g. DEV_AGENT_COUNT=10 in .env gives better signal than 5 but runs faster than 25.
@@ -79,12 +80,12 @@ export async function createSimulation(
       status: "PENDING",
       phase: 0,
       mtCost: estimatedMt,
+      focusAreas: focusAreas.length ? focusAreas : undefined,
     },
   });
 
   // Trigger engine async (fire and forget — results come via callback)
   const callbackUrl = `${appUrl}/webhooks/engine/callback`;
-  console.log(`[Engine] Triggering simulation ${simulation.id} → ${process.env.ENGINE_URL}/miroshop/simulate`);
   triggerSimulation({
     simulationId: simulation.id,
     shopDomain,
@@ -93,6 +94,7 @@ export async function createSimulation(
     productJson,
     agentCount,
     callbackUrl,
+    focusAreas,
   }).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Engine] ❌ Simulation ${simulation.id} failed to trigger: ${msg}`);
@@ -118,6 +120,30 @@ export async function getSimulation(id: string) {
   });
 }
 
+export async function getPreviousCompletedSimulation(
+  storeId: string,
+  productUrl: string,
+  beforeDate: Date,
+  excludeId: string
+) {
+  return db.simulation.findFirst({
+    where: {
+      storeId,
+      productUrl,
+      status: "COMPLETED",
+      createdAt: { lt: beforeDate },
+      id: { not: excludeId },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      score: true,
+      trustAudit: true,
+      createdAt: true,
+    },
+  });
+}
+
 export async function getRecentSimulations(storeId: string, limit = 10) {
   return db.simulation.findMany({
     where: { storeId },
@@ -126,6 +152,7 @@ export async function getRecentSimulations(storeId: string, limit = 10) {
     select: {
       id: true,
       productUrl: true,
+      productJson: true,
       status: true,
       phase: true,
       score: true,
@@ -143,11 +170,19 @@ export async function updateSimulationFromCallback(
     score?: number;
     imageScore?: number;
     reportJson?: unknown;
+    recommendations?: unknown[];
+    trustAudit?: unknown;
+    comparisonInsight?: string;
     agentLogs?: {
       agentId: string;
       archetype: string;
       archetypeName?: string;
       archetypeEmoji?: string;
+      personaName?: string;
+      personaAge?: number;
+      personaOccupation?: string;
+      personaMotivation?: string;
+      nicheConcern?: string;
       phase: number;
       verdict: string;
       reasoning: string;
@@ -163,6 +198,9 @@ export async function updateSimulationFromCallback(
         score: data.score,
         imageScore: data.imageScore,
         reportJson: data.reportJson as object | undefined,
+        recommendations: data.recommendations as object[] | undefined,
+        trustAudit: data.trustAudit as object | undefined,
+        comparisonInsight: data.comparisonInsight,
       },
     });
 
@@ -174,6 +212,11 @@ export async function updateSimulationFromCallback(
           archetype: log.archetype,
           archetypeName: log.archetypeName ?? null,
           archetypeEmoji: log.archetypeEmoji ?? null,
+          personaName: log.personaName ?? null,
+          personaAge: log.personaAge ?? null,
+          personaOccupation: log.personaOccupation ?? null,
+          personaMotivation: log.personaMotivation ?? null,
+          nicheConcern: log.nicheConcern ?? null,
           phase: log.phase,
           verdict: log.verdict,
           reasoning: log.reasoning,

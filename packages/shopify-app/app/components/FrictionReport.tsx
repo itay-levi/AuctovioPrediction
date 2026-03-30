@@ -1,10 +1,7 @@
-// Friction Report — 3 cards: Price, Trust, Logistics
-// Shows dropout % and top objections per category
-
-import { Card, Text, BlockStack, InlineStack, Badge } from "@shopify/polaris";
+import { Card, Text, BlockStack, InlineStack, Badge, Box, Divider } from "@shopify/polaris";
 
 interface FrictionCategory {
-  dropoutPct: number; // % of agents who cited this as rejection reason
+  dropoutPct: number;
   topObjections: string[];
 }
 
@@ -16,83 +13,149 @@ interface FrictionData {
 
 interface Props {
   friction: FrictionData;
-  isPro: boolean; // Pro+ sees all 5 categories; Free sees 3 with blur on extra
+  isPro: boolean;
 }
 
-function severityTone(pct: number): "critical" | "warning" | "success" {
-  if (pct >= 40) return "critical";
-  if (pct >= 20) return "warning";
-  return "success";
+type Severity = "critical" | "warning" | "growth";
+
+interface ClassifiedItem {
+  severity: Severity;
+  category: string;
+  emoji: string;
+  dropoutPct: number;
+  topObjections: string[];
 }
 
-function FrictionCard({
-  title,
-  emoji,
-  data,
+function classifyFriction(friction: FrictionData): ClassifiedItem[] {
+  const categories: { key: keyof FrictionData; label: string; emoji: string }[] = [
+    { key: "price", label: "Price Sensitivity", emoji: "💰" },
+    { key: "trust", label: "Trust & Social Proof", emoji: "🛡️" },
+    { key: "logistics", label: "Logistics & Delivery", emoji: "📦" },
+  ];
+
+  const items: ClassifiedItem[] = categories.map(({ key, label, emoji }) => {
+    const data = friction[key];
+    let severity: Severity;
+    if (data.dropoutPct >= 40) {
+      severity = "critical";
+    } else if (data.dropoutPct >= 15) {
+      severity = "warning";
+    } else {
+      severity = "growth";
+    }
+    return { severity, category: label, emoji, dropoutPct: data.dropoutPct, topObjections: data.topObjections };
+  });
+
+  const order: Record<Severity, number> = { critical: 0, warning: 1, growth: 2 };
+  items.sort((a, b) => order[a.severity] - order[b.severity]);
+  return items;
+}
+
+const SEVERITY_CONFIG: Record<Severity, {
+  label: string;
+  emoji: string;
+  tone: "critical" | "warning" | "success";
+  bg: "bg-surface-critical" | "bg-surface-caution" | "bg-surface-success";
+  border: "border-critical" | "border-caution" | "border-success";
+  description: string;
+}> = {
+  critical: {
+    label: "Critical",
+    emoji: "🔴",
+    tone: "critical",
+    bg: "bg-surface-critical",
+    border: "border-critical",
+    description: "Top reason customers would leave",
+  },
+  warning: {
+    label: "Warning",
+    emoji: "🟡",
+    tone: "warning",
+    bg: "bg-surface-caution",
+    border: "border-caution",
+    description: "Slows the sale but doesn't kill it",
+  },
+  growth: {
+    label: "Strength",
+    emoji: "🟢",
+    tone: "success",
+    bg: "bg-surface-success",
+    border: "border-success",
+    description: "Working well — double down on this",
+  },
+};
+
+function FrictionItem({
+  item,
   isPro,
 }: {
-  title: string;
-  emoji: string;
-  data: FrictionCategory;
+  item: ClassifiedItem;
   isPro: boolean;
 }) {
-  const tone = severityTone(data.dropoutPct);
+  const config = SEVERITY_CONFIG[item.severity];
+  const hasObjections = item.topObjections.length > 0;
 
   return (
-    <Card>
-      <BlockStack gap="300">
-        <InlineStack align="space-between">
-          <Text as="h3" variant="headingMd">
-            {emoji} {title}
-          </Text>
-          <Badge tone={tone}>{data.dropoutPct}% friction</Badge>
+    <Box
+      borderWidth="025"
+      borderColor={config.border}
+      borderRadius="200"
+      padding="400"
+      background={config.bg}
+    >
+      <BlockStack gap="200">
+        <InlineStack align="space-between" blockAlign="center">
+          <InlineStack gap="200" blockAlign="center">
+            <Text as="span" variant="headingSm">{item.emoji} {item.category}</Text>
+          </InlineStack>
+          <InlineStack gap="200">
+            <Badge tone={config.tone}>{config.emoji} {config.label}</Badge>
+            <Badge>{item.dropoutPct}% friction</Badge>
+          </InlineStack>
         </InlineStack>
+
+        <Text as="p" variant="bodySm" tone="subdued">{config.description}</Text>
+
+        {hasObjections && <Divider />}
 
         {isPro ? (
           <BlockStack gap="100">
-            {data.topObjections.map((obj, i) => (
-              <Text key={i} as="p" variant="bodySm" tone="subdued">
+            {item.topObjections.map((obj, i) => (
+              <Text key={i} as="p" variant="bodySm">
                 • {obj}
               </Text>
             ))}
           </BlockStack>
         ) : (
-          <Text as="p" variant="bodySm" tone="subdued">
-            {data.topObjections[0] ?? "No objections"}
-            {data.topObjections.length > 1 && (
-              <span style={{ filter: "blur(4px)", userSelect: "none" }}>
-                {" "}
-                + {data.topObjections.length - 1} more (upgrade to Pro)
-              </span>
-            )}
-          </Text>
+          hasObjections && (
+            <BlockStack gap="100">
+              <Text as="p" variant="bodySm">
+                • {item.topObjections[0]}
+              </Text>
+              {item.topObjections.length > 1 && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  <span style={{ filter: "blur(4px)", userSelect: "none" }}>
+                    + {item.topObjections.length - 1} more insights
+                  </span>
+                  {" "}(upgrade to Pro)
+                </Text>
+              )}
+            </BlockStack>
+          )
         )}
       </BlockStack>
-    </Card>
+    </Box>
   );
 }
 
 export function FrictionReport({ friction, isPro }: Props) {
+  const classified = classifyFriction(friction);
+
   return (
     <BlockStack gap="300">
-      <FrictionCard
-        title="Price Sensitivity"
-        emoji="💰"
-        data={friction.price}
-        isPro={isPro}
-      />
-      <FrictionCard
-        title="Trust & Social Proof"
-        emoji="🛡️"
-        data={friction.trust}
-        isPro={isPro}
-      />
-      <FrictionCard
-        title="Logistics & Delivery"
-        emoji="📦"
-        data={friction.logistics}
-        isPro={isPro}
-      />
+      {classified.map((item) => (
+        <FrictionItem key={item.category} item={item} isPro={isPro} />
+      ))}
     </BlockStack>
   );
 }

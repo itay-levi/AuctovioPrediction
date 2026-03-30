@@ -5,14 +5,15 @@ declare global {
 }
 
 // Neon serverless PostgreSQL can take a few seconds to wake from cold sleep.
-// These settings prevent P2028 "Unable to start a transaction in the given time"
-// errors that happen when the DB is cold and Prisma's default 5s timeout is too short.
+// DATABASE_URL should point to the Neon connection pooler (-pooler hostname)
+// which stays warm. DIRECT_DATABASE_URL is used only by prisma db push/migrate.
 function makePrisma() {
   return new PrismaClient({
     transactionOptions: {
       timeout: 30_000,   // 30 s — enough for a Neon cold start
       maxWait: 15_000,   // wait up to 15 s to acquire the connection
     },
+    datasourceUrl: process.env.DATABASE_URL, // explicit — ensures pooler URL is used
   });
 }
 

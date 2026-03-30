@@ -27,10 +27,21 @@ class Config:
     # JSON配置 - 禁用ASCII转义，让中文直接显示（而不是 \uXXXX 格式）
     JSON_AS_ASCII = False
     
-    # LLM配置（统一使用OpenAI格式）
+    # Primary LLM (Groq)
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
-    LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
-    LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.groq.com/openai/v1')
+    LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'llama-3.1-8b-instant')
+    # LLM_RPM=5 → 12s between calls. Groq free tier: ~6,000 TPM / ~600 tok/call = 10 RPM max.
+    # Set to 0 to disable throttling (paid tier).
+    LLM_RPM = os.environ.get('LLM_RPM', '5')
+
+    # Fallback LLM (Gemini 1.5 Flash) — used when Groq exhausts retries on 429
+    FALLBACK_LLM_API_KEY = os.environ.get('FALLBACK_LLM_API_KEY', '')
+    FALLBACK_LLM_BASE_URL = os.environ.get(
+        'FALLBACK_LLM_BASE_URL',
+        'https://generativelanguage.googleapis.com/v1beta/openai/'
+    )
+    FALLBACK_LLM_MODEL_NAME = os.environ.get('FALLBACK_LLM_MODEL_NAME', 'gemini-1.5-flash')
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')

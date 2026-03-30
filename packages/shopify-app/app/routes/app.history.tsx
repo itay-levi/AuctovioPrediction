@@ -30,6 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     select: {
       id: true,
       productUrl: true,
+      productJson: true,
       status: true,
       score: true,
       phase: true,
@@ -38,7 +39,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  return { simulations };
+  // Compute score deltas in-memory: group by productUrl (already desc), find prev run of same URL
+  const byUrl: Record<string, Array<{ id: string; score: number | null }>> = {};
+  for (const sim of simulations) {
+    if (!byUrl[sim.productUrl]) byUrl[sim.productUrl] = [];
+    byUrl[sim.productUrl].push({ id: sim.id, score: sim.score });
+  }
+  const scoreDeltaMap: Record<string, number | null> = {};
+  for (const group of Object.values(byUrl)) {
+    for (let i = 0; i < group.length; i++) {
+      const prev = group[i + 1]; // next index in desc order = older run
+      scoreDeltaMap[group[i].id] =
+        group[i].score != null && prev?.score != null
+          ? group[i].score! - prev.score!
+          : null;
+    }
+  }
+
+  return { simulations, scoreDeltaMap };
 };
 
 const STATUS_TONE: Record<string, "success" | "critical" | "warning" | "info"> = {
@@ -48,7 +66,9 @@ const STATUS_TONE: Record<string, "success" | "critical" | "warning" | "info"> =
   PENDING: "warning",
 };
 
-function productLabel(url: string) {
+function productLabel(url: string, productJson: unknown) {
+  const title = (productJson as { title?: string } | null)?.title;
+  if (title) return title;
   try {
     const u = new URL(url);
     const parts = u.pathname.split("/");
@@ -58,13 +78,25 @@ function productLabel(url: string) {
   }
 }
 
+function ScoreDelta({ delta }: { delta: number | null | undefined }) {
+  if (delta == null || delta === 0) return null;
+  const isPositive = delta > 0;
+  return (
+    <Text as="span" variant="bodySm" tone={isPositive ? "success" : "critical"}>
+      {isPositive ? " ↑" : " ↓"}{Math.abs(delta)}
+    </Text>
+  );
+}
+
 export default function HistoryPage() {
-  const { simulations } = useLoaderData<typeof loader>();
+  const { simulations, scoreDeltaMap } = useLoaderData<typeof loader>();
 
   return (
     <Page>
       <TitleBar
         title="Analysis History"
+        breadcrumbs={[{ content: "Dashboard", url: "/app" }]}
+        primaryAction={{ content: "Run New Analysis", url: "/app/simulate" }}
       />
       <Layout>
         <Layout.Section>
@@ -99,7 +131,7 @@ export default function HistoryPage() {
                     <IndexTable.Row key={sim.id} id={sim.id} position={i}>
                       <IndexTable.Cell>
                         <Text as="span" variant="bodyMd" fontWeight="semibold">
-                          {productLabel(sim.productUrl)}
+                          {productLabel(sim.productUrl, sim.productJson)}
                         </Text>
                       </IndexTable.Cell>
                       <IndexTable.Cell>
@@ -109,9 +141,10 @@ export default function HistoryPage() {
                       </IndexTable.Cell>
                       <IndexTable.Cell>
                         {sim.score != null ? (
-                          <Text as="span" variant="bodyMd">
-                            {sim.score}/100
-                          </Text>
+                          <InlineStack gap="100" blockAlign="center">
+                            <Text as="span" variant="bodyMd">{sim.score}/100</Text>
+                            <ScoreDelta delta={scoreDeltaMap[sim.id]} />
+                          </InlineStack>
                         ) : (
                           <Text as="span" variant="bodySm" tone="subdued">—</Text>
                         )}
@@ -126,13 +159,13 @@ export default function HistoryPage() {
                       </IndexTable.Cell>
                       <IndexTable.Cell>
                         <InlineStack gap="200">
-                          {sim.status === "COMPLETED" && (
+                          {(sim.status === "COMPLETED" || sim.status === "RUNNING" || sim.status === "PENDING") && (
                             <Button url={`/app/results/${sim.id}`} size="slim">
-                              View
+                              {sim.status === "COMPLETED" ? "View" : "Watch Live"}
                             </Button>
                           )}
                           {sim.status === "COMPLETED" && (
-                            <Button url={`/app/sandbox/${sim.id}`} size="slim">
+                            <Button url={`/app/sandbox/${sim.id}`} size="slim" variant="plain">
                               What-If
                             </Button>
                           )}

@@ -10,7 +10,6 @@ import {
   InlineStack,
   Badge,
   Button,
-  DataTable,
   EmptyState,
   Banner,
 } from "@shopify/polaris";
@@ -121,7 +120,12 @@ export default function Dashboard() {
               {/* Recent simulations */}
               <Card>
                 <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Recent Analyses</Text>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h2" variant="headingMd">Recent Analyses</Text>
+                    {recentSims.length > 0 && (
+                      <Button url="/app/history" variant="plain" size="slim">View all →</Button>
+                    )}
+                  </InlineStack>
                   {recentSims.length === 0 ? (
                     <EmptyState
                       heading="No analyses yet"
@@ -133,16 +137,31 @@ export default function Dashboard() {
                       </Text>
                     </EmptyState>
                   ) : (
-                    <DataTable
-                      columnContentTypes={["text", "text", "numeric", "text"]}
-                      headings={["Product", "Status", "Score", "Date"]}
-                      rows={recentSims.map((s) => [
-                        s.productUrl.split("/").pop() ?? s.productUrl,
-                        s.status,
-                        s.score != null ? `${s.score}/100` : "—",
-                        new Date(s.createdAt).toLocaleDateString(),
-                      ])}
-                    />
+                    <BlockStack gap="200">
+                      {recentSims.map((s) => {
+                        const title = (s as { productJson?: { title?: string } }).productJson?.title
+                          ?? s.productUrl.split("/").pop()
+                          ?? s.productUrl;
+                        const canView = s.status === "COMPLETED" || s.status === "RUNNING" || s.status === "PENDING";
+                        return (
+                          <InlineStack key={s.id} align="space-between" blockAlign="center">
+                            <BlockStack gap="0">
+                              <Text as="p" variant="bodyMd" fontWeight="semibold">
+                                {title.length > 40 ? title.slice(0, 40) + "…" : title}
+                              </Text>
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                {new Date(s.createdAt).toLocaleDateString()} · {s.score != null ? `${s.score}/100` : s.status}
+                              </Text>
+                            </BlockStack>
+                            {canView && (
+                              <Button url={`/app/results/${s.id}`} size="slim" variant="plain">
+                                {s.status === "COMPLETED" ? "View" : "Watch Live"}
+                              </Button>
+                            )}
+                          </InlineStack>
+                        );
+                      })}
+                    </BlockStack>
                   )}
                 </BlockStack>
               </Card>

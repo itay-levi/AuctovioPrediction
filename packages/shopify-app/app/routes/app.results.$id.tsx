@@ -19,12 +19,14 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useEffect, useState } from "react";
 import { authenticate } from "../shopify.server";
-import { getSimulation } from "../services/simulation.server";
+import { getSimulation, getPreviousCompletedSimulation } from "../services/simulation.server";
 import { getStore } from "../services/store.server";
 import { ConfidenceGauge } from "../components/ConfidenceGauge";
 import { FrictionReport } from "../components/FrictionReport";
 import { AnalyticsSafeBadge } from "../components/AnalyticsSafeBadge";
 import { IntelligenceExport } from "../components/IntelligenceExport";
+import { RecommendationsPanel } from "../components/RecommendationsPanel";
+import type { Recommendation, TrustAudit } from "../components/RecommendationsPanel";
 
 type ReportJson = {
   friction?: {
@@ -124,57 +126,134 @@ function archetypeMeta(id: string) {
 // The standard 5-archetype roster the engine always assembles
 const ROSTER_ORDER = ["budget_optimizer", "brand_loyalist", "research_analyst", "impulse_decider", "gift_seeker"];
 
-function PanelRosterCard({
-  archetypeId,
-  hasVoted,
-  verdict,
-  dynamicName,
-  dynamicEmoji,
+function PersonaCard({
+  log,
 }: {
-  archetypeId: string;
-  shopType: string;
-  hasVoted: boolean;
-  verdict?: string;
-  dynamicName?: string;
-  dynamicEmoji?: string;
+  log: {
+    agentId: string;
+    archetype: string;
+    archetypeName?: string | null;
+    archetypeEmoji?: string | null;
+    personaName?: string | null;
+    personaAge?: number | null;
+    personaOccupation?: string | null;
+    personaMotivation?: string | null;
+    nicheConcern?: string | null;
+    phase: number;
+    verdict: string;
+    reasoning: string;
+  };
 }) {
-  const staticMeta = archetypeMeta(archetypeId);
-  const displayName = dynamicName ?? staticMeta.name;
-  const displayEmoji = dynamicEmoji ?? staticMeta.emoji;
+  const staticMeta = archetypeMeta(log.archetype);
+  const emoji = log.archetypeEmoji ?? staticMeta.emoji;
+  const archetypeLabel = log.archetypeName ?? staticMeta.name;
+
+  const hasPersona = log.personaName && log.personaName !== archetypeLabel;
+  const displayName = hasPersona ? log.personaName : archetypeLabel;
+  const ageOccupation = hasPersona && log.personaAge
+    ? `${log.personaAge}, ${log.personaOccupation || "Professional"}`
+    : staticMeta.focus;
+
+  const isBuy = log.verdict === "BUY";
+  const isReject = log.verdict === "REJECT";
 
   return (
     <Box
       borderWidth="025"
-      borderColor={
-        verdict === "BUY" ? "border-success"
-        : verdict === "REJECT" ? "border-critical"
-        : verdict ? "border-caution"
-        : "border"
-      }
+      borderColor={isBuy ? "border-success" : isReject ? "border-critical" : "border"}
       borderRadius="200"
       padding="400"
-      background={
-        verdict === "BUY" ? "bg-surface-success"
-        : verdict === "REJECT" ? "bg-surface-critical"
-        : verdict ? "bg-surface-caution"
-        : "bg-surface"
-      }
+      background={isBuy ? "bg-surface-success" : isReject ? "bg-surface-critical" : "bg-surface"}
+    >
+      <BlockStack gap="300">
+        <InlineStack align="space-between" blockAlign="start">
+          <InlineStack gap="300" blockAlign="center">
+            <Text as="span" variant="headingLg">{emoji}</Text>
+            <BlockStack gap="050">
+              <Text as="p" variant="headingSm">{displayName}</Text>
+              <Text as="p" variant="bodySm" tone="subdued">{ageOccupation}</Text>
+            </BlockStack>
+          </InlineStack>
+          <BlockStack gap="100" inlineAlign="end">
+            <Badge tone={isBuy ? "success" : isReject ? "critical" : "warning"}>
+              {log.verdict}
+            </Badge>
+            <Badge tone="info">{archetypeLabel}</Badge>
+          </BlockStack>
+        </InlineStack>
+
+        {log.personaMotivation && (
+          <InlineStack gap="200">
+            <Badge>{log.personaMotivation}</Badge>
+          </InlineStack>
+        )}
+
+        {log.nicheConcern && (
+          <Text as="p" variant="bodySm" tone="subdued">
+            💡 Why I'm here: {log.nicheConcern}
+          </Text>
+        )}
+
+        <Divider />
+
+        <Text as="p" variant="bodyMd">"{log.reasoning}"</Text>
+      </BlockStack>
+    </Box>
+  );
+}
+
+function PanelRosterCard({
+  log,
+}: {
+  log: {
+    agentId: string;
+    archetype: string;
+    archetypeName?: string | null;
+    archetypeEmoji?: string | null;
+    personaName?: string | null;
+    personaAge?: number | null;
+    personaOccupation?: string | null;
+    personaMotivation?: string | null;
+    verdict: string;
+  };
+}) {
+  const staticMeta = archetypeMeta(log.archetype);
+  const emoji = log.archetypeEmoji ?? staticMeta.emoji;
+  const archetypeLabel = log.archetypeName ?? staticMeta.name;
+
+  const hasPersona = log.personaName && log.personaName !== archetypeLabel;
+  const displayName = hasPersona ? log.personaName : archetypeLabel;
+  const ageOccupation = hasPersona && log.personaAge
+    ? `${log.personaAge}, ${log.personaOccupation || "Professional"}`
+    : staticMeta.focus;
+
+  const isBuy = log.verdict === "BUY";
+  const isReject = log.verdict === "REJECT";
+
+  return (
+    <Box
+      borderWidth="025"
+      borderColor={isBuy ? "border-success" : isReject ? "border-critical" : "border"}
+      borderRadius="200"
+      padding="400"
+      background={isBuy ? "bg-surface-success" : isReject ? "bg-surface-critical" : "bg-surface"}
     >
       <InlineStack align="space-between" blockAlign="center">
         <InlineStack gap="300" blockAlign="center">
-          <Text as="span" variant="headingLg">{displayEmoji}</Text>
-          <Text as="p" variant="headingSm">{displayName}</Text>
+          <Text as="span" variant="headingLg">{emoji}</Text>
+          <BlockStack gap="050">
+            <Text as="p" variant="headingSm">{displayName}</Text>
+            <Text as="p" variant="bodySm" tone="subdued">{ageOccupation}</Text>
+          </BlockStack>
         </InlineStack>
-        {hasVoted && verdict ? (
-          <Badge tone={verdict === "BUY" ? "success" : verdict === "REJECT" ? "critical" : "warning"}>
-            {verdict}
+        <InlineStack gap="200" blockAlign="center">
+          {log.personaMotivation && (
+            <Badge>{log.personaMotivation}</Badge>
+          )}
+          <Badge tone={isBuy ? "success" : isReject ? "critical" : "warning"}>
+            {log.verdict}
           </Badge>
-        ) : (
-          <InlineStack gap="200" blockAlign="center">
-            <Spinner size="small" />
-            <Text as="span" variant="bodySm" tone="subdued">Deliberating…</Text>
-          </InlineStack>
-        )}
+        </InlineStack>
       </InlineStack>
     </Box>
   );
@@ -193,6 +272,33 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Not found", { status: 404 });
   }
 
+  // Fetch the previous completed run for the same product URL to compute progress
+  const previousSim = simulation.status === "COMPLETED"
+    ? await getPreviousCompletedSimulation(
+        store.id,
+        simulation.productUrl,
+        simulation.createdAt,
+        simulation.id,
+      )
+    : null;
+
+  const scoreDelta =
+    simulation.score != null && previousSim?.score != null
+      ? simulation.score - previousSim.score
+      : null;
+
+  // Killers from the previous run that are no longer present = resolved
+  type KillerStub = { signal: string; label: string; severity: "high" | "medium"; fix: string };
+  const previousKillers: KillerStub[] = previousSim?.trustAudit
+    ? ((previousSim.trustAudit as { trustKillers?: KillerStub[] })?.trustKillers ?? [])
+    : [];
+  const currentKillerSignals = new Set(
+    ((simulation.trustAudit as { trustKillers?: KillerStub[] } | null)?.trustKillers ?? []).map(
+      (k) => k.signal,
+    ),
+  );
+  const resolvedKillers = previousKillers.filter((k) => !currentKillerSignals.has(k.signal));
+
   const productJson = simulation.productJson as { title?: string } | null;
   return {
     simulation,
@@ -200,6 +306,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     productTitle: productJson?.title ?? "Product",
     shopType: store?.shopType ?? "default",
     isDev: process.env.NODE_ENV === "development",
+    scoreDelta,
+    resolvedKillers,
   };
 };
 
@@ -244,52 +352,8 @@ function PhaseBar({ phase, status }: { phase: number; status: string }) {
   );
 }
 
-function AgentCard({ log }: {
-  log: {
-    agentId: string;
-    archetype: string;
-    archetypeName?: string | null;
-    archetypeEmoji?: string | null;
-    phase: number;
-    verdict: string;
-    reasoning: string;
-  };
-  index?: number;
-}) {
-  // Use dynamic name/emoji from DB if available, fall back to static map
-  const staticMeta = archetypeMeta(log.archetype);
-  const displayName = log.archetypeName ?? staticMeta.name;
-  const displayEmoji = log.archetypeEmoji ?? staticMeta.emoji;
-
-  const isBuy = log.verdict === "BUY";
-  const isReject = log.verdict === "REJECT";
-  return (
-    <Box
-      borderWidth="025"
-      borderColor={isBuy ? "border-success" : isReject ? "border-critical" : "border"}
-      borderRadius="200"
-      padding="300"
-      background={isBuy ? "bg-surface-success" : isReject ? "bg-surface-critical" : "bg-surface"}
-    >
-      <BlockStack gap="200">
-        <InlineStack align="space-between">
-          <InlineStack gap="200">
-            <Text as="span" variant="headingSm">{displayEmoji} {displayName}</Text>
-            <Badge tone="info">{`Phase ${log.phase}`}</Badge>
-          </InlineStack>
-          <Badge tone={isBuy ? "success" : isReject ? "critical" : "warning"}>
-            {log.verdict}
-          </Badge>
-        </InlineStack>
-        <Divider />
-        <Text as="p" variant="bodyMd">"{log.reasoning}"</Text>
-      </BlockStack>
-    </Box>
-  );
-}
-
 export default function ResultsPage() {
-  const { simulation, tier, productTitle, shopType, isDev } = useLoaderData<typeof loader>();
+  const { simulation, tier, productTitle, shopType, isDev, scoreDelta, resolvedKillers } = useLoaderData<typeof loader>();
   const { revalidate } = useRevalidator();
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -319,15 +383,13 @@ export default function ResultsPage() {
   const phase1Logs = simulation.agentLogs.filter((l) => l.phase === 1);
   const phase2Logs = simulation.agentLogs.filter((l) => l.phase === 2);
 
-  // Build a verdict map so roster cards know who has voted
-  // Build a map of archetype_id → {verdict, name, emoji} from actual vote data
-  const phase1VerdictMap = Object.fromEntries(
-    phase1Logs.map((l) => [l.archetype, {
-      verdict: l.verdict,
-      name: l.archetypeName ?? archetypeMeta(l.archetype).name,
-      emoji: l.archetypeEmoji ?? archetypeMeta(l.archetype).emoji,
-    }])
-  );
+  // Deduplicate phase1 logs by archetype for the roster (take first vote per archetype)
+  const phase1ByArchetype = new Map<string, typeof phase1Logs[number]>();
+  for (const log of phase1Logs) {
+    if (!phase1ByArchetype.has(log.archetype)) {
+      phase1ByArchetype.set(log.archetype, log);
+    }
+  }
 
   const isPending = simulation.status === "PENDING" || (simulation.status === "RUNNING" && phase1Logs.length === 0);
 
@@ -338,7 +400,13 @@ export default function ResultsPage() {
 
   return (
     <Page>
-      <TitleBar title="Live Panel Analysis" />
+      <TitleBar
+        title={isDone ? "Panel Analysis Results" : "Live Panel Analysis"}
+        breadcrumbs={[
+          { content: "Dashboard", url: "/app" },
+          { content: "History", url: "/app/history" },
+        ]}
+      />
       <BlockStack gap="500">
 
         <AnalyticsSafeBadge />
@@ -438,7 +506,6 @@ export default function ResultsPage() {
 
                   <BlockStack gap="300">
                     {phase1Logs.length === 0 ? (
-                      // Pre-vote: show loading placeholders (we don't know names yet)
                       Array.from({ length: 5 }).map((_, i) => (
                         <Box key={i} borderWidth="025" borderColor="border" borderRadius="200" padding="400" background="bg-surface">
                           <InlineStack align="space-between" blockAlign="center">
@@ -446,32 +513,20 @@ export default function ResultsPage() {
                               <Text as="span" variant="headingLg">🧑</Text>
                               <BlockStack gap="100">
                                 <Text as="p" variant="headingSm" tone="subdued">Panelist {i + 1}</Text>
-                                <Text as="p" variant="bodySm" tone="subdued">The AI is assembling a panel tailored to this product…</Text>
+                                <Text as="p" variant="bodySm" tone="subdued">Building a persona tailored to this product…</Text>
                               </BlockStack>
                             </InlineStack>
                             <InlineStack gap="200" blockAlign="center">
                               <Spinner size="small" />
-                              <Text as="span" variant="bodySm" tone="subdued">Generating…</Text>
+                              <Text as="span" variant="bodySm" tone="subdued">Profiling…</Text>
                             </InlineStack>
                           </InlineStack>
                         </Box>
                       ))
                     ) : (
-                      // Post-vote: show actual dynamic agent names and verdicts
-                      phase1Logs.map((log) => {
-                        const info = phase1VerdictMap[log.archetype];
-                        return (
-                          <PanelRosterCard
-                            key={log.agentId}
-                            archetypeId={log.archetype}
-                            shopType={shopType ?? "default"}
-                            hasVoted
-                            verdict={info?.verdict}
-                            dynamicName={info?.name}
-                            dynamicEmoji={info?.emoji}
-                          />
-                        );
-                      })
+                      Array.from(phase1ByArchetype.values()).map((log) => (
+                        <PanelRosterCard key={log.agentId} log={log} />
+                      ))
                     )}
                   </BlockStack>
                 </BlockStack>
@@ -491,7 +546,7 @@ export default function ResultsPage() {
                       Each panelist independently evaluates the listing — no groupthink yet.
                     </Text>
                     <BlockStack gap="300">
-                      {phase1Logs.map((log, i) => <AgentCard key={log.agentId + log.phase} log={log} index={i} />)}
+                      {phase1Logs.map((log) => <PersonaCard key={log.agentId + log.phase} log={log} />)}
                     </BlockStack>
                   </BlockStack>
                 </Card>
@@ -514,7 +569,7 @@ export default function ResultsPage() {
                       <SkeletonBodyText lines={4} />
                     ) : (
                       <BlockStack gap="300">
-                        {phase2Logs.map((log, i) => <AgentCard key={log.agentId + log.phase} log={log} index={i} />)}
+                        {phase2Logs.map((log) => <PersonaCard key={log.agentId + log.phase} log={log} />)}
                       </BlockStack>
                     )}
                   </BlockStack>
@@ -531,7 +586,19 @@ export default function ResultsPage() {
             <Button url={`/app/sandbox/${simulation.id}`} disabled={!isPro}>
               {isPro ? "Open What-If Sandbox" : "What-If Sandbox (Pro)"}
             </Button>
+            <Button url="/app/history" variant="plain">View History</Button>
           </InlineStack>
+        )}
+
+        {isDone && simulation.score != null && (
+          <RecommendationsPanel
+            recommendations={(simulation as unknown as { recommendations?: Recommendation[] }).recommendations ?? []}
+            trustAudit={(simulation as unknown as { trustAudit?: TrustAudit }).trustAudit ?? null}
+            score={simulation.score}
+            productTitle={productTitle}
+            scoreDelta={scoreDelta}
+            resolvedKillers={resolvedKillers}
+          />
         )}
 
         {isDone && (

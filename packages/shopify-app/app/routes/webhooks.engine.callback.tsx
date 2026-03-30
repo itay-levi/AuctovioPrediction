@@ -21,18 +21,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     imageScore?: number;
     reportJson?: unknown;
     actualMtCost?: number;
+    recommendations?: unknown[];
+    trustAudit?: unknown;
+    comparisonInsight?: string;
     agentLogs?: {
       agentId: string;
       archetype: string;
       archetypeName?: string;
       archetypeEmoji?: string;
+      personaName?: string;
+      personaAge?: number;
+      personaOccupation?: string;
+      personaMotivation?: string;
+      nicheConcern?: string;
       phase: number;
       verdict: string;
       reasoning: string;
     }[];
   };
 
-  const { simulationId, phase, status, score, imageScore, reportJson, agentLogs, actualMtCost } = body;
+  const {
+    simulationId, phase, status, score, imageScore,
+    reportJson, agentLogs, actualMtCost, recommendations, trustAudit, comparisonInsight,
+  } = body;
 
   if (!simulationId) {
     return new Response("Missing simulationId", { status: 400 });
@@ -46,6 +57,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     imageScore,
     reportJson,
     agentLogs,
+    recommendations,
+    trustAudit,
+    comparisonInsight,
   });
 
   // Update MT usage when simulation completes

@@ -26,6 +26,9 @@ def post_phase_update(
     report_json: Optional[dict] = None,
     actual_mt_cost: Optional[int] = None,
     agent_logs: Optional[list] = None,
+    recommendations: Optional[list] = None,
+    trust_audit: Optional[dict] = None,
+    comparison_insight: Optional[str] = None,
     partial: bool = False,  # True → fire-and-forget, 1 attempt, non-blocking
 ) -> bool:
     payload = {
@@ -43,6 +46,12 @@ def post_phase_update(
         payload["actualMtCost"] = actual_mt_cost
     if agent_logs is not None:
         payload["agentLogs"] = agent_logs
+    if recommendations is not None:
+        payload["recommendations"] = recommendations
+    if trust_audit is not None:
+        payload["trustAudit"] = trust_audit
+    if comparison_insight is not None:
+        payload["comparisonInsight"] = comparison_insight
 
     headers = {"Content-Type": "application/json"}
     if api_key:

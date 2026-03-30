@@ -31,9 +31,18 @@ services:
       - ./packages/engine/backend:/app/backend  # live reload during dev
       - H:/Dev/DockerStorage/logs:/app/logs
     environment:
-      - LLM_API_KEY=ollama
-      - LLM_BASE_URL=http://ollama:11434/v1     # uses Ollama container (not localhost)
-      - LLM_MODEL_NAME=llama3:8b
+      # ── Primary LLM: Groq (llama-3.1-70b-versatile) ──────────────────────────
+      # Free tier: ~6,000 TPM, ~30 RPM, ~500 RPD
+      # LLM_RPM=5 → 12s between calls, stays under TPM ceiling (~600 tok/call)
+      - LLM_API_KEY=${GROQ_API_KEY}
+      - LLM_BASE_URL=https://api.groq.com/openai/v1
+      - LLM_MODEL_NAME=llama-3.1-8b-instant
+      - LLM_RPM=10          # 6s gap between calls — eliminates Groq burst-limit 429s
+      # ── Fallback LLM: Gemini 1.5 Flash ───────────────────────────────────────
+      # Activated automatically when Groq returns 429 after 3 retries.
+      - FALLBACK_LLM_API_KEY=${GOOGLE_AI_API_KEY}
+      - FALLBACK_LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+      - FALLBACK_LLM_MODEL_NAME=gemini-1.5-flash
       - ZEP_API_KEY=${ZEP_API_KEY}
       - ENGINE_API_KEY=${ENGINE_SECRET}
       - SHOPIFY_APP_API_KEY=${ENGINE_SECRET}
@@ -41,13 +50,8 @@ services:
       - FLASK_PORT=8000
       - FLASK_DEBUG=true
       - SECRET_KEY=${ENGINE_SECRET}
-      # Skip LLM-based archetype generation — llama3:8b on CPU takes 4+ min per
-      # attempt and returns empty JSON. Static archetypes work fine for local dev.
-      # Remove or set to 0 on a GPU server / production where a capable model is used.
+      # Skip dynamic archetype generation to save ~5 calls per simulation.
       - SKIP_ARCHETYPE_GEN=1
-    depends_on:
-      ollama:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/miroshop/health"]

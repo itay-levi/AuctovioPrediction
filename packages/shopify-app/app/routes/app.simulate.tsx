@@ -14,6 +14,8 @@ import {
   InlineStack,
   Badge,
   Thumbnail,
+  Checkbox,
+  Box,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
@@ -71,6 +73,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const appUrl = process.env.SHOPIFY_APP_URL ?? "";
   const productUrl = product.onlineStoreUrl ?? `https://${shopDomain}/products/${product.handle}`;
 
+  const rawFocus = formData.get("focusAreas") as string | null;
+  const focusAreas: string[] = rawFocus ? JSON.parse(rawFocus) : [];
+
   const simulation = await createSimulation(
     store.id,
     shopDomain,
@@ -78,7 +83,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     productUrl,
     product,
     budget.tier,
-    appUrl
+    appUrl,
+    focusAreas
   );
 
   throw redirect(`/app/results/${simulation.id}`);
@@ -91,6 +97,21 @@ export default function SimulatePage() {
 
   const isSubmitting = fetcher.state !== "idle";
   const error = fetcher.data?.error;
+  const [focusAreas, setFocusAreas] = useState<string[]>([]);
+
+  const FOCUS_OPTIONS = [
+    { id: "trust_credibility", label: "🛡️ Trust & Credibility", desc: "\"Will I actually get my order? Is this store legit?\"" },
+    { id: "price_value",       label: "💰 Price & Value",        desc: "\"Is this significantly better than the Amazon version?\"" },
+    { id: "technical_specs",   label: "🛠️ Technical Specs",      desc: "\"I'm an expert — does this have the features I need?\"" },
+    { id: "visual_branding",   label: "🎨 Visual Branding",      desc: "\"Does this brand look real or like a template?\"" },
+    { id: "mobile_friction",   label: "📱 Mobile Friction",      desc: "\"Can I buy this easily with one thumb?\"" },
+  ] as const;
+
+  function toggleFocus(id: string) {
+    setFocusAreas((prev) =>
+      prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id]
+    );
+  }
 
   const productOptions = [
     { label: "Select a product…", value: "" },
@@ -156,14 +177,39 @@ export default function SimulatePage() {
 
                 <fetcher.Form method="post">
                   <input type="hidden" name="productId" value={selectedProduct} />
-                  <Button
-                    variant="primary"
-                    submit
-                    loading={isSubmitting}
-                    disabled={!canRun}
-                  >
-                    {isSubmitting ? "Starting analysis…" : "Run Customer Panel Analysis"}
-                  </Button>
+                  <input type="hidden" name="focusAreas" value={JSON.stringify(focusAreas)} />
+
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">Focus Areas (optional)</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Select areas to investigate. Panelists apply heightened scrutiny to checked areas. Leave all unchecked for a balanced general review.
+                    </Text>
+                    {FOCUS_OPTIONS.map((opt) => (
+                      <Box key={opt.id}>
+                        <Checkbox
+                          label={
+                            <BlockStack gap="0">
+                              <Text as="span" variant="bodyMd">{opt.label}</Text>
+                              <Text as="span" variant="bodySm" tone="subdued">{opt.desc}</Text>
+                            </BlockStack>
+                          }
+                          checked={focusAreas.includes(opt.id)}
+                          onChange={() => toggleFocus(opt.id)}
+                        />
+                      </Box>
+                    ))}
+                  </BlockStack>
+
+                  <Box paddingBlockStart="400">
+                    <Button
+                      variant="primary"
+                      submit
+                      loading={isSubmitting}
+                      disabled={!canRun}
+                    >
+                      {isSubmitting ? "Starting analysis…" : "Run Customer Panel Analysis"}
+                    </Button>
+                  </Box>
                 </fetcher.Form>
               </BlockStack>
             </Card>
