@@ -27,6 +27,9 @@ Panel score: {score}/100 ({reject_count} of {total} panelists rejected)
 Trust audit — issues found in the listing:
 {trust_killers_text}
 
+Listing gaps — buyer questions not answered by this listing:
+{gap_analysis_text}
+
 Friction by category:
 - Price: {price_dropout}% of panel rejected over price — "{price_objections}"
 - Trust: {trust_dropout}% of panel rejected over trust — "{trust_objections}"
@@ -38,12 +41,12 @@ Panelist objections from the debate (use these EXACT names and quotes in your th
 Focus areas the merchant cares most about: {focus_areas_text}
 
 Generate 3-6 prioritized recommendations. Rules:
-- High priority = 3+ panelists cited it, OR a trust killer with severity "high"
-- Medium = 1-2 panelists cited it, OR a medium-severity trust killer
+- High priority = 3+ panelists cited it, OR a trust killer with severity "high", OR a MISSING gap item
+- Medium = 1-2 panelists cited it, OR a medium-severity trust killer, OR a PARTIAL gap item
 - Low = nice-to-have improvements
 - title must be specific and actionable (max 8 words, e.g. "Add a 30-Day Return Policy" not "Improve Trust")
 - impact: name the specific metric that improves (e.g. "Reduces cart abandonment")
-- the_why: MUST name the specific panelist(s) and quote their exact words — e.g. 'The Research Analyst noted "no return policy mentioned"' or 'Frugal Skeptic and Status Seeker both flagged "price too high for unknown brand"'
+- the_why: reference the gap analysis, panelist names, or trust audit — be specific with quotes
 
 RESPOND WITH EXACTLY THIS JSON (no other text):
 {{
@@ -52,7 +55,7 @@ RESPOND WITH EXACTLY THIS JSON (no other text):
       "priority": "High",
       "title": "Short actionable title",
       "impact": "Specific metric that improves",
-      "the_why": "Panelist name(s) + direct quote from the debate above"
+      "the_why": "Gap analysis finding and/or panelist name(s) + direct quote"
     }}
   ]
 }}"""
@@ -66,6 +69,7 @@ def generate_recommendations(
     trust_audit: dict,
     focus_areas: list[str],
     score: int,
+    gap_analysis: Optional[dict] = None,   # serialized GapAnalysis items list
 ) -> list[dict]:
     """
     Generate growth recommendations from debate results.
@@ -115,6 +119,23 @@ def generate_recommendations(
         else "General (all areas)"
     )
 
+    # Format gap analysis items for the prompt
+    gap_analysis_text = "No gap analysis available."
+    if gap_analysis:
+        gap_lines = []
+        for item in gap_analysis:
+            status = item.get("status", "")
+            question = item.get("question", "")
+            evidence = item.get("evidence", "(not found)")
+            if status == "MISSING":
+                gap_lines.append(f"  ✗ MISSING: {question}")
+            elif status == "PARTIAL":
+                gap_lines.append(f"  ~ PARTIAL: {question} (found: \"{evidence}\")")
+        if gap_lines:
+            gap_analysis_text = "\n".join(gap_lines)
+        else:
+            gap_analysis_text = "All key buyer questions answered in listing."
+
     prompt = RECOMMENDATION_PROMPT.format(
         product_title=brief["title"][:80],
         price=f"{brief['price_min']:.2f}",
@@ -122,6 +143,7 @@ def generate_recommendations(
         reject_count=reject_count,
         total=total or 1,
         trust_killers_text=trust_killers_text,
+        gap_analysis_text=gap_analysis_text,
         price_dropout=price_f.get("dropoutPct", 0),
         price_objections=", ".join(price_f.get("topObjections", [])[:1]) or "none",
         trust_dropout=trust_f.get("dropoutPct", 0),

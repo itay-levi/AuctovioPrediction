@@ -64,8 +64,8 @@ ARCHETYPES: List[Archetype] = [
             "Unknown brands or poor presentation trigger distrust."
         ),
         rejection_threshold=(
-            "REJECT if: <10 reviews OR avg <4.2 stars, "
-            "OR amateurish images, OR no brand story."
+            "REJECT if: no social proof of ANY kind (no reviews, no trust badges, no brand signals) "
+            "AND price is above $200. If ANY social proof exists, give benefit of the doubt on new brands."
         ),
         debate_style="Focuses on review quality and presentation polish.",
         focus_areas=["reviews", "brand_trust", "image_quality", "social_proof"],
@@ -136,8 +136,9 @@ ARCHETYPES: List[Archetype] = [
             "presentation quality, and easy returns."
         ),
         rejection_threshold=(
-            "REJECT if: delivery >7 days, OR no premium packaging signal, "
-            "OR unclear return policy."
+            "REJECT if: return policy is absent OR completely unclear. "
+            "Delivery speed is a soft concern — 5-7 days is acceptable for a gift if stated clearly. "
+            "Do NOT reject because premium packaging isn't mentioned — most listings don't describe packaging."
         ),
         debate_style="Asks 'would I be embarrassed giving this?'",
         focus_areas=["delivery_speed", "packaging", "return_policy", "giftability"],

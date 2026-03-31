@@ -62,6 +62,9 @@ model Simulation {
   recommendations      Json?            // [{priority, title, impact, the_why}]
   trustAudit           Json?            // trust audit result from engine
   comparisonInsight    String?          // AI explanation of what-if score delta
+  labGroupId           String?          // links baseline + target Lab sims together
+  isBaseline           Boolean          @default(false) // true = general-public baseline run
+  comparisonSummary    Json?            // {scoreDelta, whyGap, divergenceTopics, targetPersonaCard}
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   agentLogs            AgentLog[]

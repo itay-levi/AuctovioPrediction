@@ -97,18 +97,41 @@ TONE_RULE = "Tone: Write like a real person. Raw, direct gut reactions. No corpo
 
 SKEPTIC_ANCHOR = "SKEPTIC: Only flip REJECT→BUY with hard data from the listing. Peer enthusiasm ≠ evidence."
 
-REASONABLE_BUYER_RULES = """Reasonable Buyer Rules (read carefully — these override your defaults):
-1. YOU ARE A HUMAN SHOPPER, NOT AN AUDITOR. Do not demand information that a normal buyer would never look for.
-2. FORBIDDEN OBJECTIONS — you may NOT raise these:
-   - Exact technical weights or dimensions (unless you are a specialist who explicitly needs specs for your job)
-   - Gift-specific legal terms, warranty coverage for third-party recipients, or gift packaging details
-   - Absence of a 'brand story' or 'brand history' — judge the product, not the marketing department
-   - 'Vague shipping' if ANY delivery window is stated in the listing (e.g., '3-5 days', '1-2 weeks', '30 days')
-3. SEARCH BEFORE YOU COMPLAIN — before claiming something is missing, re-read the listing.
-   If you find keywords like '30-day', 'return', 'insured', 'tracking', 'free shipping', specific materials,
-   or any delivery estimate — you CANNOT say that information is absent. Quote what you found instead.
-4. CREDIT WHAT'S THERE — if price, shipping window, and return policy are all present, acknowledge them.
-   A well-prepared listing with minor gaps should lean BUY unless the gap is genuinely deal-breaking for your persona."""
+# ── Brutality Slider evidence injection ───────────────────────────────────────
+# Injected into every prompt phase. Higher level = more evidence required to BUY.
+def _brutality_rule(level: int) -> str:
+    """Return the evidence rule string for the given brutality level (1-10)."""
+    if level <= 3:
+        return ""  # No extra constraint — balanced review
+    if level <= 6:
+        return (
+            "EVIDENCE RULE: Before voting BUY, name one specific weakness in the listing. "
+            "Unverified marketing claims do not count as evidence of quality."
+        )
+    if level <= 8:
+        return (
+            "EVIDENCE RULE (HIGH STRESS): Require 2 concrete signals from the listing "
+            "before voting BUY. Unverified claims count as soft REJECT. "
+            "If in doubt, lean REJECT."
+        )
+    # Level 9-10
+    return (
+        "EVIDENCE RULE (MAXIMUM STRESS): Require 3 forms of independent evidence "
+        "for every positive claim. Default verdict is REJECT unless proven otherwise. "
+        "Marketing language, stock images, and generic descriptions are not evidence. "
+        "Only specific data points (exact specs, verifiable policies, real reviews) qualify."
+    )
+
+
+REASONABLE_BUYER_RULES = """Universal Buyer Rules (apply to ALL products — these override your defaults):
+1. YOU ARE A HUMAN SHOPPER. Do not demand information that a normal buyer would never look for.
+2. IMAGE RULE: You CANNOT see the images — you only know the image COUNT. Never describe or judge image quality.
+   Only flag if there are ZERO images.
+3. SEARCH BEFORE YOU COMPLAIN: Before claiming something is missing, re-read the listing carefully.
+   If you find a return window, delivery estimate, or contact detail — quote it; do not say it's absent.
+4. CREDIT WHAT'S THERE: A well-prepared listing with minor gaps should lean BUY unless the gap is
+   genuinely deal-breaking for your specific persona.
+{product_context}"""
 
 VIBE_CHECK_PROMPT = """{focus_bias}{trust_context}{physical_reality}
 {tone_rule}
@@ -127,11 +150,15 @@ JSON only:
 
 WATERCOOLER_PROMPT = """{focus_bias}Panel discussion. Product: {product_brief}
 
-Other panelists:
+Other panelists said:
 {other_votes_summary}
 
 Your Round 1: {my_verdict} — "{my_reasoning}"
 {skeptic_anchor}{dissenter_instruction}
+
+UNIQUE ANGLE REQUIRED: The other panelists already raised the concerns above. Do NOT repeat them.
+Your job is to contribute YOUR persona's unique perspective — something only you would notice.
+If you agree with a peer's point, say so in one word ("Agreed.") and move on to YOUR specific concern.
 
 VOTE-CHANGE: REJECT→BUY only if you quote a specific line from the listing you missed. No evidence = stay REJECT. BUY→REJECT always allowed.
 {physical_reality}
@@ -191,6 +218,10 @@ class DebateOrchestrator:
     niche_map: dict = field(default_factory=lambda: {k: dict(v) for k, v in GENERIC_PROFILES.items()})
     focus_areas: list[str] = field(default_factory=list)
     trust_context: str = ""
+    product_context: str = ""    # Dynamic product-category intelligence (from ProductIntelligence)
+    gap_context: str = ""        # Listing gap analysis — grounds persona feedback in real evidence
+    temp_modifier: float = 0.0   # Customer Lab skepticism offset (+/-0.12)
+    brutality_level: int = 5     # 1-10 evidence threshold (Brutality Slider)
 
     def _assign_archetypes(self) -> list[tuple[int, AnyArchetype, str]]:
         pool = self.archetypes
@@ -225,9 +256,10 @@ class DebateOrchestrator:
         from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
 
         def _do_call() -> str:
+            effective_temp = min(0.95, max(0.05, archetype.temperature + self.temp_modifier))
             return self.llm.chat(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=archetype.temperature,
+                temperature=effective_temp,
                 max_tokens=350,
             )
 
@@ -304,6 +336,17 @@ class DebateOrchestrator:
             return ""
         return "\n".join(blocks) + "\n"
 
+    def _build_buyer_rules(self) -> str:
+        """Combine base rules + product context + gap analysis + brutality slider."""
+        product_ctx = f"\n{self.product_context}" if self.product_context else ""
+        base = REASONABLE_BUYER_RULES.format(product_context=product_ctx)
+        if self.gap_context:
+            base = base + "\n\n" + self.gap_context
+        brutality_rule = _brutality_rule(self.brutality_level)
+        if brutality_rule:
+            return base + "\n\n" + brutality_rule
+        return base
+
     def _get_niche_ctx(self, archetype: AnyArchetype) -> str:
         profile = self.niche_map.get(archetype.id, {})
         if isinstance(profile, dict):
@@ -344,7 +387,7 @@ class DebateOrchestrator:
             trust_context=trust_ctx_block,
             physical_reality=PHYSICAL_REALITY_RULES,
             tone_rule=TONE_RULE,
-            buyer_rules=REASONABLE_BUYER_RULES,
+            buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
@@ -383,7 +426,7 @@ class DebateOrchestrator:
             focus_bias=self._build_focus_bias(),
             physical_reality=PHYSICAL_REALITY_RULES,
             tone_rule=TONE_RULE,
-            buyer_rules=REASONABLE_BUYER_RULES,
+            buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
@@ -423,7 +466,7 @@ class DebateOrchestrator:
         prompt = CONSENSUS_PROMPT.format(
             physical_reality=PHYSICAL_REALITY_RULES,
             tone_rule=TONE_RULE,
-            buyer_rules=REASONABLE_BUYER_RULES,
+            buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=compact_brief,

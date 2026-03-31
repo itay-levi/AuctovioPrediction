@@ -12,6 +12,7 @@ import {
   Button,
   EmptyState,
   Banner,
+  Box,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
@@ -42,19 +43,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
+const ONBOARDING_STEPS = [
+  {
+    number: "1",
+    title: "Pick a product",
+    desc: "Select any live product from your Shopify catalog — no setup required.",
+    icon: "🛍️",
+  },
+  {
+    number: "2",
+    title: "Run the panel",
+    desc: "5 AI customer personas stress-test your listing. First results appear in ~30 seconds.",
+    icon: "🧑‍🤝‍🧑",
+  },
+  {
+    number: "3",
+    title: "Fix what's blocking sales",
+    desc: "Get a score, a friction breakdown, and one-click fixes for critical issues.",
+    icon: "🎯",
+  },
+] as const;
+
 export default function Dashboard() {
   const { store, budget, recentSims, mtLimit, simLimit, isDev } = useLoaderData<typeof loader>();
 
   const tierLabel = budget?.tier ?? "FREE";
   const mtUsed = budget?.used ?? 0;
   const mtPct = Math.round((mtUsed / mtLimit) * 100);
+  const isFirstTime = recentSims.length === 0;
 
   return (
     <Page>
       <TitleBar title="CustomerPanel AI" />
       <BlockStack gap="500">
 
-        {/* Budget bar — hidden in development */}
+        {/* Budget warning — hidden in dev and when budget is fine */}
         {mtPct >= 80 && !isDev && (
           <Banner tone={mtPct >= 100 ? "critical" : "warning"}>
             <Text as="p" variant="bodyMd">
@@ -65,110 +88,163 @@ export default function Dashboard() {
           </Banner>
         )}
 
+        {/* ── First-time welcome screen ── */}
+        {isFirstTime ? (
+          <BlockStack gap="500">
+            <Card>
+              <BlockStack gap="500">
+                <BlockStack gap="200">
+                  <Text as="h1" variant="headingXl">Welcome to CustomerPanel AI 👋</Text>
+                  <Text as="p" variant="bodyLg" tone="subdued">
+                    Find out exactly why customers leave your store without buying — and what to fix first.
+                  </Text>
+                </BlockStack>
+
+                {/* Step cards */}
+                <InlineStack gap="400" wrap={false}>
+                  {ONBOARDING_STEPS.map((step) => (
+                    <Box
+                      key={step.number}
+                      padding="400"
+                      borderWidth="025"
+                      borderRadius="200"
+                      borderColor="border"
+                      background="bg-surface-secondary"
+                    >
+                      <BlockStack gap="200">
+                        <InlineStack gap="200" blockAlign="center">
+                          <Text as="span" variant="headingLg">{step.icon}</Text>
+                          <Badge tone="info">{`Step ${step.number}`}</Badge>
+                        </InlineStack>
+                        <Text as="p" variant="headingSm">{step.title}</Text>
+                        <Text as="p" variant="bodySm" tone="subdued">{step.desc}</Text>
+                      </BlockStack>
+                    </Box>
+                  ))}
+                </InlineStack>
+
+                <InlineStack gap="300" blockAlign="center">
+                  <Button url="/app/simulate" variant="primary" size="large">
+                    Run Your First Analysis →
+                  </Button>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Free — no credit card needed. Takes under 10 minutes.
+                  </Text>
+                </InlineStack>
+              </BlockStack>
+            </Card>
+
+            {/* Right sidebar for first-timers */}
+            <Layout>
+              <Layout.Section variant="oneThird">
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingMd">Your Free Plan Includes</Text>
+                    <BlockStack gap="200">
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="span">✅</Text>
+                        <Text as="p" variant="bodyMd">5-agent customer panel per analysis</Text>
+                      </InlineStack>
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="span">✅</Text>
+                        <Text as="p" variant="bodyMd">{simLimit} analyses per month</Text>
+                      </InlineStack>
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="span">✅</Text>
+                        <Text as="p" variant="bodyMd">Trust audit + friction report</Text>
+                      </InlineStack>
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="span">✅</Text>
+                        <Text as="p" variant="bodyMd">AI-generated policy fixes</Text>
+                      </InlineStack>
+                    </BlockStack>
+                    <Button variant="plain" url="/app/billing">
+                      See all plans →
+                    </Button>
+                  </BlockStack>
+                </Card>
+              </Layout.Section>
+            </Layout>
+          </BlockStack>
+        ) : (
+
+        /* ── Returning merchant dashboard ── */
         <Layout>
-          {/* Left: stats */}
           <Layout.Section>
             <BlockStack gap="400">
               <Card>
                 <BlockStack gap="400">
                   <InlineStack align="space-between">
-                    <Text as="h2" variant="headingMd">
-                      Your Customer Panel
-                    </Text>
-                    <Badge tone={tierLabel === "FREE" ? "info" : "success"}>
-                      {tierLabel}
-                    </Badge>
+                    <Text as="h2" variant="headingMd">Your Customer Panel</Text>
+                    <Badge tone={tierLabel === "FREE" ? "info" : "success"}>{tierLabel}</Badge>
                   </InlineStack>
 
                   <Text as="p" variant="bodyMd" tone="subdued">
                     {store?.shopType
                       ? `Dedicated panel for ${store.shopType} customers`
-                      : "General retail panel (run your first analysis to calibrate)"}
+                      : "General retail panel — run an analysis to calibrate"}
                   </Text>
 
                   <InlineStack gap="400">
                     <BlockStack gap="100">
                       <Text as="p" variant="bodySm" tone="subdued">Monthly Budget</Text>
-                      <Text as="p" variant="headingLg">
-                        {mtUsed} / {mtLimit} MT
-                      </Text>
+                      <Text as="p" variant="headingLg">{mtUsed} / {mtLimit} MT</Text>
                       <div style={{ height: 6, background: "#E0E0E0", borderRadius: 3 }}>
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${Math.min(100, mtPct)}%`,
-                            background: mtPct >= 80 ? "#C62828" : "#2E7D32",
-                            borderRadius: 3,
-                            transition: "width 0.3s",
-                          }}
-                        />
+                        <div style={{
+                          height: "100%",
+                          width: `${Math.min(100, mtPct)}%`,
+                          background: mtPct >= 80 ? "#C62828" : "#2E7D32",
+                          borderRadius: 3,
+                          transition: "width 0.3s",
+                        }} />
                       </div>
                     </BlockStack>
-
                     <BlockStack gap="100">
-                      <Text as="p" variant="bodySm" tone="subdued">Analyses Run</Text>
+                      <Text as="p" variant="bodySm" tone="subdued">Analyses This Month</Text>
                       <Text as="p" variant="headingLg">{recentSims.length}</Text>
                     </BlockStack>
                   </InlineStack>
 
-                  <Button url="/app/simulate" variant="primary">
-                    Run New Analysis
-                  </Button>
+                  <Button url="/app/simulate" variant="primary">Run New Analysis</Button>
                 </BlockStack>
               </Card>
 
-              {/* Recent simulations */}
               <Card>
                 <BlockStack gap="300">
                   <InlineStack align="space-between" blockAlign="center">
                     <Text as="h2" variant="headingMd">Recent Analyses</Text>
-                    {recentSims.length > 0 && (
-                      <Button url="/app/history" variant="plain" size="slim">View all →</Button>
-                    )}
+                    <Button url="/app/history" variant="plain" size="slim">View all →</Button>
                   </InlineStack>
-                  {recentSims.length === 0 ? (
-                    <EmptyState
-                      heading="No analyses yet"
-                      image=""
-                      action={{ content: "Run your first analysis", url: "/app/simulate" }}
-                    >
-                      <Text as="p" variant="bodyMd">
-                        Select a product and let your dedicated customer panel review it.
-                      </Text>
-                    </EmptyState>
-                  ) : (
-                    <BlockStack gap="200">
-                      {recentSims.map((s) => {
-                        const title = (s as { productJson?: { title?: string } }).productJson?.title
-                          ?? s.productUrl.split("/").pop()
-                          ?? s.productUrl;
-                        const canView = s.status === "COMPLETED" || s.status === "RUNNING" || s.status === "PENDING";
-                        return (
-                          <InlineStack key={s.id} align="space-between" blockAlign="center">
-                            <BlockStack gap="0">
-                              <Text as="p" variant="bodyMd" fontWeight="semibold">
-                                {title.length > 40 ? title.slice(0, 40) + "…" : title}
-                              </Text>
-                              <Text as="p" variant="bodySm" tone="subdued">
-                                {new Date(s.createdAt).toLocaleDateString()} · {s.score != null ? `${s.score}/100` : s.status}
-                              </Text>
-                            </BlockStack>
-                            {canView && (
-                              <Button url={`/app/results/${s.id}`} size="slim" variant="plain">
-                                {s.status === "COMPLETED" ? "View" : "Watch Live"}
-                              </Button>
-                            )}
-                          </InlineStack>
-                        );
-                      })}
-                    </BlockStack>
-                  )}
+                  <BlockStack gap="200">
+                    {recentSims.map((s) => {
+                      const title = (s as { productJson?: { title?: string } }).productJson?.title
+                        ?? s.productUrl.split("/").pop()
+                        ?? s.productUrl;
+                      const canView = s.status === "COMPLETED" || s.status === "RUNNING" || s.status === "PENDING";
+                      return (
+                        <InlineStack key={s.id} align="space-between" blockAlign="center">
+                          <BlockStack gap="0">
+                            <Text as="p" variant="bodyMd" fontWeight="semibold">
+                              {title.length > 40 ? title.slice(0, 40) + "…" : title}
+                            </Text>
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              {new Date(s.createdAt).toLocaleDateString()} · {s.score != null ? `${s.score}/100` : s.status}
+                            </Text>
+                          </BlockStack>
+                          {canView && (
+                            <Button url={`/app/results/${s.id}`} size="slim" variant="plain">
+                              {s.status === "COMPLETED" ? "View" : "Watch Live"}
+                            </Button>
+                          )}
+                        </InlineStack>
+                      );
+                    })}
+                  </BlockStack>
                 </BlockStack>
               </Card>
             </BlockStack>
           </Layout.Section>
 
-          {/* Right: plan info */}
           <Layout.Section variant="oneThird">
             <BlockStack gap="400">
               <Card>
@@ -183,9 +259,7 @@ export default function Dashboard() {
                     </InlineStack>
                     <InlineStack align="space-between">
                       <Text as="span" variant="bodyMd">Analyses / month</Text>
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {simLimit}
-                      </Text>
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">{simLimit}</Text>
                     </InlineStack>
                     <InlineStack align="space-between">
                       <Text as="span" variant="bodyMd">Weekly auto-scan</Text>
@@ -201,33 +275,14 @@ export default function Dashboard() {
                     </InlineStack>
                   </BlockStack>
                   {tierLabel !== "ENTERPRISE" && (
-                    <Button variant="plain" url="/app/billing">
-                      Upgrade plan →
-                    </Button>
+                    <Button variant="plain" url="/app/billing">Upgrade plan →</Button>
                   )}
-                </BlockStack>
-              </Card>
-
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">How It Works</Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    1. Select a product from your catalog
-                  </Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    2. Your dedicated customer panel reviews it honestly
-                  </Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    3. Get a Customer Confidence Score + friction breakdown
-                  </Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    4. Fix the issues, re-run, watch your score improve
-                  </Text>
                 </BlockStack>
               </Card>
             </BlockStack>
           </Layout.Section>
         </Layout>
+        )}
       </BlockStack>
     </Page>
   );

@@ -18,9 +18,11 @@ from ..services.shopify_ingestion import ingest_product, audit_trust_signals
 from ..services.debate_orchestrator import DebateOrchestrator
 from ..services.callback_service import post_phase_update
 from ..services.archetype_generator import generate_archetypes
+from ..services.product_intelligence import generate_product_intelligence, format_product_context
+from ..services.listing_gap_analyzer import analyze_listing_gaps, format_gap_context
 from ..services.recommendation_engine import generate_recommendations
 from ..services.comparison_engine import generate_comparison_insight
-from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest
+from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest
 
 logger = logging.getLogger("miroshop.routes")
 bp = Blueprint("miroshop", __name__, url_prefix="/miroshop")
@@ -39,6 +41,7 @@ _simulation_semaphore = threading.Semaphore(2)
 # Both caches live for the process lifetime — no TTL needed since panel composition
 # should be stable for a given product listing.
 _archetype_cache: dict[str, list] = {}
+_intelligence_cache: dict[str, dict] = {}   # product_key → {"product_context": str, "no_return_acceptable": bool, "gap_context": str, "gap_items": list}
 _niche_profile_cache: dict[str, dict] = {}
 
 
@@ -119,18 +122,127 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 if _panel_key:
                     _archetype_cache[_panel_key] = archetypes
 
-        # Run trust audit (rule-based, no LLM call) and build agent trust context
+        # Product intelligence — run once per product, cached alongside archetypes.
+        # Feeds BOTH the panel prompts (product_context) AND the trust audit (no_return_acceptable).
+        product_context = ""
+        gap_context = ""
+        gap_items_for_recs: list = []
+        no_return_from_intelligence: bool | None = None
+        if _panel_key and _panel_key in _intelligence_cache:
+            cached_intel = _intelligence_cache[_panel_key]
+            product_context = cached_intel["product_context"]
+            no_return_from_intelligence = cached_intel["no_return_acceptable"]
+            gap_context = cached_intel.get("gap_context", "")
+            gap_items_for_recs = cached_intel.get("gap_items", [])
+        else:
+            intelligence = generate_product_intelligence(llm, req.productJson)
+            product_context = format_product_context(intelligence)
+            no_return_from_intelligence = intelligence.no_return_acceptable if intelligence else None
+
+            # Gap analysis — score the listing against the category checklist
+            if intelligence and intelligence.checklist:
+                from ..services.shopify_ingestion import ingest_product as _ingest_for_gaps
+                try:
+                    _brief_for_gaps = _ingest_for_gaps(req.productJson, req.shopDomain)
+                    _listing_text = _brief_for_gaps.get("description_text", "")
+                    # Also include title and key fields for completeness
+                    _title = req.productJson.get("title", "")
+                    _product_type = req.productJson.get("productType") or req.productJson.get("product_type", "")
+                    _listing_full = f"Title: {_title}\nType: {_product_type}\n\n{_listing_text}"
+                    gap_analysis = analyze_listing_gaps(llm, intelligence.checklist, _listing_full)
+                    gap_context = format_gap_context(gap_analysis)
+                    gap_items_for_recs = [
+                        {"question": item.question, "status": item.status, "evidence": item.evidence}
+                        for item in gap_analysis.items
+                    ] if gap_analysis else []
+                except Exception as _gap_err:
+                    logger.warning(f"Gap analysis failed for {req.simulationId}: {_gap_err}")
+                    gap_analysis = None
+
+            if _panel_key:
+                _intelligence_cache[_panel_key] = {
+                    "product_context": product_context,
+                    "no_return_acceptable": no_return_from_intelligence,
+                    "gap_context": gap_context,
+                    "gap_items": gap_items_for_recs,
+                }
+
+        # ── Customer Lab configuration ────────────────────────────────────────
+        # Resolved first so lab_audience_context is available for trust_context assembly.
+        lab = req.labConfig
+        lab_temp_modifier = 0.0
+        lab_audience_context = ""
+        lab_focus_override: list[str] = []
+        lab_brutality_level = 5
+
+        if lab:
+            # Skepticism → temperature modifier
+            if lab.skepticism <= 3:
+                lab_temp_modifier = +0.12    # Fan: warmer, more generous
+            elif lab.skepticism >= 8:
+                lab_temp_modifier = -0.12   # Auditor: colder, harder to please
+
+            # Audience → context injected into every agent prompt
+            _audience_map = {
+                "professional": (
+                    "AUDIENCE CONTEXT: This panel represents professional buyers (ages 28–50). "
+                    "They prioritise ROI, spec completeness, and clear terms. "
+                    "Visual appeal matters less than data and credibility."
+                ),
+                "gen_z": (
+                    "AUDIENCE CONTEXT: This panel represents Gen-Z shoppers (ages 18–28). "
+                    "They decide in seconds from the hero image and vibe. "
+                    "Brand authenticity and social proof matter more than detailed specs. "
+                    "If the listing doesn't feel real and interesting immediately, they bounce."
+                ),
+                "luxury": (
+                    "AUDIENCE CONTEXT: This panel represents luxury shoppers. "
+                    "Price sensitivity is LOW — they will pay premium. "
+                    "What they will NOT tolerate: cheap presentation, amateurish images, "
+                    "or absence of brand story. Quality signals and exclusivity language matter."
+                ),
+            }
+            lab_audience_context = _audience_map.get(lab.audience, "")
+
+            # Skepticism tier label injected as panel tone
+            if lab.skepticism <= 3:
+                lab_audience_context = (lab_audience_context + "\n" if lab_audience_context else "") + (
+                    "PANEL TONE: This is an enthusiast panel. They lean positive and give "
+                    "benefit of the doubt on minor gaps. Focus on what works well."
+                )
+            elif lab.skepticism >= 8:
+                lab_audience_context = (lab_audience_context + "\n" if lab_audience_context else "") + (
+                    "PANEL TONE: This is a highly skeptical panel. They are looking for "
+                    "reasons to reject. Every missing detail is a red flag. "
+                    "Only a near-perfect listing earns BUY from this panel."
+                )
+
+            # Core concern → focus areas override (replaces merchant-selected focus areas)
+            _concern_map = {
+                "price":    ["price_value"],
+                "trust":    ["trust_credibility"],
+                "shipping": ["mobile_friction"],
+                "quality":  ["technical_specs"],
+            }
+            if lab.coreConcern and lab.coreConcern in _concern_map:
+                lab_focus_override = _concern_map[lab.coreConcern]
+
+            # Brutality level — passed to orchestrator for evidence injection
+            lab_brutality_level = max(1, min(10, lab.brutalityLevel))
+
+        # ── Trust audit (rule-based, no LLM call) ────────────────────────────
         trust_audit: dict = {}
         trust_context = ""
         try:
             from ..services.shopify_ingestion import ingest_product as _ingest
             _brief_for_audit = _ingest(req.productJson, req.shopDomain)
-            trust_audit = audit_trust_signals(req.productJson, _brief_for_audit)
+            trust_audit = audit_trust_signals(
+                req.productJson,
+                _brief_for_audit,
+                no_return_override=no_return_from_intelligence,
+            )
             killers = trust_audit.get("trustKillers", [])
 
-            # Build two-section trust context:
-            #   CONFIRMED PRESENT — prevents agents hallucinating absence of things that exist
-            #   ISSUES FOUND      — the usual killer list (only if killers remain)
             confirmed_parts = []
             if trust_audit.get("hasReturnPolicy"):
                 confirmed_parts.append("return/refund policy")
@@ -145,8 +257,6 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
 
             sections = []
 
-            # New-listing context: when reviews are unknown/absent, tell agents to
-            # evaluate on listing quality only — not social proof maturity.
             if not trust_audit.get("hasReviews"):
                 sections.append(
                     "EVALUATION CONTEXT: Review data is not available in this product listing — "
@@ -168,6 +278,9 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     "\n".join(f"- {k['label']}: {k['fix']}" for k in killers)
                 )
             trust_context = "\n\n".join(sections)
+
+            if lab_audience_context:
+                trust_context = (trust_context + "\n\n" + lab_audience_context).strip()
         except Exception as e:
             logger.warning(f"Trust audit failed for {req.simulationId}: {e}")
 
@@ -180,6 +293,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             # Accumulate votes from partial callbacks so recommendations have full data
             if partial and votes:
                 _accumulated_votes.extend(votes)
+            _score_breakdown: dict | None = None
 
             # partial=True means a single vote came in — fire-and-forget, no retry
             status = "RUNNING" if (phase < 3 or partial) else "COMPLETED"
@@ -196,6 +310,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
 
                 # Quality bonus: reward merchant-controllable listing signals on top of vote score.
                 # This ensures a well-prepared listing gets credit even with low social proof.
+                _raw_score = score  # preserve pre-bonus score for breakdown display
                 _brief_for_bonus = _brief_store.get("brief") or {}
                 quality_bonus = 0
                 if trust_audit.get("hasReturnPolicy"):    quality_bonus += 5
@@ -212,15 +327,31 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     score = new_score
 
                 # Score floor: all 3 critical trust killers resolved → minimum 60
+                _floor_applied = False
                 if all_critical_resolved and score < 60:
                     logger.info(
                         f"[score_floor] {req.simulationId}: all 3 critical trust killers "
                         f"resolved — lifting score {score} → 60"
                     )
                     score = 60
+                    _floor_applied = True
+
+                # Breakdown for frontend score transparency card
+                _score_breakdown = {
+                    "panelScore": _raw_score,
+                    "qualityBonus": quality_bonus,
+                    "floorApplied": _floor_applied,
+                    "floorValue": 60 if _floor_applied else None,
+                }
 
             if phase == 3 and not partial and friction is not None:
-                report_json = {"friction": friction, "summary": summary}
+                report_json = {
+                    "friction": friction,
+                    "summary": summary,
+                    "scoreBreakdown": _score_breakdown,
+                    "labConfig": lab.model_dump() if lab else None,
+                    "gapItems": gap_items_for_recs if gap_items_for_recs else None,
+                }
                 # All votes are now accumulated from previous partial callbacks
                 all_votes = list(_accumulated_votes)
                 # Use Gemini (summary_llm) for recommendations — higher quality output
@@ -233,6 +364,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                         trust_audit=trust_audit,
                         focus_areas=req.focusAreas,
                         score=score or 0,
+                        gap_analysis=gap_items_for_recs or None,
                     )
                 except Exception as e:
                     logger.warning(f"Recommendation generation failed: {e}")
@@ -321,14 +453,20 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 flush=True,
             )
 
+            # Lab: core concern overrides merchant focus areas; lab temp + brutality applied
+            effective_focus = lab_focus_override if lab_focus_override else req.focusAreas
             orchestrator = DebateOrchestrator(
                 llm=llm,
                 agent_count=req.agentCount,
                 archetypes=archetypes,
                 callback_fn=callback_fn,
                 niche_map=niche_map,
-                focus_areas=req.focusAreas,
+                focus_areas=effective_focus,
                 trust_context=trust_context,
+                product_context=product_context,
+                gap_context=gap_context,
+                temp_modifier=lab_temp_modifier,
+                brutality_level=lab_brutality_level,
             )
             orchestrator.run(brief)
         except Exception as e:
@@ -515,6 +653,161 @@ Respond with valid JSON only, no markdown:
     except Exception as e:
         logger.exception(f"Synthesis failed for {req.simulation_id}: {e}")
         return jsonify({"error": f"Synthesis failed: {str(e)}"}), 500
+
+
+_AUDIENCE_LABELS = {
+    "general": "General Public",
+    "professional": "Professional Buyers",
+    "gen_z": "Gen-Z Shoppers",
+    "luxury": "Luxury Shoppers",
+}
+
+_PRESET_LABELS = {
+    "soft_launch": "Soft Launch",
+    "skeptic_audit": "Skeptic Audit",
+    "holiday_rush": "Holiday Rush",
+}
+
+
+_FIX_PROMPTS: dict[str, str] = {
+    "return_policy": (
+        "Write a clear, professional 30-day return policy for a Shopify store selling '{product_type}'. "
+        "Include: eligibility window (30 days), condition requirements (unused, original packaging), "
+        "refund method (original payment method within 5-7 business days), how to initiate (email or form), "
+        "and exceptions (digital products, final sale items). "
+        "Write in plain English, 150-200 words. No legalese. Friendly tone."
+    ),
+    "no_shipping_info": (
+        "Write a concise shipping policy for a Shopify store selling '{product_type}'. "
+        "Include: standard processing time (1-2 business days), domestic shipping options with estimated "
+        "transit times (3-5 days standard, 1-2 days express), free shipping threshold ($50+), "
+        "international shipping note (7-14 business days, duties may apply), and order tracking info. "
+        "Write in plain English, 120-150 words. Merchant-friendly, no jargon."
+    ),
+    "no_contact_info": (
+        "Write a brief, friendly About Us + Contact section for a Shopify store selling '{product_type}'. "
+        "Include: a 2-sentence brand story (passionate team, quality focus), a contact email placeholder, "
+        "response time commitment (within 24 hours on business days), and a closing trust statement. "
+        "Write in plain English, 80-100 words. Warm, real-sounding tone — not generic."
+    ),
+}
+
+_FIX_HEADINGS: dict[str, str] = {
+    "return_policy": "Returns & Refunds Policy",
+    "no_shipping_info": "Shipping Policy",
+    "no_contact_info": "About Us & Contact",
+}
+
+
+@bp.post("/generate-fix")
+@_require_auth
+def generate_fix():
+    """
+    Generate a draft policy/page text for a specific trust killer signal.
+    Used by the Fix-it flow in the merchant dashboard.
+    """
+    body = request.get_json(force=True) or {}
+    signal = body.get("signal", "")
+    product_type = body.get("productType", "general retail products")
+
+    if signal not in _FIX_PROMPTS:
+        return jsonify({"error": f"No fix template for signal '{signal}'"}), 400
+
+    prompt = _FIX_PROMPTS[signal].format(product_type=product_type)
+
+    try:
+        llm = _make_gemini_client()
+        text = llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=400,
+        )
+        return jsonify({
+            "heading": _FIX_HEADINGS[signal],
+            "text": text.strip(),
+            "shopifySettingsPath": {
+                "return_policy": "/admin/settings/policies",
+                "no_shipping_info": "/admin/settings/shipping",
+                "no_contact_info": "/admin/pages",
+            }.get(signal, "/admin/settings"),
+        })
+    except Exception as e:
+        logger.exception(f"generate-fix failed for signal={signal}: {e}")
+        return jsonify({"error": f"Generation failed: {str(e)}"}), 500
+
+
+@bp.post("/lab/compare")
+@_require_auth
+def lab_compare():
+    """
+    Generate a comparison summary (Score Delta, Why Gap, divergence topics) from two
+    completed simulation reports — baseline (general public) vs. target (custom Lab).
+    Called by the Shopify app after both simulations reach COMPLETED status.
+    """
+    try:
+        req = LabCompareRequest(**request.get_json(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    score_delta = req.targetScore - req.baselineScore
+    audience_label = _AUDIENCE_LABELS.get(req.labConfig.audience, req.labConfig.audience)
+    preset_label = _PRESET_LABELS.get(req.labConfig.preset, "") if req.labConfig.preset else ""
+    scenario_label = preset_label or audience_label
+
+    # Build friction summaries for the prompt
+    def _friction_summary(report: dict) -> str:
+        friction = report.get("friction", {})
+        parts = []
+        for category in ("price", "trust", "logistics"):
+            f = friction.get(category, {})
+            pct = f.get("dropoutPct", 0)
+            objections = f.get("topObjections", [])
+            if pct or objections:
+                top = objections[0] if objections else "no specific objection"
+                parts.append(f"{category.title()}: {pct}% dropout — '{top}'")
+        return "; ".join(parts) or "No friction data"
+
+    baseline_friction = _friction_summary(req.baselineReport)
+    target_friction = _friction_summary(req.targetReport)
+
+    sign = "+" if score_delta >= 0 else ""
+    prompt = f"""You are a conversion analyst comparing two audience simulations of the same product listing.
+
+Product: "{req.productTitle}"
+Baseline audience: General Public — Score: {req.baselineScore}/100
+Target audience: {scenario_label} — Score: {req.targetScore}/100
+Score delta: {sign}{score_delta} points
+
+Baseline friction: {baseline_friction}
+Target friction: {target_friction}
+
+Lab settings: Audience={audience_label}, Skepticism={req.labConfig.skepticism}/10, Concern="{req.labConfig.coreConcern or "balanced"}", Brutality={req.labConfig.brutalityLevel}/10
+
+Write a comparison analysis. Rules:
+1. The "why_gap" MUST be one sentence (max 20 words) explaining WHY the scores differ — reference a specific product attribute.
+   Good example: "Your visuals carry you with Gen-Z, but your lack of specs kills you with Experts."
+   Bad example: "The scores differ because the audiences have different expectations."
+2. "divergence_topics" must be 3 friction categories where the two audiences disagreed most (e.g. "Price sensitivity", "Social proof requirements", "Shipping expectations")
+3. "target_persona_card" must be 2-3 sentences describing the target audience as real people — their age range, shopping habits, what makes them buy or reject.
+4. Use ONLY decision language. Never use "will convert", "predict", "guarantee".
+
+Respond with valid JSON only:
+{{"why_gap":"one sentence max 20 words","divergence_topics":["topic1","topic2","topic3"],"target_persona_card":"2-3 sentences","baseline_label":"General Public","target_label":"{scenario_label}"}}"""
+
+    try:
+        llm = _make_gemini_client()
+        result = llm.chat_json([{"role": "user", "content": prompt}])
+        return jsonify({
+            "scoreDelta": score_delta,
+            "whyGap": result.get("why_gap", ""),
+            "divergenceTopics": result.get("divergence_topics", []),
+            "targetPersonaCard": result.get("target_persona_card", ""),
+            "baselineLabel": result.get("baseline_label", "General Public"),
+            "targetLabel": result.get("target_label", scenario_label),
+        })
+    except Exception as e:
+        logger.exception(f"Lab compare failed: {e}")
+        return jsonify({"error": f"Comparison generation failed: {str(e)}"}), 500
 
 
 @bp.get("/health")

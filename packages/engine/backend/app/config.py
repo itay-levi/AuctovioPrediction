@@ -31,8 +31,8 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.groq.com/openai/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'llama-3.1-8b-instant')
-    # LLM_RPM=5 → 12s between calls. Groq free tier: ~6,000 TPM / ~600 tok/call = 10 RPM max.
-    # Set to 0 to disable throttling (paid tier).
+    # LLM_RPM=5 → 12s between calls. Groq free tier: ~6,000 TPM / ~1,100 tok/call = 5.4 RPM max.
+    # Set to 0 to disable throttling (paid tier — also raise _TPM_LIMIT in llm_client.py).
     LLM_RPM = os.environ.get('LLM_RPM', '5')
 
     # Fallback LLM (Gemini 1.5 Flash) — used when Groq exhausts retries on 429

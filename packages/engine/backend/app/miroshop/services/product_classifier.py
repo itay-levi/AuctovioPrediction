@@ -64,6 +64,9 @@ _PERISHABLE_KEYWORDS = {
     "cookie", "bakery", "jam", "honey", "spice", "herb", "tea", "coffee",
     "plant", "seeds", "flower", "bouquet", "succulent",
     "fruit", "vegetable", "supplement", "vitamin", "protein powder", "snack",
+    # Note: product_classifier is a fallback only. The primary path for determining
+    # no_return_acceptable is ProductIntelligence (LLM-based), which handles any
+    # product type correctly without manual keyword lists.
 }
 
 _DIGITAL_KEYWORDS = {

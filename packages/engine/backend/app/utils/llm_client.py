@@ -2,21 +2,22 @@
 LLM client — Groq primary + Gemini fallback, dual rate-limiting.
 
 Rate-limiting strategy (Groq free tier — llama-3.1-8b-instant):
-  Limits:  30 RPM  |  30,000 TPM  (rolling 60-second windows)
-  Config:  LLM_RPM=10  →  6s gap between calls  (10 req/min)
-  TPM cap: _TPM_LIMIT=28000  →  pause when 60s window would exceed this
+  Limits:  30 RPM  |  6,000 TPM  (rolling 60-second windows)
+  Actual:  ~1,100 tok/call (948 in + 156 out) → max ~5.4 calls/min before TPM ceiling
+  Config:  LLM_RPM=5   →  12s gap between calls (safe for single simulation)
+  TPM cap: _TPM_LIMIT=5500  →  pause when 60s window would exceed this
 
 Two complementary guards run on every primary call:
   1. RPM throttle  (_throttle_primary)  — enforces minimum gap between requests
   2. TPM guard     (_tpm_guard)         — tracks tokens in a sliding 60s window;
                                           sleeps until the window resets if close to ceiling
 
-With 3 concurrent simulations at LLM_RPM=10 each:
-  30 req/min × ~900 tok/req = 27,000 TPM → TPM guard kicks in near the ceiling
-  RPM guard keeps individual simulation cadence clean
+With concurrent simulations all threads share the same TPM window:
+  5,500 TPM ÷ 1,200 tok/call = ~4 calls before TPM guard triggers a wait
+  RPM guard keeps per-thread cadence clean; TPM guard protects the shared quota
 
 Exponential backoff: 1s → 2s → 4s on 429 before handing off to Gemini fallback.
-Set LLM_RPM=0 to disable both throttles (paid tier).
+Set LLM_RPM=0 to disable both throttles (paid tier — update _TPM_LIMIT too).
 """
 
 import json
@@ -39,9 +40,9 @@ _primary_last_call: float = 0.0
 # ── Primary TPM sliding-window guard ─────────────────────────────────────────
 # Tracks (timestamp, tokens) pairs for the last 60 seconds across all threads.
 # Pauses execution when the projected total would exceed _TPM_LIMIT.
-_TPM_LIMIT = 28_000          # leave 2,000 token headroom under Groq's 30,000 TPM
+_TPM_LIMIT = 5_500           # leave 500 token headroom under Groq free tier's 6,000 TPM
 _TPM_WINDOW = 60.0           # rolling window in seconds
-_TPM_AVG_TOKENS = 900        # estimated tokens per call (input + output)
+_TPM_AVG_TOKENS = 1_200      # conservative estimate — actual is ~1,100 (948 in + 156 out)
 _tpm_lock = threading.Lock()
 _tpm_calls: collections.deque = collections.deque()  # deque of (monotonic_time, tokens)
 

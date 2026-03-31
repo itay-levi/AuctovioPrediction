@@ -16,6 +16,32 @@ function headers(): Record<string, string> {
   return h;
 }
 
+export interface LabConfig {
+  audience: "general" | "professional" | "gen_z" | "luxury";
+  skepticism: number;        // 1–10
+  coreConcern: string;       // "price" | "trust" | "shipping" | "quality" | ""
+  brutalityLevel: number;    // 1–10: evidence requirement threshold
+  preset: string;            // "soft_launch" | "skeptic_audit" | "holiday_rush" | ""
+}
+
+export interface LabComparePayload {
+  productTitle: string;
+  baselineReport: Record<string, unknown>;
+  targetReport: Record<string, unknown>;
+  baselineScore: number;
+  targetScore: number;
+  labConfig: LabConfig;
+}
+
+export interface LabComparisonResult {
+  scoreDelta: number;
+  whyGap: string;
+  divergenceTopics: string[];
+  targetPersonaCard: string;
+  baselineLabel: string;
+  targetLabel: string;
+}
+
 export interface TriggerSimulationPayload {
   simulationId: string;
   shopDomain: string;
@@ -24,7 +50,10 @@ export interface TriggerSimulationPayload {
   productJson: unknown;
   agentCount: number; // 5 | 25 | 50 based on plan tier
   callbackUrl: string;
-  focusAreas?: string[]; // e.g. ["trust_credibility", "price_value"]
+  focusAreas?: string[];
+  labConfig?: LabConfig;
+  labGroupId?: string;
+  isBaseline?: boolean;
 }
 
 export interface DeltaSimulationPayload {
@@ -76,6 +105,53 @@ export async function triggerSimulation(
     }
 
     return res.json() as Promise<{ queued: boolean; estimatedMtCost: number }>;
+  });
+}
+
+export interface GenerateFixResult {
+  heading: string;
+  text: string;
+  shopifySettingsPath: string;
+}
+
+export async function generateFix(
+  signal: string,
+  productType: string
+): Promise<GenerateFixResult> {
+  return engineBreaker.execute(async () => {
+    const res = await fetch(`${ENGINE_URL}/miroshop/generate-fix`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ signal, productType }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`generate-fix error ${res.status}: ${text}`);
+    }
+
+    return res.json() as Promise<GenerateFixResult>;
+  });
+}
+
+export async function compareLabSimulations(
+  payload: LabComparePayload
+): Promise<LabComparisonResult> {
+  return engineBreaker.execute(async () => {
+    const res = await fetch(`${ENGINE_URL}/miroshop/lab/compare`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Lab compare error ${res.status}: ${text}`);
+    }
+
+    return res.json() as Promise<LabComparisonResult>;
   });
 }
 

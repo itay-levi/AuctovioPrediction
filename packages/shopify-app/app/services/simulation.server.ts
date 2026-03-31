@@ -53,6 +53,19 @@ export async function canRunSimulation(
   return { allowed: true };
 }
 
+function _triggerWithErrorHandling(
+  simulationId: string,
+  payload: Parameters<typeof triggerSimulation>[0],
+) {
+  triggerSimulation(payload).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Engine] ❌ Simulation ${simulationId} failed to trigger: ${msg}`);
+    db.simulation
+      .update({ where: { id: simulationId }, data: { status: "FAILED" } })
+      .catch(() => {});
+  });
+}
+
 export async function createSimulation(
   storeId: string,
   shopDomain: string,
@@ -61,17 +74,94 @@ export async function createSimulation(
   productJson: unknown,
   tier: PlanTier,
   appUrl: string,
-  focusAreas: string[] = []
+  focusAreas: string[] = [],
+  labConfig?: import("./engine.server").LabConfig,
 ) {
-  // DEV_AGENT_COUNT lets you tune locally without changing tier logic.
-  // e.g. DEV_AGENT_COUNT=10 in .env gives better signal than 5 but runs faster than 25.
   const devCount = process.env.NODE_ENV === "development" && process.env.DEV_AGENT_COUNT
     ? parseInt(process.env.DEV_AGENT_COUNT, 10)
     : null;
   const agentCount = devCount ?? AGENT_COUNTS[tier];
   const estimatedMt = agentCount * MT_ESTIMATE_PER_AGENT;
+  const callbackUrl = `${appUrl}/webhooks/engine/callback`;
+  const shopTypeResolved = shopType || "general_retail";
 
-  // Create DB record
+  // ── Customer Lab: create two linked simulations (baseline + target) ─────────
+  if (labConfig) {
+    const labGroupId = `lab_${Date.now()}_${storeId.slice(-6)}`;
+
+    // Baseline — general public, default settings, no labConfig
+    const baseline = await db.simulation.create({
+      data: {
+        storeId,
+        productUrl,
+        productJson: productJson as object,
+        status: "PENDING",
+        phase: 0,
+        mtCost: estimatedMt,
+        focusAreas: focusAreas.length ? focusAreas : undefined,
+        labGroupId,
+        isBaseline: true,
+      },
+    });
+
+    // Target — user's custom Lab config
+    const target = await db.simulation.create({
+      data: {
+        storeId,
+        productUrl,
+        productJson: productJson as object,
+        status: "PENDING",
+        phase: 0,
+        mtCost: estimatedMt,
+        focusAreas: focusAreas.length ? focusAreas : undefined,
+        labGroupId,
+        isBaseline: false,
+      },
+    });
+
+    // Trigger both in parallel (independent runs, comparison computed after both complete)
+    const baselineLabConfig: import("./engine.server").LabConfig = {
+      audience: "general",
+      skepticism: 5,
+      coreConcern: "",
+      brutalityLevel: 5,
+      preset: "",
+    };
+
+    _triggerWithErrorHandling(baseline.id, {
+      simulationId: baseline.id,
+      shopDomain,
+      shopType: shopTypeResolved,
+      productUrl,
+      productJson,
+      agentCount,
+      callbackUrl,
+      focusAreas,
+      labConfig: baselineLabConfig,
+      labGroupId,
+      isBaseline: true,
+    });
+
+    _triggerWithErrorHandling(target.id, {
+      simulationId: target.id,
+      shopDomain,
+      shopType: shopTypeResolved,
+      productUrl,
+      productJson,
+      agentCount,
+      callbackUrl,
+      focusAreas,
+      labConfig,
+      labGroupId,
+      isBaseline: false,
+    });
+
+    // Return the TARGET simulation — the results page is keyed to this ID,
+    // and it will look up the partner baseline via labGroupId.
+    return target;
+  }
+
+  // ── Standard single simulation ───────────────────────────────────────────────
   const simulation = await db.simulation.create({
     data: {
       storeId,
@@ -84,26 +174,15 @@ export async function createSimulation(
     },
   });
 
-  // Trigger engine async (fire and forget — results come via callback)
-  const callbackUrl = `${appUrl}/webhooks/engine/callback`;
-  triggerSimulation({
+  _triggerWithErrorHandling(simulation.id, {
     simulationId: simulation.id,
     shopDomain,
-    shopType: shopType || "general_retail",
+    shopType: shopTypeResolved,
     productUrl,
     productJson,
     agentCount,
     callbackUrl,
     focusAreas,
-  }).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Engine] ❌ Simulation ${simulation.id} failed to trigger: ${msg}`);
-    db.simulation
-      .update({
-        where: { id: simulation.id },
-        data: { status: "FAILED" },
-      })
-      .catch(() => {});
   });
 
   return simulation;
@@ -117,6 +196,30 @@ export async function getSimulation(id: string) {
         orderBy: { createdAt: "asc" },
       },
     },
+  });
+}
+
+export async function getLabPartnerSimulation(labGroupId: string, excludeId: string) {
+  return db.simulation.findFirst({
+    where: {
+      labGroupId,
+      id: { not: excludeId },
+    },
+    select: {
+      id: true,
+      status: true,
+      score: true,
+      reportJson: true,
+      isBaseline: true,
+      comparisonSummary: true,
+    },
+  });
+}
+
+export async function saveComparisonSummary(simulationId: string, summary: object) {
+  return db.simulation.update({
+    where: { id: simulationId },
+    data: { comparisonSummary: summary },
   });
 }
 

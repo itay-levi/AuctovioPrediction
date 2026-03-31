@@ -174,6 +174,7 @@ def audit_trust_signals(
     product_json: dict,
     brief: ProductBrief,
     product_category=None,  # ProductCategory dataclass from product_classifier
+    no_return_override: bool | None = None,  # LLM-determined override (takes precedence)
 ) -> dict:
     """
     Rule-based analysis of trust signals present (or missing) in the product listing.
@@ -191,8 +192,11 @@ def audit_trust_signals(
     """
     import json as _json
 
-    # Extract category context (safe defaults = standard retail behaviour)
-    no_return_acceptable = getattr(product_category, "no_return_acceptable", False)
+    # Extract category context — LLM override takes precedence over keyword classifier
+    if no_return_override is not None:
+        no_return_acceptable = no_return_override
+    else:
+        no_return_acceptable = getattr(product_category, "no_return_acceptable", False)
     shipping_is_lead_time = getattr(product_category, "shipping_is_lead_time", False)
     is_hygienic = getattr(product_category, "is_hygienic", False)
     is_perishable = getattr(product_category, "is_perishable", False)
