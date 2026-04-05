@@ -888,8 +888,8 @@ export default function ResultsPage() {
                     <BlockStack gap="400">
                       <InlineStack align="space-between" blockAlign="center">
                         <BlockStack gap="100">
-                          <Text as="h2" variant="headingMd">🔬 Scenario Comparison Lab</Text>
-                          <Text as="p" variant="bodySm" tone="subdued">General Public baseline vs. your custom scenario — running in parallel.</Text>
+                          <Text as="h2" variant="headingMd">Scenario comparison lab</Text>
+                          <Text as="p" variant="bodySm" tone="subdued">General-public baseline vs. your custom scenario, run in parallel.</Text>
                         </BlockStack>
                         <Badge tone="info">Lab Run</Badge>
                       </InlineStack>
@@ -898,7 +898,7 @@ export default function ResultsPage() {
                         <InlineStack gap="200" wrap>
                           {labConfig.preset && (
                             <Badge tone="magic">
-                              {({ soft_launch: "🌱 Soft Launch", skeptic_audit: "🔍 Skeptic Audit", holiday_rush: "🎄 Holiday Rush" } as Record<string, string>)[labConfig.preset] ?? labConfig.preset}
+                              {({ soft_launch: "Soft launch", skeptic_audit: "Skeptic audit", holiday_rush: "Holiday rush" } as Record<string, string>)[labConfig.preset] ?? labConfig.preset}
                             </Badge>
                           )}
                           <Badge>{AUDIENCE_LABELS[labConfig.audience] ?? labConfig.audience}</Badge>

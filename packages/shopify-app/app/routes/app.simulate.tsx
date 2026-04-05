@@ -16,12 +16,7 @@ import {
   Thumbnail,
   Checkbox,
   Box,
-  Divider,
-  ButtonGroup,
-  Tooltip,
-  Icon,
 } from "@shopify/polaris";
-import { QuestionCircleIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
 import { authenticate } from "../shopify.server";
@@ -33,6 +28,12 @@ import {
   estimateSimulationCost,
 } from "../services/simulation.server";
 import { OnboardingTour } from "../components/OnboardingTour";
+import {
+  ScenarioLabPanel,
+  LAB_PRESETS,
+  type LabPresetId,
+  type LabAudience,
+} from "../components/scenario-lab/ScenarioLabPanel";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -111,45 +112,15 @@ export default function SimulatePage() {
 
   // Customer Lab state
   const [labEnabled, setLabEnabled] = useState(false);
-  const [labPreset, setLabPreset] = useState<"" | "soft_launch" | "skeptic_audit" | "holiday_rush">("");
-  const [labAudience, setLabAudience] = useState<"general" | "professional" | "gen_z" | "luxury">("general");
+  const [labPreset, setLabPreset] = useState<LabPresetId>("");
+  const [labAudience, setLabAudience] = useState<LabAudience>("general");
   const [labSkepticism, setLabSkepticism] = useState<1 | 5 | 9>(5);
   const [labConcern, setLabConcern] = useState("");
   const [labBrutality, setLabBrutality] = useState(5);
   const [leftRailCollapsed, setLeftRailCollapsed] = useState(false);
 
-  const PRESETS = [
-    {
-      id: "soft_launch" as const,
-      label: "🌱 Soft Launch",
-      desc: "Friendly audience, low stress. Best for new listings.",
-      audience: "general" as const,
-      skepticism: 2 as 1 | 5 | 9,
-      concern: "",
-      brutality: 2,
-    },
-    {
-      id: "skeptic_audit" as const,
-      label: "🔍 Skeptic Audit",
-      desc: "Hardened professional buyers demanding evidence.",
-      audience: "professional" as const,
-      skepticism: 9 as 1 | 5 | 9,
-      concern: "trust",
-      brutality: 9,
-    },
-    {
-      id: "holiday_rush" as const,
-      label: "🎄 Holiday Rush",
-      desc: "Gift buyers focused on shipping and delivery.",
-      audience: "general" as const,
-      skepticism: 5 as 1 | 5 | 9,
-      concern: "shipping",
-      brutality: 5,
-    },
-  ] as const;
-
-  function applyPreset(presetId: typeof labPreset) {
-    const preset = PRESETS.find((p) => p.id === presetId);
+  function applyPreset(presetId: Exclude<LabPresetId, "">) {
+    const preset = LAB_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     setLabPreset(presetId);
     setLabAudience(preset.audience);
@@ -352,160 +323,22 @@ export default function SimulatePage() {
                   </BlockStack>
 
                   {/* ── Customer Lab ── */}
-                  <Box paddingBlockStart="200">
-                    <Divider />
-                  </Box>
-                  <Box paddingBlockStart="200">
-                    <BlockStack gap="300">
-                      <InlineStack align="space-between" blockAlign="center">
-                        <BlockStack gap="050">
-                          <Text as="h3" variant="headingSm">🔬 Scenario Comparison Lab <Badge tone="info">PRO</Badge></Text>
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Run a side-by-side comparison: General Public vs. your chosen scenario.
-                          </Text>
-                        </BlockStack>
-                        <Button
-                          variant={labEnabled ? "primary" : "secondary"}
-                          size="slim"
-                          onClick={() => setLabEnabled((v) => !v)}
-                        >
-                          {labEnabled ? "Lab On" : "Enable Lab"}
-                        </Button>
-                      </InlineStack>
-
-                      {labEnabled && (
-                        <BlockStack gap="400">
-                          {/* Presets */}
-                          <BlockStack gap="150">
-                            <Text as="p" variant="bodyMd" fontWeight="semibold">Quick Scenarios</Text>
-                            <InlineStack gap="200">
-                              {PRESETS.map((p) => (
-                                <Button
-                                  key={p.id}
-                                  variant={labPreset === p.id ? "primary" : "secondary"}
-                                  size="slim"
-                                  onClick={() => labPreset === p.id ? clearPreset() : applyPreset(p.id)}
-                                >
-                                  {p.label}
-                                </Button>
-                              ))}
-                            </InlineStack>
-                            {labPreset && (
-                              <Text as="p" variant="bodySm" tone="subdued">
-                                {PRESETS.find((p) => p.id === labPreset)?.desc}
-                              </Text>
-                            )}
-                          </BlockStack>
-
-                          <Divider />
-
-                          {/* Manual overrides */}
-                          <Text as="p" variant="bodyMd" fontWeight="semibold">Manual Overrides</Text>
-
-                          <BlockStack gap="050">
-                            <InlineStack gap="100" blockAlign="center">
-                              <Text as="p" variant="bodyMd">Target Audience</Text>
-                              <Tooltip content="Configures the mindset and priorities of your simulated panel. 'Professional Buyers' care about specs and ROI. 'Gen-Z' decide in seconds based on visuals. 'Luxury' shoppers won't tolerate cheap-looking presentation.">
-                                <Icon source={QuestionCircleIcon} />
-                              </Tooltip>
-                            </InlineStack>
-                            <Select
-                              label=""
-                              labelHidden
-                              options={[
-                                { label: "🌍 General Public", value: "general" },
-                                { label: "💼 Professional Buyers", value: "professional" },
-                                { label: "⚡ Gen-Z Shoppers", value: "gen_z" },
-                                { label: "💎 Luxury Shoppers", value: "luxury" },
-                              ]}
-                              value={labAudience}
-                              onChange={(v) => { clearPreset(); setLabAudience(v as typeof labAudience); }}
-                            />
-                          </BlockStack>
-
-                          <BlockStack gap="150">
-                            <InlineStack gap="100" blockAlign="center">
-                              <Text as="p" variant="bodyMd">Skepticism Level</Text>
-                              <Tooltip content="Controls how hard your panel pushes back. 'The Fan' panel gives you the benefit of the doubt. 'The Auditor' actively looks for reasons to reject. Most real shoppers are somewhere in between.">
-                                <Icon source={QuestionCircleIcon} />
-                              </Tooltip>
-                            </InlineStack>
-                            <ButtonGroup variant="segmented">
-                              <Button
-                                pressed={labSkepticism === 1}
-                                onClick={() => { clearPreset(); setLabSkepticism(1); }}
-                              >
-                                😊 The Fan
-                              </Button>
-                              <Button
-                                pressed={labSkepticism === 5}
-                                onClick={() => { clearPreset(); setLabSkepticism(5); }}
-                              >
-                                🤔 Average Buyer
-                              </Button>
-                              <Button
-                                pressed={labSkepticism === 9}
-                                onClick={() => { clearPreset(); setLabSkepticism(9); }}
-                              >
-                                🔍 The Auditor
-                              </Button>
-                            </ButtonGroup>
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {labSkepticism === 1 && "Enthusiast panel — focuses on strengths, forgiving of minor gaps."}
-                              {labSkepticism === 5 && "Balanced panel — weighs pros and cons equally."}
-                              {labSkepticism === 9 && "Skeptical panel — actively looking for reasons to reject."}
-                            </Text>
-                          </BlockStack>
-
-                          <Select
-                            label="Core Concern (forces panel focus)"
-                            options={[
-                              { label: "Balanced — no forced focus", value: "" },
-                              { label: "💰 Price & Value", value: "price" },
-                              { label: "🛡️ Trust & Credibility", value: "trust" },
-                              { label: "📦 Shipping & Delivery", value: "shipping" },
-                              { label: "🛠️ Product Quality & Specs", value: "quality" },
-                            ]}
-                            value={labConcern}
-                            onChange={(v) => { clearPreset(); setLabConcern(v); }}
-                          />
-
-                          {/* Brutality Slider */}
-                          <BlockStack gap="150">
-                            <InlineStack align="space-between">
-                              <InlineStack gap="100" blockAlign="center">
-                                <Text as="p" variant="bodyMd">Brutality Level</Text>
-                                <Tooltip content="How much evidence your panel demands before voting BUY. Level 1 is lenient — agents give benefit of the doubt. Level 10 is maximum scrutiny — every positive claim must be backed by hard data in the listing.">
-                                  <Icon source={QuestionCircleIcon} />
-                                </Tooltip>
-                              </InlineStack>
-                              <Badge tone={labBrutality <= 3 ? "success" : labBrutality <= 6 ? "warning" : "critical"}>
-                                {labBrutality <= 3 ? "Lenient" : labBrutality <= 6 ? "Standard" : labBrutality <= 8 ? "Hard" : "Maximum"}
-                              </Badge>
-                            </InlineStack>
-                            <input
-                              type="range"
-                              min={1}
-                              max={10}
-                              step={1}
-                              value={labBrutality}
-                              onChange={(e) => { clearPreset(); setLabBrutality(Number(e.target.value)); }}
-                              style={{ width: "100%", accentColor: labBrutality >= 9 ? "#d82c0d" : labBrutality >= 7 ? "#ffd700" : "#008060" }}
-                            />
-                            <InlineStack align="space-between">
-                              <Text as="span" variant="bodySm" tone="subdued">1 — Forgiving</Text>
-                              <Text as="span" variant="bodySm" tone="subdued">10 — Maximum Scrutiny</Text>
-                            </InlineStack>
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {labBrutality <= 3 && "Balanced review — no extra evidence requirements."}
-                              {labBrutality >= 4 && labBrutality <= 6 && "Agents must name one specific weakness before voting BUY."}
-                              {labBrutality >= 7 && labBrutality <= 8 && "Requires 2 concrete listing signals to vote BUY. Unverified claims = soft REJECT."}
-                              {labBrutality >= 9 && "Maximum stress. Agents require 3 forms of evidence per positive claim. Default verdict: REJECT."}
-                            </Text>
-                          </BlockStack>
-                        </BlockStack>
-                      )}
-                    </BlockStack>
+                  <Box paddingBlockStart="400">
+                    <ScenarioLabPanel
+                      labEnabled={labEnabled}
+                      onLabEnabledChange={setLabEnabled}
+                      labPreset={labPreset}
+                      onSelectPreset={applyPreset}
+                      onClearPreset={clearPreset}
+                      labAudience={labAudience}
+                      onAudienceChange={setLabAudience}
+                      labSkepticism={labSkepticism}
+                      onSkepticismChange={setLabSkepticism}
+                      labConcern={labConcern}
+                      onConcernChange={setLabConcern}
+                      labBrutality={labBrutality}
+                      onBrutalityChange={setLabBrutality}
+                    />
                   </Box>
 
                   <Box paddingBlockStart="400">

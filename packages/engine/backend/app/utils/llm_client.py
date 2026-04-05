@@ -244,6 +244,12 @@ class LLMClient:
         try:
             response = self._call_primary_with_backoff(kwargs)
         except RateLimitError:
+            if self._fallback_client is None:
+                logger.error(
+                    "[fallback] Groq quota exhausted and no fallback configured — "
+                    "simulation will fail. Add GOOGLE_AI_API_KEY to enable Gemini fallback."
+                )
+                raise
             logger.warning(
                 "[fallback] Primary quota exhausted — routing this call to Gemini"
             )
