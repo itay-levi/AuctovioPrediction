@@ -629,15 +629,43 @@ export default function ResultsPage() {
 
   // ── 3-column friction data ───────────────────────────────────────────────────
   const frictionCols = [
-    { key: "price"     as const, label: "Price Sensitivity",  emoji: "💰" },
-    { key: "trust"     as const, label: "Trust & Social Proof", emoji: "🛡️" },
-    { key: "logistics" as const, label: "Logistics & Delivery", emoji: "📦" },
+    {
+      key: "price" as const,
+      label: "Price Sensitivity",
+      emoji: "💰",
+      description: "How clearly your listing justifies its price vs. perceived value",
+      impactLine: "Shoppers who leave over price usually need a reason to pay — not a discount.",
+    },
+    {
+      key: "trust" as const,
+      label: "Trust & Social Proof",
+      emoji: "🛡️",
+      description: "Whether your listing builds enough credibility to convert a first-time buyer",
+      impactLine: "Missing trust signals are silent conversion killers — buyers can't purchase from a brand they don't believe in.",
+    },
+    {
+      key: "logistics" as const,
+      label: "Logistics & Delivery",
+      emoji: "📦",
+      description: "Shipping clarity, return policy risk, and post-purchase confidence",
+      impactLine: "When buyers can't picture what happens if the product doesn't work out, they don't buy.",
+    },
   ];
   type FrictionSev = "critical" | "warning" | "growth";
-  const frictionSevConfig: Record<FrictionSev, { tone: "critical"|"warning"|"success"; bg: "bg-surface-critical"|"bg-surface-caution"|"bg-surface-success"; border: "border-critical"|"border-caution"|"border-success"; icon: string; label: string }> = {
-    critical: { tone: "critical", bg: "bg-surface-critical", border: "border-critical", icon: "🔴", label: "Critical" },
-    warning:  { tone: "warning",  bg: "bg-surface-caution",  border: "border-caution",  icon: "🟡", label: "Warning" },
-    growth:   { tone: "success",  bg: "bg-surface-success",  border: "border-success",  icon: "🟢", label: "Strong" },
+  const frictionSevConfig: Record<FrictionSev, { tone: "critical"|"warning"|"success"; label: string }> = {
+    critical: { tone: "critical", label: "Critical" },
+    warning:  { tone: "warning",  label: "Warning" },
+    growth:   { tone: "success",  label: "Strong" },
+  };
+  const frictionAccentColor: Record<FrictionSev, string> = {
+    critical: "#DC2626",
+    warning:  "#D97706",
+    growth:   "#16A34A",
+  };
+  const frictionBgColor: Record<FrictionSev, string> = {
+    critical: "#FFF5F5",
+    warning:  "#FFFBF0",
+    growth:   "#F0FFF4",
   };
 
   return (
@@ -759,21 +787,46 @@ export default function ResultsPage() {
                           {!isDone && <Text as="p" variant="bodySm" tone="subdued">Ready after analysis completes</Text>}
                         </InlineStack>
                         {isDone ? (
-                          <InlineStack gap="300" wrap={false} blockAlign="start">
-                            {frictionCols.map(({ key, label, emoji }) => {
+                          <div style={{ display: "flex", gap: "16px", alignItems: "stretch" }}>
+                            {frictionCols.map(({ key, label, emoji, description, impactLine }) => {
                               const pct = frictionData[key].dropoutPct;
                               const objections = frictionData[key].topObjections;
                               const sev: FrictionSev = pct >= 40 ? "critical" : pct >= 15 ? "warning" : "growth";
                               const cfg = frictionSevConfig[sev];
                               return (
-                                <Box key={key} borderWidth="025" borderColor={cfg.border} borderRadius="200" padding="300" background={cfg.bg}>
+                                <div
+                                  key={key}
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    borderLeft: `4px solid ${frictionAccentColor[sev]}`,
+                                    border: `1px solid ${frictionAccentColor[sev]}33`,
+                                    borderRadius: "8px",
+                                    backgroundColor: frictionBgColor[sev],
+                                    padding: "12px 14px",
+                                    boxSizing: "border-box",
+                                    transition: "box-shadow 0.15s ease",
+                                  }}
+                                >
                                   <BlockStack gap="200">
+                                    {/* Header row */}
                                     <InlineStack align="space-between" blockAlign="center">
                                       <Text as="p" variant="headingSm">{emoji} {label}</Text>
-                                      <Badge tone={cfg.tone}>{`${cfg.icon} ${cfg.label}`}</Badge>
+                                      <Badge tone={cfg.tone}>{cfg.label}</Badge>
                                     </InlineStack>
-                                    <Text as="p" variant="headingLg" fontWeight="bold">{pct}%</Text>
-                                    <Text as="p" variant="bodySm" tone="subdued">dropout rate</Text>
+
+                                    {/* What this measures */}
+                                    <Text as="p" variant="bodySm" tone="subdued">{description}</Text>
+
+                                    {/* Big stat */}
+                                    <div>
+                                      <Text as="p" variant="headingLg" fontWeight="bold">{pct}%</Text>
+                                      <Text as="p" variant="bodySm" tone="subdued">dropout rate</Text>
+                                    </div>
+
+                                    {/* Objections */}
                                     {objections.length > 0 && (
                                       <>
                                         <Divider />
@@ -790,11 +843,17 @@ export default function ResultsPage() {
                                         </BlockStack>
                                       </>
                                     )}
+
+                                    {/* Impact line */}
+                                    <Divider />
+                                    <Text as="p" variant="bodySm" tone="subdued">
+                                      <strong>Impact: </strong>{impactLine}
+                                    </Text>
                                   </BlockStack>
-                                </Box>
+                                </div>
                               );
                             })}
-                          </InlineStack>
+                          </div>
                         ) : (
                           <SkeletonBodyText lines={5} />
                         )}

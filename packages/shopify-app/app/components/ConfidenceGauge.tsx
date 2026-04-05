@@ -1,14 +1,20 @@
 // Customer Confidence Score — animated SVG arc gauge
 
 interface Props {
-  score: number; // 0-100
+  score: number;  // 0-100
   size?: number;
+  variant?: "light" | "dark";
 }
 
-function scoreToColor(score: number): string {
-  if (score >= 70) return "#2E7D32"; // green
-  if (score >= 45) return "#F57F17"; // amber
-  return "#C62828"; // red
+function scoreToColor(score: number, dark: boolean): string {
+  if (dark) {
+    if (score >= 70) return "#34d399"; // emerald-400
+    if (score >= 45) return "#fbbf24"; // amber-400
+    return "#fb7185";                  // rose-400
+  }
+  if (score >= 70) return "#2E7D32";
+  if (score >= 45) return "#F57F17";
+  return "#C62828";
 }
 
 function scoreToLabel(score: number): string {
@@ -17,7 +23,8 @@ function scoreToLabel(score: number): string {
   return "Needs Work";
 }
 
-export function ConfidenceGauge({ score, size = 200 }: Props) {
+export function ConfidenceGauge({ score, size = 200, variant = "light" }: Props) {
+  const dark = variant === "dark";
   const radius = size * 0.38;
   const cx = size / 2;
   const cy = size * 0.55;
@@ -38,7 +45,9 @@ export function ConfidenceGauge({ score, size = 200 }: Props) {
     return `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`;
   };
 
-  const color = scoreToColor(score);
+  const color = scoreToColor(score, dark);
+  const trackColor = dark ? "rgba(255,255,255,0.1)" : "#E0E0E0";
+  const labelColor = dark ? "rgba(255,255,255,0.45)" : "#616161";
 
   return (
     <div style={{ textAlign: "center" }}>
@@ -47,7 +56,7 @@ export function ConfidenceGauge({ score, size = 200 }: Props) {
         <path
           d={arcPath(Math.PI, 2 * Math.PI)}
           fill="none"
-          stroke="#E0E0E0"
+          stroke={trackColor}
           strokeWidth={strokeWidth}
           strokeLinecap="round"
         />
@@ -77,12 +86,12 @@ export function ConfidenceGauge({ score, size = 200 }: Props) {
           y={cy + size * 0.08}
           textAnchor="middle"
           fontSize={size * 0.08}
-          fill="#616161"
+          fill={labelColor}
         >
           {scoreToLabel(score)}
         </text>
       </svg>
-      <p style={{ margin: 0, fontSize: "12px", color: "#616161" }}>
+      <p style={{ margin: 0, fontSize: "12px", color: labelColor }}>
         Customer Confidence Score
       </p>
     </div>

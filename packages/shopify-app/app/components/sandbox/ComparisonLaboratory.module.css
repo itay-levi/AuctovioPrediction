@@ -152,10 +152,11 @@
 }
 
 .meterBar {
+  position: relative;
   height: 8px;
   border-radius: 999px;
   background: var(--lab-elevated);
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--lab-border);
 }
 
@@ -500,4 +501,213 @@
 
 .labCompareRow span strong {
   color: var(--lab-text);
+}
+
+/* ── Gauge wrap (dark bg, no white hack) ────────────────────────────────── */
+.gaugeWrap {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+
+/* ── Recommendation pill ─────────────────────────────────────────────────── */
+.recommendationPill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin: 0 auto 14px;
+  width: fit-content;
+  letter-spacing: -0.01em;
+}
+.recStrong   { background: rgba(52,211,153,0.12);  border: 1px solid rgba(52,211,153,0.3);  color: #34d399; }
+.recModerate { background: rgba(56,189,248,0.10);  border: 1px solid rgba(56,189,248,0.25); color: #38bdf8; }
+.recMixed    { background: rgba(251,191,36,0.10);  border: 1px solid rgba(251,191,36,0.25); color: #fbbf24; }
+.recLow      { background: rgba(251,113,133,0.10); border: 1px solid rgba(251,113,133,0.25); color: #fb7185; }
+
+/* ── Meter tick marks ────────────────────────────────────────────────────── */
+.meterTick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(148,163,184,0.25);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.meterTickLabels {
+  position: relative;
+  height: 14px;
+  margin-top: 3px;
+}
+.meterTickLabels span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 0.55rem;
+  color: var(--lab-muted);
+  opacity: 0.5;
+}
+
+/* ── Friction cards ──────────────────────────────────────────────────────── */
+.frictionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin: 12px 0 4px;
+}
+@media (max-width: 1200px) {
+  .frictionGrid { grid-template-columns: 1fr; }
+}
+
+.frictionCard {
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-border);
+  border-left-width: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.frictionSevCritical { border-color: rgba(239,68,68,0.25);  border-left-color: #ef4444; background: rgba(239,68,68,0.05); }
+.frictionSevWarning  { border-color: rgba(249,115,22,0.25); border-left-color: #f97316; background: rgba(249,115,22,0.05); }
+.frictionSevGrowth   { border-color: rgba(52,211,153,0.25); border-left-color: #34d399; background: rgba(52,211,153,0.05); }
+
+.fcHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.fcIcon  { font-size: 0.85rem; line-height: 1; flex-shrink: 0; }
+.fcLabel { font-size: 0.7rem; font-weight: 700; flex: 1; min-width: 0; line-height: 1.2; }
+
+.sevBadge {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.sevBadgeCritical { background: rgba(239,68,68,0.18);  color: #fca5a5; }
+.sevBadgeWarning  { background: rgba(249,115,22,0.18); color: #fdba74; }
+.sevBadgeGrowth   { background: rgba(52,211,153,0.18); color: #6ee7b7; }
+
+.fcStat { display: flex; align-items: baseline; gap: 4px; }
+.fcPct  { font-size: 1.35rem; font-weight: 800; line-height: 1; color: var(--lab-text); }
+.fcPctLabel { font-size: 0.62rem; color: var(--lab-muted); }
+
+.fcDivider { height: 1px; background: var(--lab-border); margin: 1px 0; }
+
+.fcBullets {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fcBullets li {
+  font-size: 0.67rem;
+  color: var(--lab-muted);
+  line-height: 1.35;
+  padding-left: 10px;
+  position: relative;
+}
+.fcBullets li::before { content: "•"; position: absolute; left: 0; color: var(--lab-muted); opacity: 0.55; }
+
+.fcImpact { margin: 0; font-size: 0.63rem; color: var(--lab-muted); line-height: 1.3; opacity: 0.85; }
+.fcImpact strong { color: var(--lab-text); opacity: 1; font-weight: 600; }
+
+/* ── Panel consensus cards ───────────────────────────────────────────────── */
+.panelSectionLabel {
+  margin: 0 0 7px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--lab-muted);
+}
+
+.panelGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.panelCard {
+  border-radius: 10px;
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-border);
+  padding: 8px 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.panelCard:hover { border-color: rgba(148,163,184,0.38); }
+
+.panelCardConverted {
+  border-color: rgba(52,211,153,0.4);
+  box-shadow: 0 0 0 1px rgba(52,211,153,0.15);
+  animation: convertFlash 0.9s ease-out 1;
+}
+
+.pcTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pcEmoji { font-size: 1.15rem; line-height: 1; flex-shrink: 0; }
+.pcMeta  { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.pcName  { font-size: 0.77rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcArch  { font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--lab-muted); }
+
+.pcVerdicts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.pcArrow   { font-size: 0.62rem; color: var(--lab-muted); }
+.pcPending { font-size: 0.62rem; color: var(--lab-muted); }
+
+.pcDetails { margin-top: 6px; }
+
+.pcSummary {
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  outline: none;
+}
+.pcSummary::-webkit-details-marker { display: none; }
+
+.pcSnippet {
+  font-size: 0.68rem;
+  color: var(--lab-muted);
+  line-height: 1.4;
+  font-style: italic;
+  flex: 1;
+}
+.pcExpandHint {
+  font-size: 0.58rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--lab-accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.pcFull {
+  margin: 5px 0 0;
+  font-size: 0.7rem;
+  color: var(--lab-muted);
+  line-height: 1.5;
+  font-style: italic;
+  padding: 6px 8px;
+  background: var(--lab-elevated);
+  border-radius: 6px;
+  border: 1px solid var(--lab-border);
 }

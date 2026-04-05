@@ -1,23 +1,12 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, Link } from "@remix-run/react";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
-import {
-  Page,
-  Layout,
-  Card,
-  Text,
-  BlockStack,
-  InlineStack,
-  Badge,
-  Button,
-  EmptyState,
-  Banner,
-  Box,
-} from "@shopify/polaris";
+import { Page } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { getStore, getMtBudgetStatus, MT_LIMITS, SIM_LIMITS } from "../services/store.server"; // server-only — only used in loader
+import { getStore, getMtBudgetStatus, MT_LIMITS, SIM_LIMITS } from "../services/store.server";
 import { getRecentSimulations } from "../services/simulation.server";
+import styles from "../styles/dashboard.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -43,251 +32,374 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-const ONBOARDING_STEPS = [
-  {
-    number: "1",
-    title: "Pick a product",
-    desc: "Select any live product from your Shopify catalog — no setup required.",
-    icon: "🛍️",
-  },
-  {
-    number: "2",
-    title: "Run the panel",
-    desc: "5 AI customer personas stress-test your listing. First results appear in ~30 seconds.",
-    icon: "🧑‍🤝‍🧑",
-  },
-  {
-    number: "3",
-    title: "Fix what's blocking sales",
-    desc: "Get a score, a friction breakdown, and one-click fixes for critical issues.",
-    icon: "🎯",
-  },
-] as const;
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function scoreLabel(score: number): string {
+  if (score >= 70) return "Strong";
+  if (score >= 45) return "Mixed";
+  return "Needs Work";
+}
+
+function scorePillClass(score: number): string {
+  if (score >= 70) return styles.scoreStrong;
+  if (score >= 45) return styles.scoreMixed;
+  return styles.scoreWeak;
+}
+
+function budgetProgressClass(pct: number): string {
+  if (pct >= 80) return styles.progressRed;
+  if (pct >= 60) return styles.progressAmber;
+  return styles.progressBlue;
+}
+
+function formatDate(iso: string | Date): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────
+
+function ScoreRing({ score }: { score: number }) {
+  const pct = Math.min(100, Math.max(0, score));
+  const color = pct >= 70 ? "#16A34A" : pct >= 45 ? "#D97706" : "#DC2626";
+  return (
+    <div className={styles.heroScoreRing}
+      style={{ background: `conic-gradient(${color} 0% ${pct}%, #E2E8F0 ${pct}% 100%)` }}>
+      <div className={styles.heroScoreRingInner}>
+        <span className={styles.heroScoreNum}>{score}</span>
+        <span className={styles.heroScoreSub}>{scoreLabel(score)}</span>
+      </div>
+    </div>
+  );
+}
+
+function AnalysisRow({ sim }: {
+  sim: {
+    id: string;
+    status: string;
+    score: number | null;
+    createdAt: Date | string;
+    productUrl: string;
+    productJson: unknown;
+  };
+}) {
+  const productJson = sim.productJson as {
+    title?: string;
+    images?: { src?: string }[];
+  } | null;
+  const title = productJson?.title ?? sim.productUrl.split("/").pop() ?? sim.productUrl;
+  const imgSrc = productJson?.images?.[0]?.src;
+  const truncTitle = title.length > 44 ? title.slice(0, 44) + "…" : title;
+  const isFailed  = sim.status === "FAILED";
+  const isDone    = sim.status === "COMPLETED";
+  const isLive    = sim.status === "RUNNING" || sim.status === "PENDING";
+
+  let scorePill: React.ReactNode;
+  if (isFailed) {
+    scorePill = <span className={`${styles.scorePill} ${styles.scoreFailed}`}>Failed</span>;
+  } else if (isDone && sim.score != null) {
+    scorePill = (
+      <span className={`${styles.scorePill} ${scorePillClass(sim.score)}`}>
+        {sim.score}/100 · {scoreLabel(sim.score)}
+      </span>
+    );
+  } else if (isLive) {
+    scorePill = <span className={`${styles.scorePill} ${styles.scorePending}`}>● Live</span>;
+  } else {
+    scorePill = <span className={`${styles.scorePill} ${styles.scoreFailed}`}>{sim.status}</span>;
+  }
+
+  return (
+    <div className={styles.analysisItem}>
+      <div className={styles.productThumbWrap}>
+        {imgSrc ? (
+          <img src={imgSrc} alt="" className={styles.productThumb} />
+        ) : (
+          <div className={`${styles.productThumbPlaceholder} ${isFailed ? styles.productThumbFailed : ""}`}>
+            {isFailed ? "✕" : title.charAt(0).toUpperCase()}
+          </div>
+        )}
+      </div>
+
+      <div className={styles.analysisInfo}>
+        <p className={styles.analysisTitle}>{truncTitle}</p>
+        <div className={styles.analysisMeta}>
+          <span>{formatDate(sim.createdAt)}</span>
+          <span className={styles.metaDot} />
+          <span>{sim.status.charAt(0) + sim.status.slice(1).toLowerCase()}</span>
+        </div>
+      </div>
+
+      <div className={styles.analysisRight}>
+        {scorePill}
+        {(isDone || isLive) && (
+          <Link to={`/app/results/${sim.id}`} className={styles.btnView}>
+            {isDone ? "View Report" : "Watch Live"}
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const { store, budget, recentSims, mtLimit, simLimit, isDev } = useLoaderData<typeof loader>();
 
   const tierLabel = budget?.tier ?? "FREE";
-  const mtUsed = budget?.used ?? 0;
-  const mtPct = Math.round((mtUsed / mtLimit) * 100);
+  const mtUsed    = budget?.used ?? 0;
+  const mtPct     = Math.min(100, Math.round((mtUsed / mtLimit) * 100));
   const isFirstTime = recentSims.length === 0;
+
+  const completedSims = recentSims.filter((s) => s.status === "COMPLETED" && s.score != null);
+  const avgScore = completedSims.length > 0
+    ? Math.round(completedSims.reduce((sum, s) => sum + (s.score ?? 0), 0) / completedSims.length)
+    : null;
+  const successRate = recentSims.length > 0
+    ? Math.round((completedSims.length / recentSims.length) * 100)
+    : null;
+
+  const tierBadgeClass = tierLabel === "ENTERPRISE" ? styles.tierEnterprise
+    : tierLabel === "PRO" ? styles.tierPro : styles.tierFree;
+  const agentCount = tierLabel === "ENTERPRISE" ? "50 agents" : tierLabel === "PRO" ? "25 agents" : "5 agents";
+  const weeklyScan = tierLabel === "FREE" ? "1 product" : "All products";
+
+  // Representative score for hero ring (avg or last completed)
+  const heroScore = avgScore ?? completedSims[0]?.score ?? 68;
 
   return (
     <Page>
       <TitleBar title="CustomerPanel AI" />
-      <BlockStack gap="500">
+      <div className={styles.root}>
 
-        {/* Budget warning — hidden in dev and when budget is fine */}
+        {/* ── Budget warning ── */}
         {mtPct >= 80 && !isDev && (
-          <Banner tone={mtPct >= 100 ? "critical" : "warning"}>
-            <Text as="p" variant="bodyMd">
+          <div className={`${styles.budgetWarning} ${mtPct >= 100 ? styles.budgetWarningCritical : ""}`}>
+            <span className={styles.budgetWarningIcon}>{mtPct >= 100 ? "🚨" : "⚠️"}</span>
+            <span>
               {mtPct >= 100
-                ? "Monthly analysis budget exhausted. Upgrade to continue running analyses."
-                : `${100 - mtPct}% of your monthly budget remaining.`}
-            </Text>
-          </Banner>
+                ? "Monthly analysis budget exhausted. Upgrade your plan to continue running analyses."
+                : `You've used ${mtPct}% of your monthly budget. ${100 - mtPct}% remaining.`}
+            </span>
+          </div>
         )}
 
-        {/* ── First-time welcome screen ── */}
+        {/* ── Hero ── */}
+        <div className={styles.hero}>
+          <div className={styles.heroContent}>
+            <span className={styles.heroEyebrow}>🤖 AI Customer Panel</span>
+            <h1 className={styles.heroHeadline}>
+              Understand Why Customers<br />Buy or Leave
+            </h1>
+            <p className={styles.heroSub}>
+              Run instant 5-agent AI customer panels that reveal real friction points
+              and clear actions to improve your Shopify product pages.
+            </p>
+            <div className={styles.heroActions}>
+              <Link to="/app/simulate" className={styles.btnPrimary}>
+                ▶ Run New Analysis
+              </Link>
+              <button type="button" className={styles.btnSecondary}>
+                ◎ Watch 45-second Demo
+              </button>
+            </div>
+          </div>
+          {!isFirstTime && (
+            <div className={styles.heroIllustration}>
+              <ScoreRing score={heroScore} />
+            </div>
+          )}
+        </div>
+
+        {/* ── Quick stats ── */}
+        <div className={styles.statsRow}>
+          {/* Analyses this month */}
+          <div className={styles.statCard}>
+            <div className={`${styles.statCardAccent} ${styles.accentBlue}`} />
+            <span className={styles.statIcon}>📊</span>
+            <div className={styles.statValue}>{recentSims.length}</div>
+            <div className={styles.statLabel}>Analyses this month</div>
+          </div>
+
+          {/* Budget used */}
+          <div className={styles.statCard}>
+            <div className={`${styles.statCardAccent} ${mtPct >= 80 ? styles.accentAmber : styles.accentBlue}`} />
+            <span className={styles.statIcon}>⚡</span>
+            <div className={styles.statValue}>{mtUsed}</div>
+            <div className={styles.statLabel}>MT used this month</div>
+            <div className={styles.statProgressWrap}>
+              <div
+                className={`${styles.statProgressFill} ${budgetProgressClass(mtPct)}`}
+                style={{ width: `${mtPct}%` }}
+              />
+            </div>
+            <div className={styles.statSub}>{mtUsed} / {mtLimit} MT · {mtPct}% used</div>
+          </div>
+
+          {/* Average score */}
+          <div className={styles.statCard}>
+            <div className={`${styles.statCardAccent} ${styles.accentGreen}`} />
+            <span className={styles.statIcon}>🎯</span>
+            <div className={styles.statValue}>
+              {avgScore != null ? `${avgScore}/100` : "—"}
+            </div>
+            <div className={styles.statLabel}>Average score</div>
+            {avgScore != null && (
+              <div className={styles.statSub}>{scoreLabel(avgScore)} across {completedSims.length} completed</div>
+            )}
+          </div>
+
+          {/* Success rate */}
+          <div className={styles.statCard}>
+            <div className={`${styles.statCardAccent} ${styles.accentPurple}`} />
+            <span className={styles.statIcon}>✅</span>
+            <div className={styles.statValue}>
+              {successRate != null ? `${successRate}%` : "—"}
+            </div>
+            <div className={styles.statLabel}>Success rate</div>
+            {successRate != null && (
+              <div className={styles.statSub}>{completedSims.length} of {recentSims.length} completed</div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Main grid ── */}
         {isFirstTime ? (
-          <BlockStack gap="500">
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <Text as="h1" variant="headingXl">Welcome to CustomerPanel AI 👋</Text>
-                  <Text as="p" variant="bodyLg" tone="subdued">
-                    Find out exactly why customers leave your store without buying — and what to fix first.
-                  </Text>
-                </BlockStack>
-
-                {/* Step cards */}
-                <InlineStack gap="400" wrap={false}>
-                  {ONBOARDING_STEPS.map((step) => (
-                    <Box
-                      key={step.number}
-                      padding="400"
-                      borderWidth="025"
-                      borderRadius="200"
-                      borderColor="border"
-                      background="bg-surface-secondary"
-                    >
-                      <BlockStack gap="200">
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="span" variant="headingLg">{step.icon}</Text>
-                          <Badge tone="info">{`Step ${step.number}`}</Badge>
-                        </InlineStack>
-                        <Text as="p" variant="headingSm">{step.title}</Text>
-                        <Text as="p" variant="bodySm" tone="subdued">{step.desc}</Text>
-                      </BlockStack>
-                    </Box>
-                  ))}
-                </InlineStack>
-
-                <InlineStack gap="300" blockAlign="center">
-                  <Button url="/app/simulate" variant="primary" size="large">
-                    Run Your First Analysis →
-                  </Button>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Free — no credit card needed. Takes under 10 minutes.
-                  </Text>
-                </InlineStack>
-              </BlockStack>
-            </Card>
-
-            {/* Right sidebar for first-timers */}
-            <Layout>
-              <Layout.Section variant="oneThird">
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h2" variant="headingMd">Your Free Plan Includes</Text>
-                    <BlockStack gap="200">
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">✅</Text>
-                        <Text as="p" variant="bodyMd">5-agent customer panel per analysis</Text>
-                      </InlineStack>
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">✅</Text>
-                        <Text as="p" variant="bodyMd">{simLimit} analyses per month</Text>
-                      </InlineStack>
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">✅</Text>
-                        <Text as="p" variant="bodyMd">Trust audit + friction report</Text>
-                      </InlineStack>
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span">✅</Text>
-                        <Text as="p" variant="bodyMd">AI-generated policy fixes</Text>
-                      </InlineStack>
-                    </BlockStack>
-                    <Button variant="plain" url="/app/billing">
-                      See all plans →
-                    </Button>
-                  </BlockStack>
-                </Card>
-              </Layout.Section>
-            </Layout>
-          </BlockStack>
-        ) : (
-
-        /* ── Returning merchant dashboard ── */
-        <Layout>
-          <Layout.Section>
-            <BlockStack gap="400">
-              <Card>
-                <BlockStack gap="400">
-                  <InlineStack align="space-between">
-                    <Text as="h2" variant="headingMd">Your Customer Panel</Text>
-                    <Badge tone={tierLabel === "FREE" ? "info" : "success"}>{tierLabel}</Badge>
-                  </InlineStack>
-
-                  <Text as="p" variant="bodyMd" tone="subdued">
-                    {store?.shopType
-                      ? `Dedicated panel for ${store.shopType} customers`
-                      : "General retail panel — run an analysis to calibrate"}
-                  </Text>
-
-                  <InlineStack gap="400">
-                    <BlockStack gap="100">
-                      <Text as="p" variant="bodySm" tone="subdued">Monthly Budget</Text>
-                      <Text as="p" variant="headingLg">{mtUsed} / {mtLimit} MT</Text>
-                      <div style={{ height: 6, background: "#E0E0E0", borderRadius: 3 }}>
-                        <div style={{
-                          height: "100%",
-                          width: `${Math.min(100, mtPct)}%`,
-                          background: mtPct >= 80 ? "#C62828" : "#2E7D32",
-                          borderRadius: 3,
-                          transition: "width 0.3s",
-                        }} />
+          /* First-time experience */
+          <div className={styles.mainGrid}>
+            <div>
+              <div className={styles.sectionCard}>
+                <div className={styles.sectionHeader}>
+                  <h2 className={styles.sectionTitle}>How it works</h2>
+                </div>
+                <div style={{ padding: "1.25rem 1.375rem" }}>
+                  <div className={styles.stepsGrid}>
+                    {([
+                      { num: "1", icon: "🛍️", title: "Pick a product", desc: "Select any live product from your Shopify catalog — no setup required." },
+                      { num: "2", icon: "🧑‍🤝‍🧑", title: "Run the panel", desc: "5 AI customer personas stress-test your listing. First results appear in ~30 seconds." },
+                      { num: "3", icon: "🎯", title: "Fix what's blocking sales", desc: "Get a score, a friction breakdown, and one-click fixes for critical issues." },
+                    ] as const).map((step) => (
+                      <div key={step.num} className={styles.stepCard}>
+                        <span className={styles.stepNum}>{step.num}</span>
+                        <span className={styles.stepIcon}>{step.icon}</span>
+                        <p className={styles.stepTitle}>{step.title}</p>
+                        <p className={styles.stepDesc}>{step.desc}</p>
                       </div>
-                    </BlockStack>
-                    <BlockStack gap="100">
-                      <Text as="p" variant="bodySm" tone="subdued">Analyses This Month</Text>
-                      <Text as="p" variant="headingLg">{recentSims.length}</Text>
-                    </BlockStack>
-                  </InlineStack>
+                    ))}
+                  </div>
+                  <Link to="/app/simulate" className={styles.btnPrimary} style={{ display: "inline-flex" }}>
+                    ▶ Run Your First Analysis
+                  </Link>
+                </div>
+              </div>
+            </div>
 
-                  <Button url="/app/simulate" variant="primary">Run New Analysis</Button>
-                </BlockStack>
-              </Card>
+            <div>
+              <div className={styles.sectionCard}>
+                <div className={styles.sectionHeader}>
+                  <h2 className={styles.sectionTitle}>Your free plan includes</h2>
+                </div>
+                <div className={styles.planCardBody}>
+                  <div className={styles.includesList}>
+                    {([
+                      "5-agent customer panel per analysis",
+                      `${simLimit} analyses per month`,
+                      "Trust audit + friction report",
+                      "AI-generated policy fixes",
+                    ] as const).map((item) => (
+                      <div key={item} className={styles.includesItem}>
+                        <span className={styles.includesCheck}>✓</span>
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className={styles.planDivider} />
+                  <Link to="/app/billing" className={styles.btnUpgrade}>
+                    ✦ Upgrade for more →
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Returning merchant */
+          <div className={styles.mainGrid}>
+            {/* Recent analyses */}
+            <div className={styles.sectionCard}>
+              <div className={styles.sectionHeader}>
+                <h2 className={styles.sectionTitle}>Recent Analyses</h2>
+                <Link to="/app/history" className={styles.sectionLink}>View all →</Link>
+              </div>
+              <div className={styles.analysisList}>
+                {recentSims.length === 0 ? (
+                  <div className={styles.emptyState}>
+                    <div className={styles.emptyStateIcon}>📭</div>
+                    <p className={styles.emptyStateTitle}>No analyses yet</p>
+                    <p className={styles.emptyStateText}>Run your first analysis to see results here.</p>
+                    <Link to="/app/simulate" className={styles.btnPrimary} style={{ display: "inline-flex" }}>
+                      ▶ Run New Analysis
+                    </Link>
+                  </div>
+                ) : (
+                  recentSims.map((s) => (
+                    <AnalysisRow key={s.id} sim={s} />
+                  ))
+                )}
+              </div>
+            </div>
 
-              <Card>
-                <BlockStack gap="300">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="h2" variant="headingMd">Recent Analyses</Text>
-                    <Button url="/app/history" variant="plain" size="slim">View all →</Button>
-                  </InlineStack>
-                  <BlockStack gap="200">
-                    {recentSims.map((s) => {
-                      const title = (s as { productJson?: { title?: string } }).productJson?.title
-                        ?? s.productUrl.split("/").pop()
-                        ?? s.productUrl;
-                      const canView = s.status === "COMPLETED" || s.status === "RUNNING" || s.status === "PENDING";
-                      return (
-                        <InlineStack key={s.id} align="space-between" blockAlign="center">
-                          <BlockStack gap="0">
-                            <Text as="p" variant="bodyMd" fontWeight="semibold">
-                              {title.length > 40 ? title.slice(0, 40) + "…" : title}
-                            </Text>
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {new Date(s.createdAt).toLocaleDateString()} · {s.score != null ? `${s.score}/100` : s.status}
-                            </Text>
-                          </BlockStack>
-                          {canView && (
-                            <Button url={`/app/results/${s.id}`} size="slim" variant="plain">
-                              {s.status === "COMPLETED" ? "View" : "Watch Live"}
-                            </Button>
-                          )}
-                        </InlineStack>
-                      );
-                    })}
-                  </BlockStack>
-                </BlockStack>
-              </Card>
-            </BlockStack>
-          </Layout.Section>
-
-          <Layout.Section variant="oneThird">
-            <BlockStack gap="400">
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Your Plan</Text>
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">Panel size</Text>
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {tierLabel === "FREE" ? "5 agents" : tierLabel === "PRO" ? "25 agents" : "50 agents"}
-                      </Text>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">Analyses / month</Text>
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">{simLimit}</Text>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">Weekly auto-scan</Text>
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {tierLabel === "FREE" ? "1 product" : "All products"}
-                      </Text>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">Competitor tracking</Text>
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {tierLabel === "ENTERPRISE" ? "Yes" : "—"}
-                      </Text>
-                    </InlineStack>
-                  </BlockStack>
+            {/* Plan card */}
+            <div>
+              <div className={styles.sectionCard}>
+                <div className={styles.sectionHeader}>
+                  <h2 className={styles.sectionTitle}>Your Plan</h2>
+                  <span className={`${styles.planTierBadge} ${tierBadgeClass}`}>
+                    {tierLabel}
+                  </span>
+                </div>
+                <div className={styles.planCardBody}>
+                  <div className={styles.planRows}>
+                    <div className={styles.planRow}>
+                      <span className={styles.planRowLabel}>Panel size</span>
+                      <span className={styles.planRowValue}>{agentCount}</span>
+                    </div>
+                    <div className={styles.planRow}>
+                      <span className={styles.planRowLabel}>Analyses / month</span>
+                      <span className={styles.planRowValue}>{simLimit}</span>
+                    </div>
+                    <div className={styles.planRow}>
+                      <span className={styles.planRowLabel}>Weekly auto-scan</span>
+                      <span className={styles.planRowValue}>{weeklyScan}</span>
+                    </div>
+                    <div className={styles.planRow}>
+                      <span className={styles.planRowLabel}>Competitor tracking</span>
+                      <span className={styles.planRowValue}>{tierLabel === "ENTERPRISE" ? "Yes" : "—"}</span>
+                    </div>
+                    <div className={styles.planRow}>
+                      <span className={styles.planRowLabel}>Budget remaining</span>
+                      <span className={styles.planRowValue}
+                        style={{ color: mtPct >= 80 ? "var(--red)" : "inherit" }}>
+                        {mtLimit - mtUsed} MT
+                      </span>
+                    </div>
+                  </div>
                   {tierLabel !== "ENTERPRISE" && (
-                    <Button variant="plain" url="/app/billing">Upgrade plan →</Button>
+                    <>
+                      <div className={styles.planDivider} />
+                      <Link to="/app/billing" className={styles.btnUpgrade}>
+                        ✦ Upgrade Plan
+                      </Link>
+                    </>
                   )}
-                </BlockStack>
-              </Card>
-            </BlockStack>
-          </Layout.Section>
-        </Layout>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
-      </BlockStack>
+      </div>
     </Page>
   );
 }
-
 
 export function ErrorBoundary() {
   return <RouteErrorBoundary />;

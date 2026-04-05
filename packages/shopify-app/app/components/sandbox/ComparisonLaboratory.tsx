@@ -50,6 +50,69 @@ const ARCHETYPE_FALLBACK: Record<string, { emoji: string; name: string }> = {
   gift_seeker: { emoji: "🎁", name: "Gift Seeker" },
 };
 
+// ── Static friction category metadata ────────────────────────────────────────
+const FRICTION_META: Record<"price" | "logistics" | "trust", {
+  icon: string;
+  label: string;
+  bullets: [string, string];
+  impact: string;
+}> = {
+  price: {
+    icon: "💰",
+    label: "Price Sensitivity",
+    bullets: [
+      "No cost-per-serving or value breakdown visible",
+      "Missing comparison to alternatives or market context",
+    ],
+    impact: "Shoppers leave because the price feels arbitrary — not because it's too high.",
+  },
+  logistics: {
+    icon: "📦",
+    label: "Logistics & Returns",
+    bullets: [
+      "Return policy unclear for opened or used items",
+      "No shipping timeline, threshold, or handling note visible",
+    ],
+    impact: "Buyers won't commit without knowing what happens if it doesn't work out.",
+  },
+  trust: {
+    icon: "🛡️",
+    label: "Trust & Social Proof",
+    bullets: [
+      "No reviews, star rating, or testimonials above the fold",
+      "Brand story and certifications absent from the listing",
+    ],
+    impact: "First-time buyers can't trust a brand they haven't encountered before.",
+  },
+};
+
+type FrictionSev = "critical" | "warning" | "growth";
+
+const SEV_CARD_CLS: Record<FrictionSev, string> = {
+  critical: styles.frictionSevCritical,
+  warning:  styles.frictionSevWarning,
+  growth:   styles.frictionSevGrowth,
+};
+
+const SEV_BADGE_CLS: Record<FrictionSev, string> = {
+  critical: styles.sevBadgeCritical,
+  warning:  styles.sevBadgeWarning,
+  growth:   styles.sevBadgeGrowth,
+};
+
+const SEV_LABEL: Record<FrictionSev, string> = {
+  critical: "Critical",
+  warning:  "Warning",
+  growth:   "Strong",
+};
+
+function getRecommendation(score: number): { emoji: string; text: string; cls: string } {
+  if (score >= 80) return { emoji: "✅", text: "Strong — ready to scale",                     cls: styles.recStrong   };
+  if (score >= 65) return { emoji: "⚡", text: "Moderate — fix Price & Trust first",          cls: styles.recModerate };
+  if (score >= 45) return { emoji: "⚠️", text: "Mixed — multiple barriers blocking buyers",  cls: styles.recMixed    };
+  return              { emoji: "🚨", text: "Needs work — critical friction blocking conversion", cls: styles.recLow  };
+}
+
 function metaForArchetype(archetype: string, log: AgentLogLite) {
   const fb = ARCHETYPE_FALLBACK[archetype] ?? { emoji: "🧑", name: archetype };
   return {
@@ -100,7 +163,7 @@ function PersonaRows({
   labMap: Map<string, AgentLogLite>;
 }) {
   return (
-    <div>
+    <div className={styles.panelGrid}>
       {ROSTER_ORDER.map((arch) => {
         const b = baselineMap.get(arch);
         const l = labMap.get(arch);
@@ -110,31 +173,41 @@ function PersonaRows({
         const bv = b?.verdict ?? "—";
         const lv = l?.verdict ?? null;
         const converted = Boolean(lv) && bv === "REJECT" && lv === "BUY";
+        const snippet = base.reasoning.slice(0, 88);
+        const hasMore = base.reasoning.length > 88;
         return (
-          <div
-            key={arch}
-            className={`${styles.personaRow} ${converted ? styles.personaRowConverted : ""}`}
-          >
-            <div className={styles.personaLeft}>
-              <span className={styles.personaEmoji}>{m.emoji}</span>
-              <div style={{ minWidth: 0 }}>
-                <div className={styles.personaName}>{m.displayName}</div>
-                <div className={styles.personaArchetype}>{m.archetypeName}</div>
+          <div key={arch} className={`${styles.panelCard} ${converted ? styles.panelCardConverted : ""}`}>
+            <div className={styles.pcTop}>
+              <span className={styles.pcEmoji}>{m.emoji}</span>
+              <div className={styles.pcMeta}>
+                <span className={styles.pcName}>{m.displayName}</span>
+                <span className={styles.pcArch}>{m.archetypeName}</span>
+              </div>
+              <div className={styles.pcVerdicts}>
+                <span className={`${styles.verdict} ${verdictClass(bv)}`}>{bv}</span>
+                {lv != null && lv !== "" && (
+                  <>
+                    <span className={styles.pcArrow}>→</span>
+                    <span className={`${styles.verdict} ${verdictClass(lv)}`}>{lv}</span>
+                    {converted && <span className={styles.convertedTag}>Converted</span>}
+                  </>
+                )}
+                {lv == null && labMap.size > 0 && (
+                  <span className={styles.pcPending}>→ …</span>
+                )}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              <span className={`${styles.verdict} ${verdictClass(bv)}`}>{bv}</span>
-              {lv != null && lv !== "" && (
-                <>
-                  <span style={{ color: "var(--lab-muted)", fontSize: 11 }}>→</span>
-                  <span className={`${styles.verdict} ${verdictClass(lv)}`}>{lv}</span>
-                  {converted && <span className={styles.convertedTag}>Converted</span>}
-                </>
-              )}
-              {lv == null && labMap.size > 0 && (
-                <span style={{ color: "var(--lab-muted)", fontSize: 11 }}>→ pending</span>
-              )}
-            </div>
+            {base.reasoning && (
+              <details className={styles.pcDetails}>
+                <summary className={styles.pcSummary}>
+                  <span className={styles.pcSnippet}>
+                    &ldquo;{snippet}{hasMore ? "…" : ""}&rdquo;
+                  </span>
+                  <span className={styles.pcExpandHint}>Expand</span>
+                </summary>
+                <p className={styles.pcFull}>&ldquo;{base.reasoning}&rdquo;</p>
+              </details>
+            )}
           </div>
         );
       })}
@@ -144,6 +217,14 @@ function PersonaRows({
 
 function Meter({ label, value, animate }: { label: string; value: number; animate?: boolean }) {
   const v = Math.max(0, Math.min(100, value));
+  const barGradient =
+    v >= 70 ? "linear-gradient(90deg,#059669,#34d399)" :
+    v >= 45 ? "linear-gradient(90deg,#b45309,#fbbf24)" :
+              "linear-gradient(90deg,#991b1b,#f87171)";
+  const glowColor =
+    v >= 70 ? "rgba(52,211,153,0.4)" :
+    v >= 45 ? "rgba(251,191,36,0.35)" :
+              "rgba(248,113,113,0.35)";
   return (
     <div className={styles.meterWrap}>
       <div className={styles.meterLabel}>
@@ -153,14 +234,23 @@ function Meter({ label, value, animate }: { label: string; value: number; animat
       <div className={styles.meterBar}>
         <div
           className={`${styles.meterFill} ${animate ? styles.meterFillShift : ""}`}
-          style={{ width: `${v}%` }}
+          style={{ width: `${v}%`, background: barGradient, boxShadow: `0 0 10px ${glowColor}` }}
         />
+        {/* Tick marks at 40 / 60 / 80 */}
+        <div className={styles.meterTick} style={{ left: "40%" }} />
+        <div className={styles.meterTick} style={{ left: "60%" }} />
+        <div className={styles.meterTick} style={{ left: "80%" }} />
+      </div>
+      <div className={styles.meterTickLabels}>
+        <span style={{ left: "40%" }}>40%</span>
+        <span style={{ left: "60%" }}>60%</span>
+        <span style={{ left: "80%" }}>80%</span>
       </div>
     </div>
   );
 }
 
-function PaneFrictions({
+function FrictionCards({
   pricePct,
   logisticsPct,
   trustPct,
@@ -169,17 +259,38 @@ function PaneFrictions({
   logisticsPct: number;
   trustPct: number;
 }) {
+  const items: { key: "price" | "logistics" | "trust"; pct: number }[] = [
+    { key: "price",     pct: pricePct     },
+    { key: "logistics", pct: logisticsPct },
+    { key: "trust",     pct: trustPct     },
+  ];
   return (
-    <div className={styles.frictionChips}>
-      <span className={styles.frictionChip}>
-        Price dropout <strong>{Math.round(pricePct)}%</strong>
-      </span>
-      <span className={styles.frictionChip}>
-        Logistics <strong>{Math.round(logisticsPct)}%</strong>
-      </span>
-      <span className={styles.frictionChip}>
-        Trust <strong>{Math.round(trustPct)}%</strong>
-      </span>
+    <div className={styles.frictionGrid}>
+      {items.map(({ key, pct }) => {
+        const meta = FRICTION_META[key];
+        const sev: FrictionSev = pct >= 40 ? "critical" : pct >= 15 ? "warning" : "growth";
+        return (
+          <div key={key} className={`${styles.frictionCard} ${SEV_CARD_CLS[sev]}`}>
+            <div className={styles.fcHeader}>
+              <span className={styles.fcIcon}>{meta.icon}</span>
+              <span className={styles.fcLabel}>{meta.label}</span>
+              <span className={`${styles.sevBadge} ${SEV_BADGE_CLS[sev]}`}>{SEV_LABEL[sev]}</span>
+            </div>
+            <div className={styles.fcStat}>
+              <span className={styles.fcPct}>{Math.round(pct)}%</span>
+              <span className={styles.fcPctLabel}>dropout</span>
+            </div>
+            <div className={styles.fcDivider} />
+            <ul className={styles.fcBullets}>
+              {meta.bullets.map((b, i) => <li key={i}>{b}</li>)}
+            </ul>
+            <div className={styles.fcDivider} />
+            <p className={styles.fcImpact}>
+              <strong>Impact: </strong>{meta.impact}
+            </p>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -259,28 +370,29 @@ export function ComparisonLaboratory({
   const priceMax = Math.max(500, basePrice * 3);
   const showMeterShift = hasLab && labScore !== baselineScore;
 
+  const rec = getRecommendation(baselineScore);
+
   const baselinePane = (
     <>
       <div className={styles.labPaneHeader}>
         <h3 className={styles.labPaneTitle}>Current PDP analysis</h3>
         <span className={styles.labBadge}>Baseline</span>
       </div>
-      <div style={{ background: "#fff", borderRadius: 12, padding: "4px 0 12px", marginBottom: 8 }}>
-        <ConfidenceGauge score={baselineScore} size={140} />
+      <div className={styles.gaugeWrap}>
+        <ConfidenceGauge score={baselineScore} size={140} variant="dark" />
       </div>
-      <Meter label="Modeled purchase intent (panel)" value={baselineScore} />
-      <PaneFrictions
+      <div className={`${styles.recommendationPill} ${rec.cls}`}>
+        {rec.emoji} {rec.text}
+      </div>
+      <Meter label="Purchase intent (panel)" value={baselineScore} />
+      <FrictionCards
         pricePct={priceDropoutPct}
         logisticsPct={logisticsDropoutPct}
         trustPct={trustDropoutPct}
       />
-      <div style={{ marginTop: 14 }}>
-        <Text as="p" variant="bodySm" tone="subdued">
-          First-scan panel votes (Phase 1)
-        </Text>
-        <div style={{ marginTop: 8 }}>
-          <PersonaRows baselineMap={baselineMap} labMap={new Map()} />
-        </div>
+      <div style={{ marginTop: 16 }}>
+        <p className={styles.panelSectionLabel}>First-scan panel votes — Phase 1</p>
+        <PersonaRows baselineMap={baselineMap} labMap={new Map()} />
       </div>
     </>
   );
@@ -311,12 +423,8 @@ export function ComparisonLaboratory({
             </span>
           </div>
           <div style={{ marginTop: 14 }}>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Votes vs. baseline (Phase 1)
-            </Text>
-            <div style={{ marginTop: 8 }}>
-              <PersonaRows baselineMap={baselineMap} labMap={labMap} />
-            </div>
+            <p className={styles.panelSectionLabel}>Votes vs. baseline — Phase 1</p>
+            <PersonaRows baselineMap={baselineMap} labMap={labMap} />
           </div>
         </>
       ) : (
