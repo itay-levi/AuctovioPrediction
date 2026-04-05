@@ -27,13 +27,20 @@ class Config:
     # JSON配置 - 禁用ASCII转义，让中文直接显示（而不是 \uXXXX 格式）
     JSON_AS_ASCII = False
     
-    # Primary LLM (Groq)
+    # Fast LLM — Groq Llama 3.1 8B (pre-processing: DNA, intelligence, gaps, archetypes)
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.groq.com/openai/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'llama-3.1-8b-instant')
     # LLM_RPM=5 → 12s between calls. Groq free tier: ~6,000 TPM / ~1,100 tok/call = 5.4 RPM max.
     # Set to 0 to disable throttling (paid tier — also raise _TPM_LIMIT in llm_client.py).
     LLM_RPM = os.environ.get('LLM_RPM', '5')
+
+    # Deep LLM — Groq Llama 3.3 70B (debate phases + recommendations — separate rate-limit pool)
+    # Groq free tier for 70B: 30 RPM / 6,000 TPM (same limits, separate quota from 8B).
+    # Set DEEP_LLM_RPM=0 on paid tier to disable throttling.
+    DEEP_LLM_MODEL_NAME = os.environ.get('DEEP_LLM_MODEL_NAME', 'llama-3.3-70b-versatile')
+    DEEP_LLM_RPM = os.environ.get('DEEP_LLM_RPM', '5')
+    DEEP_LLM_TPM_LIMIT = int(os.environ.get('DEEP_LLM_TPM_LIMIT', '5500'))
 
     # Fallback LLM (Gemini 1.5 Flash) — used when Groq exhausts retries on 429
     FALLBACK_LLM_API_KEY = os.environ.get('FALLBACK_LLM_API_KEY', '')

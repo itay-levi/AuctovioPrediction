@@ -1,4 +1,4 @@
-// MiroFish inference engine client (Hetzner VPS)
+// Auctovio inference engine client (Groq)
 import { engineBreaker } from "./circuit-breaker.server";
 
 const ENGINE_URL = process.env.ENGINE_URL;
@@ -54,6 +54,7 @@ export interface TriggerSimulationPayload {
   labConfig?: LabConfig;
   labGroupId?: string;
   isBaseline?: boolean;
+  isPro?: boolean;     // unlocks vision analysis
 }
 
 export interface DeltaSimulationPayload {
@@ -69,6 +70,9 @@ export interface DeltaSimulationPayload {
   originalScore?: number;        // for comparison insight generation
   originalFriction?: unknown;
   originalTrustAudit?: unknown;
+  productDna?: unknown;          // cached DNA from original sim — skips Phase 0 extraction
+  activeExperiment?: string;     // experiment card hypothesis being tested
+  isPro?: boolean;               // unlocks vision analysis
 }
 
 export interface SimulationPhaseResult {

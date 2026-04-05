@@ -65,6 +65,7 @@ model Simulation {
   labGroupId           String?          // links baseline + target Lab sims together
   isBaseline           Boolean          @default(false) // true = general-public baseline run
   comparisonSummary    Json?            // {scoreDelta, whyGap, divergenceTopics, targetPersonaCard}
+  productDna           Json?            // {coreFear, coreDesire, personaHooks} — cached from Phase 0
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   agentLogs            AgentLog[]

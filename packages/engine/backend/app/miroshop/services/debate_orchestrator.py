@@ -27,6 +27,7 @@ from ..archetypes.definitions import Archetype
 from ..archetypes.niche_contexts import GENERIC_PROFILES
 from .shopify_ingestion import ProductBrief, format_for_debate
 from .archetype_generator import DynamicArchetype
+from .dna_extractor import ProductDNA, format_dna_for_prompt
 
 logger = logging.getLogger("miroshop.orchestrator")
 
@@ -97,6 +98,15 @@ TONE_RULE = "Tone: Write like a real person. Raw, direct gut reactions. No corpo
 
 SKEPTIC_ANCHOR = "SKEPTIC: Only flip REJECT→BUY with hard data from the listing. Peer enthusiasm ≠ evidence."
 
+# Anti-politeness constraint — injected into ALL phase prompts.
+# Forces every agent to open with an attack before any positive statement.
+ATTACK_FIRST_RULE = (
+    "MANDATORY OPENING RULE: Your FIRST sentence must name a specific weakness, gap, or concern "
+    "with this listing. Do not open with praise, agreement, or a positive framing. "
+    "You are paid to find reasons NOT to buy — start there, every time. "
+    "Only after raising your concern may you balance it with a positive if one genuinely exists."
+)
+
 # ── Brutality Slider evidence injection ───────────────────────────────────────
 # Injected into every prompt phase. Higher level = more evidence required to BUY.
 def _brutality_rule(level: int) -> str:
@@ -133,7 +143,8 @@ REASONABLE_BUYER_RULES = """Universal Buyer Rules (apply to ALL products — the
    genuinely deal-breaking for your specific persona.
 {product_context}"""
 
-VIBE_CHECK_PROMPT = """{focus_bias}{trust_context}{physical_reality}
+VIBE_CHECK_PROMPT = """{focus_bias}{dna_context}{trust_context}{physical_reality}
+{attack_first_rule}
 {tone_rule}
 {buyer_rules}
 
@@ -142,25 +153,25 @@ VIBE_CHECK_PROMPT = """{focus_bias}{trust_context}{physical_reality}
 You are: {persona}
 Threshold: {rejection_threshold}
 
-Gut reaction — 3 seconds. Start with: {openers}
+Gut reaction — 3 seconds. Start with your attack angle from the DNA context above.
 If leaning BUY, name at least 1 specific strength from the listing.
 
 JSON only:
 {{"reasoning":"1-2 sentences referencing the listing","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
 
-WATERCOOLER_PROMPT = """{focus_bias}Panel discussion. Product: {product_brief}
+WATERCOOLER_PROMPT = """{focus_bias}{dna_context}Panel discussion. Product: {product_brief}
 
-Other panelists said:
+Round 1 verdicts:
 {other_votes_summary}
-
+{phase2_chain}
 Your Round 1: {my_verdict} — "{my_reasoning}"
 {skeptic_anchor}{dissenter_instruction}
 
-UNIQUE ANGLE REQUIRED: The other panelists already raised the concerns above. Do NOT repeat them.
-Your job is to contribute YOUR persona's unique perspective — something only you would notice.
-If you agree with a peer's point, say so in one word ("Agreed.") and move on to YOUR specific concern.
+CHAIN RULE: You are responding to the debate above. Directly address the LAST person who spoke — agree, challenge, or build on their point in 1 sentence. Then pivot to YOUR unique concern.
+UNIQUE ANGLE REQUIRED: Do NOT repeat a concern already raised. Bring your persona's specific perspective.
 
 VOTE-CHANGE: REJECT→BUY only if you quote a specific line from the listing you missed. No evidence = stay REJECT. BUY→REJECT always allowed.
+{attack_first_rule}
 {physical_reality}
 {tone_rule}
 {buyer_rules}
@@ -171,17 +182,18 @@ Threshold: {rejection_threshold}
 If leaning BUY, name at least 2 specific strengths from the listing before any caveats.
 
 JSON only:
-{{"reasoning":"2-3 sentences","peer_rebuttal":"1 sentence responding to a peer","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
+{{"reasoning":"2-3 sentences","peer_rebuttal":"1 sentence directly responding to the last speaker","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
 
 DISSENTER_INSTRUCTION = """
 DISSENTER: Panel is {agreement_pct}% positive. You MUST vote REJECT with the strongest counter-argument."""
 
 CONSENSUS_PROMPT = """FINAL verdict. Product: {product_brief}
 
-Debate summary:
+Full debate:
 {debate_summary}
 
 VOTE-CHANGE: REJECT→BUY only with specific product text as evidence. No evidence = stay REJECT.
+{attack_first_rule}
 {physical_reality}
 {tone_rule}
 {buyer_rules}
@@ -222,6 +234,9 @@ class DebateOrchestrator:
     gap_context: str = ""        # Listing gap analysis — grounds persona feedback in real evidence
     temp_modifier: float = 0.0   # Customer Lab skepticism offset (+/-0.12)
     brutality_level: int = 5     # 1-10 evidence threshold (Brutality Slider)
+    product_dna: Optional[ProductDNA] = None  # Psychological DNA — fear, desire, persona hooks
+    fast_llm: Optional[LLMClient] = None      # 8B client for classification (friction, summary)
+    active_experiment: str = ""               # Experiment card hypothesis being tested in this run
 
     def _assign_archetypes(self) -> list[tuple[int, AnyArchetype, str]]:
         pool = self.archetypes
@@ -337,14 +352,21 @@ class DebateOrchestrator:
         return "\n".join(blocks) + "\n"
 
     def _build_buyer_rules(self) -> str:
-        """Combine base rules + product context + gap analysis + brutality slider."""
+        """Combine base rules + product context + gap analysis + brutality slider + active experiment."""
         product_ctx = f"\n{self.product_context}" if self.product_context else ""
         base = REASONABLE_BUYER_RULES.format(product_context=product_ctx)
         if self.gap_context:
             base = base + "\n\n" + self.gap_context
         brutality_rule = _brutality_rule(self.brutality_level)
         if brutality_rule:
-            return base + "\n\n" + brutality_rule
+            base = base + "\n\n" + brutality_rule
+        if self.active_experiment:
+            base = base + (
+                f"\n\nACTIVE EXPERIMENT: The merchant has made this specific change to their listing:\n"
+                f'"{self.active_experiment}"\n'
+                f"Factor this change into your evaluation. Does it directly address your core concern? "
+                f"Be explicit — state whether it moves your vote and why."
+            )
         return base
 
     def _get_niche_ctx(self, archetype: AnyArchetype) -> str:
@@ -380,18 +402,20 @@ class DebateOrchestrator:
         sub_persona: str,
         product_brief: str,
     ) -> AgentVote:
-        openers = REJECTION_OPENERS if random.random() > 0.5 else BUY_OPENERS
         trust_ctx_block = f"\n{self.trust_context}\n" if self.trust_context else ""
+        dna_block = format_dna_for_prompt(self.product_dna, archetype.id)
+        dna_ctx_block = f"\n{dna_block}\n" if dna_block else ""
         prompt = VIBE_CHECK_PROMPT.format(
             focus_bias=self._build_focus_bias(),
+            dna_context=dna_ctx_block,
             trust_context=trust_ctx_block,
             physical_reality=PHYSICAL_REALITY_RULES,
+            attack_first_rule=ATTACK_FIRST_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
-            openers=", ".join(random.sample(openers, 3)),
         )
         data = self._call_agent(prompt, archetype)
         return _make_vote(agent_idx, archetype, 1, data, self._get_persona_identity(archetype))
@@ -406,6 +430,7 @@ class DebateOrchestrator:
         product_brief: str,
         phase1_votes: list[AgentVote],
         buy_pct: float,
+        phase2_chain: list[AgentVote],   # phase 2 responses from agents that already went
     ) -> AgentVote:
         my_p1 = phase1_votes[agent_idx]
         others = [v for v in phase1_votes if v["agent_id"] != f"agent_{agent_idx}"]
@@ -414,6 +439,17 @@ class DebateOrchestrator:
             for v in others[:6]
         )
 
+        # Build the growing chain of Phase 2 responses so far (the "room" effect)
+        chain_block = ""
+        if phase2_chain:
+            chain_lines = ["\nDebate so far (respond to the last speaker):"]
+            for v in phase2_chain:
+                name = v.get("archetype_name", v["archetype_id"])
+                chain_lines.append(
+                    f"  {name}: {v['verdict']} — {v['reasoning'][:120]}"
+                )
+            chain_block = "\n".join(chain_lines) + "\n"
+
         is_dissenter = buy_pct > 0.8 and agent_idx == _pick_dissenter_idx(phase1_votes)
         dissenter_instr = (
             DISSENTER_INSTRUCTION.format(agreement_pct=int(buy_pct * 100))
@@ -421,16 +457,21 @@ class DebateOrchestrator:
             else ""
         )
         skeptic_anchor = SKEPTIC_ANCHOR if _is_high_skepticism(archetype) else ""
+        dna_block = format_dna_for_prompt(self.product_dna, archetype.id)
+        dna_ctx_block = f"\n{dna_block}\n" if dna_block else ""
 
         prompt = WATERCOOLER_PROMPT.format(
             focus_bias=self._build_focus_bias(),
+            dna_context=dna_ctx_block,
             physical_reality=PHYSICAL_REALITY_RULES,
+            attack_first_rule=ATTACK_FIRST_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
             other_votes_summary=other_summary,
+            phase2_chain=chain_block,
             my_verdict=my_p1["verdict"],
             my_reasoning=my_p1["reasoning"],
             skeptic_anchor=skeptic_anchor,
@@ -465,6 +506,7 @@ class DebateOrchestrator:
     ) -> AgentVote:
         prompt = CONSENSUS_PROMPT.format(
             physical_reality=PHYSICAL_REALITY_RULES,
+            attack_first_rule=ATTACK_FIRST_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
@@ -525,32 +567,29 @@ class DebateOrchestrator:
         buy_count = sum(1 for v in phase1_votes if v["verdict"] == "BUY")
         print(f"[{brief['title']}] Phase 1 done: {buy_count}/{len(agents)} BUY", flush=True)
 
-        # ── Phase 2: Watercooler ──────────────────────────────────────────────
-        print(f"[{brief['title']}] Phase 2 — Watercooler", flush=True)
+        # ── Phase 2: Watercooler (chained — each agent sees prior P2 responses) ─
+        print(f"[{brief['title']}] Phase 2 — Watercooler (chained)", flush=True)
         buy_pct = buy_count / len(phase1_votes)
         phase2_votes: list[AgentVote] = [None] * len(agents)  # type: ignore[list-item]
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(
-                    self._run_phase2_agent, idx, arch, sub, compact_brief, phase1_votes, buy_pct
-                ): idx
-                for idx, arch, sub in agents
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                phase2_votes[futures[future]] = result
-                flip = (
-                    "↑" if phase1_votes[futures[future]]["verdict"] == "REJECT"
-                    and result["verdict"] == "BUY"
-                    else ("↓" if phase1_votes[futures[future]]["verdict"] == "BUY"
-                          and result["verdict"] == "REJECT" else "·")
-                )
-                print(
-                    f"[P2] {result.get('archetype_name', result['archetype_id'])} "
-                    f"→ {result['verdict']} {flip}",
-                    flush=True,
-                )
-                self.callback_fn(phase=2, votes=[result], partial=True)
+        phase2_chain: list[AgentVote] = []   # grows as each agent responds
+
+        # STRICT SERIAL execution in agent order — chain requires it
+        for idx, arch, sub in agents:
+            result = self._run_phase2_agent(
+                idx, arch, sub, compact_brief, phase1_votes, buy_pct, phase2_chain
+            )
+            phase2_votes[idx] = result
+            phase2_chain.append(result)   # next agent sees this response
+            flip = (
+                "↑" if phase1_votes[idx]["verdict"] == "REJECT" and result["verdict"] == "BUY"
+                else ("↓" if phase1_votes[idx]["verdict"] == "BUY" and result["verdict"] == "REJECT" else "·")
+            )
+            print(
+                f"[P2] {result.get('archetype_name', result['archetype_id'])} "
+                f"→ {result['verdict']} {flip}",
+                flush=True,
+            )
+            self.callback_fn(phase=2, votes=[result], partial=True)
 
         print(f"[{brief['title']}] Phase 2 done", flush=True)
 
@@ -583,7 +622,9 @@ class DebateOrchestrator:
             flush=True,
         )
 
-        friction = _classify_friction(self.llm, brief, phase1_votes + phase2_votes + phase3_votes)
+        # Friction classification is a structured JSON task — 8B is sufficient and cheaper
+        _classifier = self.fast_llm if self.fast_llm is not None else self.llm
+        friction = _classify_friction(_classifier, brief, phase1_votes + phase2_votes + phase3_votes)
         summary = _build_summary(brief, score, phase3_votes, friction)
 
         all_votes = phase1_votes + phase2_votes + phase3_votes

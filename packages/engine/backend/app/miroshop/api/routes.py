@@ -1,5 +1,5 @@
 """
-MiroShop Flask Blueprint — mounts at /miroshop on the MiroFish Flask app.
+Auctovio Flask Blueprint — mounts at /miroshop on the engine Flask app.
 
 Endpoints:
   POST /miroshop/simulate       — trigger a new panel debate (async)
@@ -22,6 +22,7 @@ from ..services.product_intelligence import generate_product_intelligence, forma
 from ..services.listing_gap_analyzer import analyze_listing_gaps, format_gap_context
 from ..services.recommendation_engine import generate_recommendations
 from ..services.comparison_engine import generate_comparison_insight
+from ..services.dna_extractor import extract_product_dna, dna_to_dict, dna_from_dict
 from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest
 
 logger = logging.getLogger("miroshop.routes")
@@ -59,10 +60,23 @@ def _require_auth(f):
     return decorated
 
 
+def _make_fast_llm() -> LLMClient:
+    """8B client — pre-processing (DNA, intelligence, gaps, archetypes, friction classification)."""
+    return LLMClient(use_deep_throttle=False)
+
+
+def _make_deep_llm() -> LLMClient:
+    """70B client — debate phases (P1/P2/P3) and recommendations."""
+    return LLMClient(
+        model=Config.DEEP_LLM_MODEL_NAME,
+        use_deep_throttle=True,
+    )
+
+
 def _make_gemini_client() -> LLMClient:
-    """Create an LLMClient pointing directly at Gemini (for high-quality summary calls)."""
+    """Gemini fallback — used for recommendations on What-If runs if configured."""
     if not Config.FALLBACK_LLM_API_KEY or not Config.FALLBACK_LLM_BASE_URL:
-        return LLMClient()  # fall back to default if Gemini not configured
+        return _make_deep_llm()   # fall back to 70B if Gemini not configured
     return LLMClient(
         api_key=Config.FALLBACK_LLM_API_KEY,
         base_url=Config.FALLBACK_LLM_BASE_URL,
@@ -100,9 +114,13 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         return
 
     try:
-        llm = LLMClient()
-        # What-If runs use Gemini for the summarizer/recommendations (higher quality output).
-        summary_llm = _make_gemini_client() if delta_context else llm
+        fast_llm = _make_fast_llm()    # 8B — pre-processing, classification
+        deep_llm = _make_deep_llm()    # 70B — debate phases, recommendations
+        # What-If runs use Gemini for recommendations (higher quality, separate quota).
+        # Non-delta runs use 70B directly.
+        summary_llm = _make_gemini_client() if delta_context else deep_llm
+        # Keep `llm` as alias pointing to fast_llm for any legacy call sites not yet updated
+        llm = fast_llm
 
         # Panel cache key — stable identifier for this product listing
         _panel_key = req.productUrl or req.productJson.get("handle", "")
@@ -122,18 +140,28 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 if _panel_key:
                     _archetype_cache[_panel_key] = archetypes
 
-        # Product intelligence — run once per product, cached alongside archetypes.
-        # Feeds BOTH the panel prompts (product_context) AND the trust audit (no_return_acceptable).
+        # Product intelligence + DNA — run once per product, cached together.
+        # Delta (what-if) runs skip this entirely if DNA is pre-supplied in delta_context.
         product_context = ""
         gap_context = ""
         gap_items_for_recs: list = []
         no_return_from_intelligence: bool | None = None
+        product_dna = None   # ProductDNA instance
+
+        # ── Delta fast-path: reuse cached DNA, skip full intelligence extraction ──
+        _supplied_dna = delta_context.get("productDna") if delta_context else None
+        if _supplied_dna:
+            product_dna = dna_from_dict(_supplied_dna)
+            logger.info(f"[{req.simulationId}] Delta run — reusing cached DNA (skipping Phase 0)")
+
         if _panel_key and _panel_key in _intelligence_cache:
             cached_intel = _intelligence_cache[_panel_key]
             product_context = cached_intel["product_context"]
             no_return_from_intelligence = cached_intel["no_return_acceptable"]
             gap_context = cached_intel.get("gap_context", "")
             gap_items_for_recs = cached_intel.get("gap_items", [])
+            if product_dna is None:
+                product_dna = dna_from_dict(cached_intel.get("product_dna"))
         else:
             intelligence = generate_product_intelligence(llm, req.productJson)
             product_context = format_product_context(intelligence)
@@ -145,7 +173,6 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 try:
                     _brief_for_gaps = _ingest_for_gaps(req.productJson, req.shopDomain)
                     _listing_text = _brief_for_gaps.get("description_text", "")
-                    # Also include title and key fields for completeness
                     _title = req.productJson.get("title", "")
                     _product_type = req.productJson.get("productType") or req.productJson.get("product_type", "")
                     _listing_full = f"Title: {_title}\nType: {_product_type}\n\n{_listing_text}"
@@ -159,12 +186,17 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     logger.warning(f"Gap analysis failed for {req.simulationId}: {_gap_err}")
                     gap_analysis = None
 
+            # DNA extraction — single fast call, cached with intelligence
+            if product_dna is None and not _supplied_dna:
+                product_dna = extract_product_dna(llm, req.productJson)
+
             if _panel_key:
                 _intelligence_cache[_panel_key] = {
                     "product_context": product_context,
                     "no_return_acceptable": no_return_from_intelligence,
                     "gap_context": gap_context,
                     "gap_items": gap_items_for_recs,
+                    "product_dna": dna_to_dict(product_dna),
                 }
 
         # ── Customer Lab configuration ────────────────────────────────────────
@@ -284,6 +316,42 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         except Exception as e:
             logger.warning(f"Trust audit failed for {req.simulationId}: {e}")
 
+        # ── Vision analysis (PRO only, uses Gemini Vision) ────────────────────
+        # Extracts image quality, trust signals, and visual gaps from product images.
+        # Injected into trust_context so all agents can comment on visual credibility.
+        if getattr(req, 'isPro', False):
+            _raw_images = req.productJson.get("images") or []
+            _image_urls: list[str] = []
+            if isinstance(_raw_images, dict):
+                # GraphQL edges format: {"edges": [{"node": {"url": "..."}}]}
+                for edge in _raw_images.get("edges", []):
+                    url = (edge.get("node") or {}).get("url", "")
+                    if url:
+                        _image_urls.append(url)
+            elif isinstance(_raw_images, list):
+                # REST format: [{"src": "..."}, ...] or [{"url": "..."}]
+                for img in _raw_images:
+                    url = img.get("url") or img.get("src", "")
+                    if url:
+                        _image_urls.append(url)
+            if _image_urls:
+                try:
+                    from ..services.dna_extractor import extract_visual_trust as _extract_vis
+                    _vis = _extract_vis(
+                        _image_urls[:3],
+                        req.productJson.get("title", "Product"),
+                    )
+                    if _vis:
+                        trust_context = (
+                            (trust_context + "\n\n" if trust_context else "") +
+                            f"VISUAL TRUST ANALYSIS (from product images): {_vis}"
+                        ).strip()
+                        if product_dna:
+                            product_dna.persona_hooks["_visual"] = _vis
+                        logger.info(f"[{req.simulationId}] Vision context injected")
+                except Exception as _ve:
+                    logger.warning(f"[{req.simulationId}] Vision analysis failed: {_ve}")
+
         # Accumulate all votes as partial callbacks fire — available by the time
         # the final non-partial phase-3 callback is reached.
         _accumulated_votes: list = []
@@ -365,6 +433,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                         focus_areas=req.focusAreas,
                         score=score or 0,
                         gap_analysis=gap_items_for_recs or None,
+                        product_dna=dna_to_dict(product_dna),
                     )
                 except Exception as e:
                     logger.warning(f"Recommendation generation failed: {e}")
@@ -423,6 +492,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 recommendations=recommendations,
                 trust_audit=trust_audit if (phase == 3 and not partial) else None,
                 comparison_insight=comparison_insight_str if (phase == 3 and not partial) else None,
+                product_dna=dna_to_dict(product_dna) if (phase == 3 and not partial) else None,
                 partial=partial,
             )
 
@@ -455,8 +525,10 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
 
             # Lab: core concern overrides merchant focus areas; lab temp + brutality applied
             effective_focus = lab_focus_override if lab_focus_override else req.focusAreas
+            active_experiment = delta_context.get("activeExperiment", "") if delta_context else ""
             orchestrator = DebateOrchestrator(
-                llm=llm,
+                llm=deep_llm,       # 70B for all debate phases (P1/P2/P3 agent calls)
+                fast_llm=fast_llm,  # 8B for friction classification at end of run()
                 agent_count=req.agentCount,
                 archetypes=archetypes,
                 callback_fn=callback_fn,
@@ -467,6 +539,8 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 gap_context=gap_context,
                 temp_modifier=lab_temp_modifier,
                 brutality_level=lab_brutality_level,
+                product_dna=product_dna,
+                active_experiment=active_experiment,
             )
             orchestrator.run(brief)
         except Exception as e:
@@ -557,13 +631,16 @@ def simulate_delta():
         focusAreas=req.focusAreas,
     )
 
-    # Bundle original sim data so the comparison insight can be generated at completion
+    # Bundle original sim data so the comparison insight can be generated at completion.
+    # productDna from the original run skips Phase 0 extraction entirely.
     delta_context = {
         "priority": req.priority,
         "deltaParams": {**req.deltaParams, "originalPrice": _get_base_price(req.productJson)},
         "originalScore": req.originalScore,
         "originalFriction": req.originalFriction,
         "originalTrustAudit": req.originalTrustAudit,
+        "productDna": req.productDna,
+        "activeExperiment": req.activeExperiment or "",
     }
 
     estimated_mt = req.agentCount * 2 * 3 + 1
@@ -586,7 +663,7 @@ def classify():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-    llm = LLMClient()
+    llm = _make_fast_llm()   # classification task — 8B sufficient
     classifier = NicheClassifier(llm)
     # Build a simple catalog metadata dict from the product titles
     catalog_metadata = {"product_titles": req.sampleProductTitles}

@@ -29,6 +29,7 @@ def post_phase_update(
     recommendations: Optional[list] = None,
     trust_audit: Optional[dict] = None,
     comparison_insight: Optional[str] = None,
+    product_dna: Optional[dict] = None,   # {"coreFear", "coreDesire", "personaHooks"}
     partial: bool = False,  # True → fire-and-forget, 1 attempt, non-blocking
 ) -> bool:
     payload = {
@@ -52,6 +53,8 @@ def post_phase_update(
         payload["trustAudit"] = trust_audit
     if comparison_insight is not None:
         payload["comparisonInsight"] = comparison_insight
+    if product_dna is not None:
+        payload["productDna"] = product_dna
 
     headers = {"Content-Type": "application/json"}
     if api_key:

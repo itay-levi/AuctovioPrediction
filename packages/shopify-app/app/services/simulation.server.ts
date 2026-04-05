@@ -84,6 +84,7 @@ export async function createSimulation(
   const estimatedMt = agentCount * MT_ESTIMATE_PER_AGENT;
   const callbackUrl = `${appUrl}/webhooks/engine/callback`;
   const shopTypeResolved = shopType || "general_retail";
+  const isPro = tier === "PRO" || tier === "ENTERPRISE";
 
   // ── Customer Lab: create two linked simulations (baseline + target) ─────────
   if (labConfig) {
@@ -140,6 +141,7 @@ export async function createSimulation(
       labConfig: baselineLabConfig,
       labGroupId,
       isBaseline: true,
+      isPro,
     });
 
     _triggerWithErrorHandling(target.id, {
@@ -154,6 +156,7 @@ export async function createSimulation(
       labConfig,
       labGroupId,
       isBaseline: false,
+      isPro,
     });
 
     // Return the TARGET simulation — the results page is keyed to this ID,
@@ -183,6 +186,7 @@ export async function createSimulation(
     agentCount,
     callbackUrl,
     focusAreas,
+    isPro,
   });
 
   return simulation;
@@ -276,6 +280,7 @@ export async function updateSimulationFromCallback(
     recommendations?: unknown[];
     trustAudit?: unknown;
     comparisonInsight?: string;
+    productDna?: unknown;
     agentLogs?: {
       agentId: string;
       archetype: string;
@@ -304,6 +309,7 @@ export async function updateSimulationFromCallback(
         recommendations: data.recommendations as object[] | undefined,
         trustAudit: data.trustAudit as object | undefined,
         comparisonInsight: data.comparisonInsight,
+        ...(data.productDna !== undefined && { productDna: data.productDna as object }),
       },
     });
 

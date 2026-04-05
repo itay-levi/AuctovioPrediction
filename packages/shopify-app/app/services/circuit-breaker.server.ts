@@ -60,5 +60,5 @@ export class CircuitBreaker {
   }
 }
 
-// Singleton for the MiroFish engine
+// Singleton for the Auctovio engine
 export const engineBreaker = new CircuitBreaker({ failureThreshold: 3, resetTimeout: 60_000 });

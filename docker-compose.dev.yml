@@ -31,13 +31,16 @@ services:
       - ./packages/engine/backend:/app/backend  # live reload during dev
       - H:/Dev/DockerStorage/logs:/app/logs
     environment:
-      # ── Primary LLM: Groq (llama-3.1-70b-versatile) ──────────────────────────
-      # Free tier: ~6,000 TPM, ~30 RPM, ~500 RPD
-      # LLM_RPM=5 → 12s between calls, stays under TPM ceiling (~600 tok/call)
+      # ── Dual-model routing (Groq) ──────────────────────────────────────────────
+      # Fast (8B)  — DNA extraction, intelligence, gap analysis, archetypes, friction
+      # Deep (70B) — all debate phases (P1/P2/P3) + recommendations
+      # Each model has its own separate TPM/RPM quota pool on Groq.
       - LLM_API_KEY=${GROQ_API_KEY}
       - LLM_BASE_URL=https://api.groq.com/openai/v1
       - LLM_MODEL_NAME=llama-3.1-8b-instant
-      - LLM_RPM=10          # 6s gap between calls — eliminates Groq burst-limit 429s
+      - LLM_RPM=10
+      - DEEP_LLM_MODEL_NAME=llama-3.3-70b-versatile
+      - DEEP_LLM_RPM=10
       # ── Fallback LLM: Gemini 1.5 Flash ───────────────────────────────────────
       # Activated automatically when Groq returns 429 after 3 retries.
       - FALLBACK_LLM_API_KEY=${GOOGLE_AI_API_KEY}

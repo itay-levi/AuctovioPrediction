@@ -1,6 +1,6 @@
 """
 ShopifyIngestionService — converts a Shopify product JSON into
-a structured seed document that MiroFish agents can debate.
+a structured seed document that Auctovio agents can debate.
 
 Normalises the raw Shopify product payload into a flat, readable
 "product brief" that every archetype can understand regardless of niche.

@@ -3,7 +3,7 @@ import { updateSimulationFromCallback } from "../services/simulation.server";
 import { incrementMtUsage } from "../services/store.server";
 import db from "../db.server";
 
-// Called by MiroFish engine on Hetzner when a simulation phase completes
+// Called by Auctovio engine (Groq) when a simulation phase completes
 // Auth: Bearer token (ENGINE_API_KEY)
 export const action = async ({ request }: ActionFunctionArgs) => {
   // Verify engine secret
@@ -24,6 +24,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     recommendations?: unknown[];
     trustAudit?: unknown;
     comparisonInsight?: string;
+    productDna?: unknown;
     agentLogs?: {
       agentId: string;
       archetype: string;
@@ -42,7 +43,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const {
     simulationId, phase, status, score, imageScore,
-    reportJson, agentLogs, actualMtCost, recommendations, trustAudit, comparisonInsight,
+    reportJson, agentLogs, actualMtCost, recommendations, trustAudit,
+    comparisonInsight, productDna,
   } = body;
 
   if (!simulationId) {
@@ -60,6 +62,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     recommendations,
     trustAudit,
     comparisonInsight,
+    productDna,
   });
 
   // Update MT usage when simulation completes

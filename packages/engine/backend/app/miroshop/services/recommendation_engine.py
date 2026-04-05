@@ -19,11 +19,11 @@ from .shopify_ingestion import ProductBrief
 
 logger = logging.getLogger("miroshop.recommendations")
 
-RECOMMENDATION_PROMPT = """You are a growth consultant analyzing a product listing panel debate. Generate prioritized, actionable recommendations for the merchant.
+RECOMMENDATION_PROMPT = """You are a CRO specialist. Extract exactly 3 Golden Actions from this product debate.
 
 Product: "{product_title}" at ${price}
 Panel score: {score}/100 ({reject_count} of {total} panelists rejected)
-
+{dna_section}
 Trust audit — issues found in the listing:
 {trust_killers_text}
 
@@ -35,27 +35,44 @@ Friction by category:
 - Trust: {trust_dropout}% of panel rejected over trust — "{trust_objections}"
 - Logistics: {logistics_dropout}% rejected over logistics — "{logistics_objections}"
 
-Panelist objections from the debate (use these EXACT names and quotes in your the_why):
+Panelist objections from the debate:
 {key_objections}
 
 Focus areas the merchant cares most about: {focus_areas_text}
 
-Generate 3-6 prioritized recommendations. Rules:
-- High priority = 3+ panelists cited it, OR a trust killer with severity "high", OR a MISSING gap item
-- Medium = 1-2 panelists cited it, OR a medium-severity trust killer, OR a PARTIAL gap item
-- Low = nice-to-have improvements
-- title must be specific and actionable (max 8 words, e.g. "Add a 30-Day Return Policy" not "Improve Trust")
-- impact: name the specific metric that improves (e.g. "Reduces cart abandonment")
-- the_why: reference the gap analysis, panelist names, or trust audit — be specific with quotes
+Generate EXACTLY 3 Golden Actions. These are the 3 changes with the highest conversion impact.
+
+SPECIFICITY RULES (critical — generic actions are useless):
+- title: must describe the EXACT change (max 8 words). Include color, position, or metric where relevant.
+  WRONG: "Improve shipping communication"
+  RIGHT: "Add shipping timeline banner above the Add to Cart button"
+  WRONG: "Build trust"
+  RIGHT: "Pin a 30-day guarantee badge directly below the price"
+- impact: name the SPECIFIC friction category it addresses (e.g. "Eliminates trust dropout at checkout")
+- the_why: quote a panelist by name AND reference the core fear/desire from product DNA if available
+
+Priority rule: address the core_fear first, then the highest-dropout friction category, then the deepest gap item.
 
 RESPOND WITH EXACTLY THIS JSON (no other text):
 {{
   "recommendations": [
     {{
       "priority": "High",
-      "title": "Short actionable title",
-      "impact": "Specific metric that improves",
-      "the_why": "Gap analysis finding and/or panelist name(s) + direct quote"
+      "title": "Exact, specific action in max 8 words",
+      "impact": "Specific friction category + metric it improves",
+      "the_why": "Panelist name + quote, or trust audit finding + core fear connection"
+    }},
+    {{
+      "priority": "High",
+      "title": "Exact, specific action in max 8 words",
+      "impact": "Specific friction category + metric it improves",
+      "the_why": "Panelist name + quote, or gap finding"
+    }},
+    {{
+      "priority": "Medium",
+      "title": "Exact, specific action in max 8 words",
+      "impact": "Specific friction category + metric it improves",
+      "the_why": "Supporting evidence from debate or audit"
     }}
   ]
 }}"""
@@ -70,6 +87,7 @@ def generate_recommendations(
     focus_areas: list[str],
     score: int,
     gap_analysis: Optional[dict] = None,   # serialized GapAnalysis items list
+    product_dna: Optional[dict] = None,    # {"coreFear": str, "coreDesire": str, "personaHooks": dict}
 ) -> list[dict]:
     """
     Generate growth recommendations from debate results.
@@ -119,6 +137,19 @@ def generate_recommendations(
         else "General (all areas)"
     )
 
+    # Format DNA context for the prompt
+    dna_section = ""
+    if product_dna:
+        core_fear = product_dna.get("coreFear", "")
+        core_desire = product_dna.get("coreDesire", "")
+        if core_fear or core_desire:
+            dna_section = "Product psychology:\n"
+            if core_fear:
+                dna_section += f"- Core fear blocking purchase: {core_fear}\n"
+            if core_desire:
+                dna_section += f"- Core desire driving purchase: {core_desire}\n"
+            dna_section += "\n"
+
     # Format gap analysis items for the prompt
     gap_analysis_text = "No gap analysis available."
     if gap_analysis:
@@ -142,6 +173,7 @@ def generate_recommendations(
         score=score,
         reject_count=reject_count,
         total=total or 1,
+        dna_section=dna_section,
         trust_killers_text=trust_killers_text,
         gap_analysis_text=gap_analysis_text,
         price_dropout=price_f.get("dropoutPct", 0),
@@ -162,7 +194,8 @@ def generate_recommendations(
         )
         recs = data.get("recommendations", [])
         if isinstance(recs, list) and recs:
-            logger.info(f"Generated {len(recs)} recommendations for '{brief['title']}'")
+            recs = recs[:3]   # enforce exactly 3 Golden Actions
+            logger.info(f"Generated {len(recs)} Golden Actions for '{brief['title']}'")
             return recs
     except Exception as e:
         logger.warning(f"LLM recommendations failed — using rule-based fallback: {e}")

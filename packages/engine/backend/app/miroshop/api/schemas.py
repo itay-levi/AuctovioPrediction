@@ -23,6 +23,7 @@ class SimulateRequest(BaseModel):
     callbackUrl: str
     focusAreas: list[str] = []  # e.g. ["trust_credibility", "price_value"]
     labConfig: Optional[LabConfig] = None
+    isPro: bool = False      # unlocks vision analysis
 
 
 class DeltaRequest(BaseModel):
@@ -40,6 +41,11 @@ class DeltaRequest(BaseModel):
     originalScore: Optional[int] = None
     originalFriction: Optional[dict] = None
     originalTrustAudit: Optional[dict] = None
+    # Cached product DNA from the original simulation — skips Phase 0 extraction
+    productDna: Optional[dict] = None
+    # Experiment card hypothesis being tested — injected into all agent prompts
+    activeExperiment: Optional[str] = None
+    isPro: bool = False      # unlocks vision analysis on delta runs
 
 
 class LabCompareRequest(BaseModel):
