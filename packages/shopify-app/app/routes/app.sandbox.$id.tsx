@@ -15,6 +15,7 @@ import { triggerDeltaSimulation } from "../services/engine.server";
 import {
   ComparisonLaboratory,
   type ExperimentCard,
+  type PriceBatchResult,
 } from "../components/sandbox/ComparisonLaboratory";
 
 type ProductDna = {
@@ -34,6 +35,17 @@ type DeltaRow = {
   comparisonInsight: string | null;
   labGroupId: string | null;
   createdAt: string;
+};
+
+type AgentLogSlim = {
+  agentId: string;
+  archetype: string;
+  archetypeName: string | null;
+  archetypeEmoji: string | null;
+  personaName: string | null;
+  phase: number;
+  verdict: string;
+  reasoning: string;
 };
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -123,6 +135,62 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const productDna = (simulation as { productDna?: unknown }).productDna as ProductDna | null;
 
+  // ── Price batch results ───────────────────────────────────────────────────
+  const agentLogSelect = {
+    agentId: true, archetype: true, archetypeName: true,
+    archetypeEmoji: true, personaName: true,
+    phase: true, verdict: true, reasoning: true,
+  } as const;
+
+  const priceBatchDeltas = (deltas as DeltaRow[]).filter((d) => {
+    const dp = d.deltaParams as { batchGroupId?: string } | null;
+    return dp?.batchGroupId?.startsWith("price_batch_");
+  });
+
+  // Latest group first (deltas are already sorted by createdAt desc)
+  const latestBatchGroupId = priceBatchDeltas.length > 0
+    ? (priceBatchDeltas[0].deltaParams as { batchGroupId: string }).batchGroupId
+    : null;
+
+  const latestBatchDeltas = latestBatchGroupId
+    ? priceBatchDeltas.filter(
+        (d) => (d.deltaParams as { batchGroupId: string }).batchGroupId === latestBatchGroupId
+      )
+    : [];
+
+  // Fetch agent logs for completed batch sims in parallel
+  const completedBatchSims = latestBatchDeltas.filter((d) => d.status === "COMPLETED");
+  const batchLogsResults = completedBatchSims.length > 0
+    ? await Promise.all(
+        completedBatchSims.map((d) =>
+          db.simulation.findUnique({
+            where: { id: d.id },
+            select: { agentLogs: { orderBy: { createdAt: "asc" }, select: agentLogSelect } },
+          })
+        )
+      )
+    : [];
+
+  const batchLogsMap: Record<string, AgentLogSlim[]> = {};
+  completedBatchSims.forEach((d, i) => {
+    batchLogsMap[d.id] = batchLogsResults[i]?.agentLogs ?? [];
+  });
+
+  const priceBatchResults: PriceBatchResult[] = latestBatchDeltas.map((d) => {
+    const dp = d.deltaParams as { price?: number; pctDelta?: number } | null;
+    const logs = batchLogsMap[d.id] ?? [];
+    return {
+      id: d.id,
+      price: dp?.price ?? 0,
+      pctDelta: dp?.pctDelta ?? 0,
+      status: d.status,
+      score: d.score,
+      phase1Logs: logs.filter((l) => l.phase === 1),
+      phase2Logs: logs.filter((l) => l.phase === 2),
+      comparisonInsight: d.comparisonInsight,
+    };
+  });
+
   return {
     simulation,
     store,
@@ -132,6 +200,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isPro,
     latestWhatIfDelta,
     latestWhatIfAgentLogs,
+    priceBatchResults,
   };
 };
 
@@ -213,6 +282,58 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     throw redirect(`/app/sandbox/${originalSim.id}`);
   }
 
+  if (intent === "batch_price_optimize") {
+    const batchGroupId = `price_batch_${originalSim.id}_${Date.now()}`;
+    const rawPrice = parseFloat(
+      (originalSim.productJson as { variants?: { price?: string }[] } | null)
+        ?.variants?.[0]?.price ?? "50"
+    );
+    const baseP = rawPrice > 0 ? rawPrice : 50;
+    const pctDeltas = [-5, -10, -15];
+
+    await Promise.all(
+      pctDeltas.map(async (pct) => {
+        const newPrice = Math.round(baseP * (1 + pct / 100) * 100) / 100;
+        const deltaSim = await db.simulation.create({
+          data: {
+            storeId: store.id,
+            productUrl: originalSim.productUrl,
+            productJson: originalSim.productJson as object,
+            status: "PENDING",
+            phase: 0,
+            mtCost: agentCount * 2,
+            originalSimulationId: originalSim.id,
+            deltaParams: { price: newPrice, pctDelta: pct, batchGroupId } as object,
+          },
+        });
+
+        triggerDeltaSimulation({
+          simulationId: deltaSim.id,
+          originalSimulationId: originalSim.id,
+          shopDomain,
+          shopType: store.shopType ?? "general_retail",
+          productJson: originalSim.productJson,
+          agentCount,
+          deltaParams: { price: newPrice },
+          callbackUrl,
+          priority: 1,
+          originalScore: originalSim.score ?? undefined,
+          originalFriction: (originalSim.reportJson as { friction?: unknown } | null)?.friction ?? undefined,
+          originalTrustAudit: (originalSim as { trustAudit?: unknown }).trustAudit ?? undefined,
+          productDna,
+          isPro: true,
+        }).catch((err: unknown) => {
+          console.error(`[Engine] Price batch ${pct}% trigger failed:`, err);
+          db.simulation
+            .update({ where: { id: deltaSim.id }, data: { status: "FAILED" } })
+            .catch(() => {});
+        });
+      }),
+    );
+
+    throw redirect(`/app/sandbox/${originalSim.id}`);
+  }
+
   const deltaParams = { price: priceOverride, shippingDays };
   const deltaSim = await db.simulation.create({
     data: {
@@ -262,11 +383,16 @@ export default function SandboxPage() {
     isPro,
     latestWhatIfDelta,
     latestWhatIfAgentLogs,
+    priceBatchResults,
   } = useLoaderData<typeof loader>();
   const deltas = rawDeltas as DeltaRow[];
   const fetcher = useFetcher<typeof action>();
   const { revalidate } = useRevalidator();
   const isSubmitting = fetcher.state !== "idle";
+
+  const batchRunning = priceBatchResults.some(
+    (r) => r.status === "PENDING" || r.status === "RUNNING"
+  );
 
   const hasInProgress = deltas.some((d) => d.status === "PENDING" || d.status === "RUNNING");
   useEffect(() => {
@@ -366,6 +492,8 @@ export default function SandboxPage() {
           latestDeltaShipping={dpLatest?.shippingDays ?? null}
           experimentSetDeltas={experimentSetDeltas}
           allSetCompleted={allSetCompleted}
+          priceBatchResults={priceBatchResults as PriceBatchResult[]}
+          batchRunning={batchRunning}
         />
 
         {deltas.filter((d) => !(d.deltaParams as { setGroupId?: string } | null)?.setGroupId).length >

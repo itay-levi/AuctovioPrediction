@@ -33,6 +33,17 @@ export type ExperimentCard = {
   rationale: string;
 };
 
+export type PriceBatchResult = {
+  id: string;
+  price: number;
+  pctDelta: number;
+  status: string;
+  score: number | null;
+  phase1Logs: AgentLogLite[];
+  phase2Logs: AgentLogLite[];
+  comparisonInsight: string | null;
+};
+
 type DeltaRow = {
   id: string;
   status: string;
@@ -136,6 +147,34 @@ function verdictClass(v: string) {
   return styles.verdictOther;
 }
 
+const AGENT_BUBBLE: Record<string, string> = {
+  budget_optimizer: styles.bubbleBudget,
+  brand_loyalist: styles.bubbleLoyalist,
+  research_analyst: styles.bubbleAnalyst,
+  impulse_decider: styles.bubbleImpulse,
+  gift_seeker: styles.bubbleGift,
+};
+
+const AGENT_AVATAR: Record<string, string> = {
+  budget_optimizer: styles.avatarBudget,
+  brand_loyalist: styles.avatarLoyalist,
+  research_analyst: styles.avatarAnalyst,
+  impulse_decider: styles.avatarImpulse,
+  gift_seeker: styles.avatarGift,
+};
+
+function initialsFromLog(log: AgentLogLite): string {
+  const name = (log.personaName || log.archetypeName || log.archetype || "A").trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const a = parts[0][0] ?? "";
+    const b = parts[1][0] ?? "";
+    return (a + b).toUpperCase();
+  }
+  if (name.length >= 2) return name.slice(0, 2).toUpperCase();
+  return (name[0] ?? "?").toUpperCase();
+}
+
 function buildDebateItems(logs: AgentLogLite[]) {
   type Item = { type: "bubble"; log: AgentLogLite } | { type: "challenge" };
   const items: Item[] = [];
@@ -236,7 +275,6 @@ function Meter({ label, value, animate }: { label: string; value: number; animat
           className={`${styles.meterFill} ${animate ? styles.meterFillShift : ""}`}
           style={{ width: `${v}%`, background: barGradient, boxShadow: `0 0 10px ${glowColor}` }}
         />
-        {/* Tick marks at 40 / 60 / 80 */}
         <div className={styles.meterTick} style={{ left: "40%" }} />
         <div className={styles.meterTick} style={{ left: "60%" }} />
         <div className={styles.meterTick} style={{ left: "80%" }} />
@@ -295,6 +333,180 @@ function FrictionCards({
   );
 }
 
+// ── Price Optimizer ───────────────────────────────────────────────────────────
+function PriceOptimizerSection({
+  basePrice,
+  baselineScore,
+  priceBatchResults,
+  batchRunning,
+  isSubmitting,
+  selectedChipId,
+  onChipClick,
+  fetcher,
+}: {
+  basePrice: number;
+  baselineScore: number;
+  priceBatchResults: PriceBatchResult[];
+  batchRunning: boolean;
+  isSubmitting: boolean;
+  selectedChipId: string | null;
+  onChipClick: (r: PriceBatchResult | null) => void;
+  fetcher: FetcherWithComponents<SandboxActionData>;
+}) {
+  const hasBatch = priceBatchResults.length > 0;
+  const isBusy = isSubmitting || batchRunning;
+
+  // Find best ROI chip: highest (scoreDelta / priceLost) where scoreDelta > 0
+  const recommended = priceBatchResults
+    .filter((r) => r.status === "COMPLETED" && r.score != null && r.score > baselineScore)
+    .reduce<PriceBatchResult | null>((best, r) => {
+      const priceLost = basePrice - r.price;
+      if (priceLost <= 0) return best;
+      const roi = (r.score! - baselineScore) / priceLost;
+      if (!best) return r;
+      const bestLost = basePrice - best.price;
+      const bestRoi = bestLost > 0 ? (best.score! - baselineScore) / bestLost : -Infinity;
+      return roi > bestRoi ? r : best;
+    }, null);
+
+  // Sort chips -5, -10, -15 (least to most aggressive)
+  const sortedChips = [...priceBatchResults].sort((a, b) => b.pctDelta - a.pctDelta);
+
+  return (
+    <div className={styles.priceOptBand}>
+      <div className={styles.priceOptHeader}>
+        <div>
+          <div className={styles.priceOptTitleRow}>
+            <span className={styles.priceOptIcon}>⚗️</span>
+            <span className={styles.priceOptLabel}>Price Optimizer</span>
+            {hasBatch && (
+              <span className={styles.priceOptTag}>
+                {batchRunning ? "Running…" : "3 runs complete"}
+              </span>
+            )}
+          </div>
+          {!hasBatch && (
+            <p className={styles.priceOptSubtitle}>
+              Runs −5%, −10%, −15% in parallel · uses cached DNA · no re-extraction
+            </p>
+          )}
+        </div>
+        <fetcher.Form method="post" style={{ flexShrink: 0 }}>
+          <input type="hidden" name="intent" value="batch_price_optimize" />
+          <button
+            type="submit"
+            className={styles.priceOptRunBtn}
+            disabled={isBusy}
+          >
+            {isBusy ? "Running…" : hasBatch ? "↺ Re-run sweep" : "⚗️ Run Price Sweep"}
+          </button>
+        </fetcher.Form>
+      </div>
+
+      {hasBatch && (
+        <div className={styles.priceChipRow}>
+          {sortedChips.map((r) => {
+            const isPending = r.status === "PENDING" || r.status === "RUNNING";
+            const isDone = r.status === "COMPLETED" && r.score != null;
+            const isFailed = r.status === "FAILED";
+            const isRec = recommended?.id === r.id;
+            const scoreDelta = isDone ? r.score! - baselineScore : null;
+            const isSelected = selectedChipId === r.id;
+
+            const barColor =
+              r.score != null && r.score >= 70
+                ? styles.chipBarGood
+                : r.score != null && r.score >= 45
+                  ? styles.chipBarMid
+                  : styles.chipBarLow;
+
+            const scoreColorCls =
+              r.score != null && r.score >= 70
+                ? styles.chipScoreGood
+                : r.score != null && r.score >= 45
+                  ? styles.chipScoreMid
+                  : styles.chipScoreLow;
+
+            return (
+              <button
+                key={r.id}
+                type="button"
+                className={[
+                  styles.priceChip,
+                  isSelected ? styles.priceChipSelected : "",
+                  isRec && !isSelected ? styles.priceChipRec : "",
+                  isDone ? styles.priceChipDone : "",
+                ].join(" ")}
+                onClick={() => {
+                  if (!isDone) return;
+                  onChipClick(isSelected ? null : r);
+                }}
+                disabled={!isDone && !isPending}
+                aria-pressed={isSelected}
+              >
+                {isRec && (
+                  <span className={styles.recBadge}>★ Best ROI</span>
+                )}
+
+                <div className={styles.chipTop}>
+                  <span className={styles.chipPctLabel}>{r.pctDelta}%</span>
+                  <span className={styles.chipPriceLabel}>${r.price.toFixed(2)}</span>
+                </div>
+
+                {isPending && (
+                  <div className={styles.chipLoadingWrap}>
+                    <div className={styles.chipLoadingBar} />
+                    <span className={styles.chipLoadingText}>Panel running…</span>
+                  </div>
+                )}
+
+                {isDone && (
+                  <>
+                    <div className={styles.chipBar}>
+                      <div
+                        className={`${styles.chipBarFill} ${barColor}`}
+                        style={{ width: `${r.score}%` }}
+                      />
+                    </div>
+                    <div className={styles.chipScoreRow}>
+                      <span className={`${styles.chipScoreNum} ${scoreColorCls}`}>
+                        {r.score}
+                      </span>
+                      <span className={styles.chipScoreOf}>/100</span>
+                    </div>
+                    {scoreDelta !== null && (
+                      <div
+                        className={`${styles.chipDeltaRow} ${
+                          scoreDelta > 0
+                            ? styles.chipDeltaPos
+                            : scoreDelta < 0
+                              ? styles.chipDeltaNeg
+                              : styles.chipDeltaFlat
+                        }`}
+                      >
+                        {scoreDelta > 0 ? "▲" : scoreDelta < 0 ? "▼" : "—"}
+                        {" "}
+                        {scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} pts
+                      </div>
+                    )}
+                    {isSelected && (
+                      <div className={styles.chipViewingHint}>Viewing ↑</div>
+                    )}
+                  </>
+                )}
+
+                {isFailed && (
+                  <div className={styles.chipFailed}>Failed</div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type Props = {
   simulationId: string;
   baselineScore: number;
@@ -326,6 +538,8 @@ type Props = {
   latestDeltaShipping?: number | null;
   experimentSetDeltas: DeltaRow[];
   allSetCompleted: boolean;
+  priceBatchResults: PriceBatchResult[];
+  batchRunning: boolean;
 };
 
 export function ComparisonLaboratory({
@@ -359,16 +573,30 @@ export function ComparisonLaboratory({
   latestDeltaShipping,
   experimentSetDeltas,
   allSetCompleted,
+  priceBatchResults,
+  batchRunning,
 }: Props) {
   const [mobileTab, setMobileTab] = useState<"baseline" | "simulation">("baseline");
+  const [selectedBatchSim, setSelectedBatchSim] = useState<PriceBatchResult | null>(null);
 
   const baselineMap = phase1ByArchetype(baselinePhase1);
   const labMap = phase1ByArchetype(labPhase1);
-  const hasLab = labScore != null;
-  const debateItems = buildDebateItems(baselinePhase2.length ? baselinePhase2 : labPhase2);
+
+  // When a price batch chip is selected, it overrides the simulation pane data
+  const activeBatchSim = selectedBatchSim;
+  const activeLabScore = activeBatchSim?.score ?? labScore;
+  const activeLabPhase1 = activeBatchSim?.phase1Logs.length ? activeBatchSim.phase1Logs : labPhase1;
+  const activeLabPhase2 = activeBatchSim?.phase2Logs.length ? activeBatchSim.phase2Logs : labPhase2;
+  const activeInsight = activeBatchSim?.comparisonInsight ?? latestCompletedInsight;
+  const activeDeltaPrice = activeBatchSim?.price ?? latestDeltaPrice;
+  const activeLabMap = phase1ByArchetype(activeLabPhase1);
+
+  const hasLab = activeLabScore != null;
+  const simulationHighlighted = hasLab || !!activeBatchSim;
+  const debateItems = buildDebateItems(baselinePhase2.length ? baselinePhase2 : activeLabPhase2);
 
   const priceMax = Math.max(500, basePrice * 3);
-  const showMeterShift = hasLab && labScore !== baselineScore;
+  const showMeterShift = hasLab && activeLabScore !== baselineScore;
 
   const rec = getRecommendation(baselineScore);
 
@@ -379,7 +607,7 @@ export function ComparisonLaboratory({
         <span className={styles.labBadge}>Baseline</span>
       </div>
       <div className={styles.gaugeWrap}>
-        <ConfidenceGauge score={baselineScore} size={140} variant="dark" />
+        <ConfidenceGauge score={baselineScore} size={140} variant="light" />
       </div>
       <div className={`${styles.recommendationPill} ${rec.cls}`}>
         {rec.emoji} {rec.text}
@@ -400,37 +628,48 @@ export function ComparisonLaboratory({
   const simulationPane = (
     <>
       <div className={styles.labPaneHeader}>
-        <h3 className={styles.labPaneTitle}>Simulation results</h3>
+        <h3 className={styles.labPaneTitle}>
+          {activeBatchSim
+            ? `Price ${activeBatchSim.pctDelta}% — $${activeBatchSim.price.toFixed(2)}`
+            : "Simulation results"}
+        </h3>
         <span className={`${styles.labBadge} ${hasLab ? styles.labBadgeLive : ""}`}>
-          {hasLab ? "Latest What-If" : "Idle"}
+          {activeBatchSim
+            ? "Price Sweep"
+            : hasLab
+              ? "Latest What-If"
+              : "Idle"}
         </span>
       </div>
       {hasLab ? (
         <>
           <Meter
             label="Modeled purchase intent (panel)"
-            value={labScore}
+            value={activeLabScore!}
             animate={showMeterShift}
           />
           <div className={styles.labCompareRow}>
             <span>
               <strong>Price:</strong>{" "}
-              {latestDeltaPrice != null ? `$${Number(latestDeltaPrice).toFixed(2)}` : `~$${basePrice.toFixed(2)}`}
+              {activeDeltaPrice != null ? `$${Number(activeDeltaPrice).toFixed(2)}` : `~$${basePrice.toFixed(2)}`}
             </span>
             <span>
               <strong>Shipping:</strong>{" "}
-              {latestDeltaShipping != null ? `${latestDeltaShipping}d` : "unchanged"}
+              {!activeBatchSim && latestDeltaShipping != null ? `${latestDeltaShipping}d` : "unchanged"}
             </span>
           </div>
           <div style={{ marginTop: 14 }}>
             <p className={styles.panelSectionLabel}>Votes vs. baseline — Phase 1</p>
-            <PersonaRows baselineMap={baselineMap} labMap={labMap} />
+            <PersonaRows baselineMap={baselineMap} labMap={activeLabMap} />
           </div>
         </>
       ) : (
-        <div style={{ padding: "2rem 0", textAlign: "center", color: "var(--lab-muted)", fontSize: "0.85rem" }}>
-          Run a What-If or pick an experiment card. Results appear here with animated deltas vs. your
-          baseline.
+        <div className={styles.simIdleState}>
+          <span className={styles.simIdleIcon}>🧪</span>
+          <p className={styles.simIdleTitle}>No simulation yet</p>
+          <p className={styles.simIdleText}>
+            Run a What-If or use Price Optimizer to see results here with animated deltas vs. your baseline.
+          </p>
         </div>
       )}
     </>
@@ -512,8 +751,8 @@ export function ComparisonLaboratory({
                             cursor: "pointer",
                             borderRadius: 8,
                             border: "1px solid var(--lab-border)",
-                            background: selected ? "rgba(56, 189, 248, 0.2)" : "var(--lab-elevated)",
-                            color: "var(--lab-text)",
+                            background: selected ? "var(--lab-accent-light)" : "var(--lab-elevated)",
+                            color: selected ? "var(--lab-accent)" : "var(--lab-text)",
                           }}
                         >
                           {selected ? "Selected ✓" : "Test this"}
@@ -584,6 +823,20 @@ export function ComparisonLaboratory({
         )}
       </div>
 
+      {/* ── Price Optimizer band ── */}
+      {isPro && (
+        <PriceOptimizerSection
+          basePrice={basePrice}
+          baselineScore={baselineScore}
+          priceBatchResults={priceBatchResults}
+          batchRunning={batchRunning}
+          isSubmitting={isSubmitting}
+          selectedChipId={selectedBatchSim?.id ?? null}
+          onChipClick={setSelectedBatchSim}
+          fetcher={fetcher}
+        />
+      )}
+
       <div className={styles.labMobileTabs}>
         <button
           type="button"
@@ -604,26 +857,42 @@ export function ComparisonLaboratory({
       </div>
 
       <div className={styles.labGrid}>
-        <div className={styles.labPane}>{baselinePane}</div>
-        <div className={styles.labPane}>{simulationPane}</div>
+        <div className={`${styles.labPane} ${styles.labPaneBaseline}`}>{baselinePane}</div>
+        <div
+          className={`${styles.labPane} ${styles.labPaneSimulation} ${
+            simulationHighlighted ? styles.labPaneSimulationActive : ""
+          }`}
+        >
+          {simulationPane}
+        </div>
       </div>
 
-      <div className={styles.labMobilePane} data-visible={mobileTab === "baseline"}>
+      <div
+        className={`${styles.labMobilePane} ${styles.labPaneBaseline}`}
+        data-visible={mobileTab === "baseline"}
+      >
         {baselinePane}
       </div>
-      <div className={styles.labMobilePane} data-visible={mobileTab === "simulation"}>
+      <div
+        className={`${styles.labMobilePane} ${styles.labPaneSimulation} ${
+          simulationHighlighted ? styles.labPaneSimulationActive : ""
+        }`}
+        data-visible={mobileTab === "simulation"}
+      >
         {simulationPane}
       </div>
 
-      {latestCompletedInsight && latestCompletedId && (
+      {activeInsight && (activeBatchSim ? activeBatchSim.id : latestCompletedId) && (
         <div className={styles.insightBox} style={{ margin: "0 1.25rem 1rem" }}>
           <strong>AI insight — </strong>
-          {latestCompletedInsight}
-          <div style={{ marginTop: 10 }}>
-            <Button url={`/app/results/${latestCompletedId}`} size="slim" variant="plain">
-              Open full What-If report →
-            </Button>
-          </div>
+          {activeInsight}
+          {!activeBatchSim && latestCompletedId && (
+            <div style={{ marginTop: 10 }}>
+              <Button url={`/app/results/${latestCompletedId}`} size="slim" variant="plain">
+                Open full What-If report →
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -637,8 +906,7 @@ export function ComparisonLaboratory({
               .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
               .map((d) => {
                 const dp = d.deltaParams as { experimentCardName?: string } | null;
-                const diff =
-                  d.score != null ? d.score - baselineScore : null;
+                const diff = d.score != null ? d.score - baselineScore : null;
                 return (
                   <InlineStack key={d.id} align="space-between" blockAlign="center">
                     <Text as="span" variant="bodySm">
@@ -648,9 +916,8 @@ export function ComparisonLaboratory({
                       <Text as="span" variant="bodySm" fontWeight="semibold">
                         {d.score ?? "—"}/100
                         {diff != null && diff !== 0 && (
-                          <span style={{ color: diff > 0 ? "#34d399" : "#fb7185", marginLeft: 6 }}>
-                            ({diff > 0 ? "+" : ""}
-                            {diff})
+                          <span style={{ color: diff > 0 ? "#16A34A" : "#DC2626", marginLeft: 6 }}>
+                            ({diff > 0 ? "+" : ""}{diff})
                           </span>
                         )}
                       </Text>
@@ -670,8 +937,8 @@ export function ComparisonLaboratory({
       <div className={styles.debateSection}>
         <h3 className={styles.debateTitle}>Panel debrief</h3>
         <p className={styles.debateSub}>
-          Reasoning from your latest completed run (Phase 2). Not a live stream — updates when the engine
-          finishes a phase.
+          Each color is a different panelist — follow who challenged the listing and who defended it. From Phase 2
+          (refreshes when the engine completes a phase; not a live stream).
         </p>
         <div className={styles.bubbleList}>
           {debateItems.length === 0 ? (
@@ -682,18 +949,35 @@ export function ComparisonLaboratory({
             debateItems.map((item, idx) =>
               item.type === "challenge" ? (
                 <div key={`c-${idx}`} className={styles.challengePill}>
-                  VS — split panel
+                  VS — opposing votes
                 </div>
               ) : (
-                <div key={`${item.log.agentId}-${idx}`} className={styles.bubble}>
-                  <div className={styles.bubbleHeader}>
-                    <span>{item.log.archetypeEmoji ?? "🎙️"}</span>
-                    <span>{item.log.personaName || item.log.archetypeName || item.log.archetype}</span>
-                    <span className={`${styles.verdict} ${verdictClass(item.log.verdict)}`}>
-                      {item.log.verdict}
-                    </span>
+                <div key={`${item.log.agentId}-${idx}`} className={styles.bubbleRow}>
+                  <div
+                    className={`${styles.debateAvatar} ${
+                      AGENT_AVATAR[item.log.archetype] ?? styles.avatarDefault
+                    }`}
+                    aria-hidden
+                  >
+                    {initialsFromLog(item.log)}
                   </div>
-                  <span style={{ color: "var(--lab-muted)" }}>&ldquo;{item.log.reasoning}&rdquo;</span>
+                  <div
+                    className={`${styles.bubble} ${
+                      AGENT_BUBBLE[item.log.archetype] ?? styles.bubbleDefault
+                    }`}
+                  >
+                    <div className={styles.bubbleHeader}>
+                      <span>{item.log.personaName || item.log.archetypeName || item.log.archetype}</span>
+                      <span className={`${styles.verdict} ${verdictClass(item.log.verdict)}`}>
+                        {item.log.verdict}
+                      </span>
+                    </div>
+                    <span className={styles.bubbleMeta}>
+                      {(item.log.archetypeEmoji ? `${item.log.archetypeEmoji} ` : "")}
+                      {ARCHETYPE_FALLBACK[item.log.archetype]?.name ?? item.log.archetype}
+                    </span>
+                    <p className={styles.bubbleQuote}>&ldquo;{item.log.reasoning}&rdquo;</p>
+                  </div>
                 </div>
               ),
             )
@@ -701,7 +985,6 @@ export function ComparisonLaboratory({
         </div>
       </div>
 
-      {/* history link kept compact */}
       <div style={{ padding: "0 1.25rem 1.25rem" }}>
         <Button url={`/app/results/${simulationId}`} variant="plain" size="slim">
           ← Back to full PDP report
