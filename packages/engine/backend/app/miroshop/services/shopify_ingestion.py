@@ -85,6 +85,17 @@ def ingest_product(product_json: dict, shop_domain: str) -> ProductBrief:
             if any(kw in sentence.lower() for kw in shipping_keywords):
                 shipping_info = sentence.strip()
                 break
+    # Catch compact lines like "Standard Shipping: $4" that may not end at "."
+    if shipping_info is None and description_text:
+        import re as _re
+
+        m = _re.search(
+            r"[^\n.!?]{0,100}\b(?:shipping|delivery|dispatch)[^\n.!?]{0,80}\$[\d.,]+[^\n.!?]{0,40}",
+            description_text,
+            flags=_re.IGNORECASE,
+        )
+        if m:
+            shipping_info = m.group(0).strip()
 
     return {
         "title": product_json.get("title", "Unknown Product"),

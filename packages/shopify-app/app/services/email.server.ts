@@ -1,6 +1,15 @@
 // Email digest via Resend (https://resend.com)
 // Set RESEND_API_KEY in .env to enable; emails are silently skipped if unset.
 
+function escHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const FROM_EMAIL = process.env.FROM_EMAIL ?? "digest@mail.auctovio.com";
 
@@ -18,17 +27,18 @@ export async function sendWeeklyDigest(
     return; // Email disabled in dev
   }
 
+  const safeDomain = escHtml(shopDomain);
   const frictionLabel = data.topFriction
-    ? `The biggest barrier this week was <strong>${data.topFriction}</strong> friction.`
+    ? `The biggest barrier this week was <strong>${escHtml(data.topFriction)}</strong> friction.`
     : "No dominant friction pattern this week.";
 
   const productRows = data.topProducts
-    .map((p) => `<tr><td>${p.name}</td><td>${p.score}/100</td></tr>`)
+    .map((p) => `<tr><td>${escHtml(p.name)}</td><td>${p.score}/100</td></tr>`)
     .join("");
 
   const html = `
     <h2>CustomerPanel AI — Weekly Store Report</h2>
-    <p>Here's how <strong>${shopDomain}</strong> performed this week.</p>
+    <p>Here's how <strong>${safeDomain}</strong> performed this week.</p>
     <hr/>
     <h3>Store Health Score: ${data.healthScore}/100</h3>
     <p>${frictionLabel}</p>
@@ -41,7 +51,7 @@ export async function sendWeeklyDigest(
     </table>` : ""}
     <hr/>
     <p style="font-size:12px;color:#666;">
-      You're receiving this because you have CustomerPanel AI installed on ${shopDomain}.
+      You're receiving this because you have CustomerPanel AI installed on ${safeDomain}.
     </p>
   `;
 

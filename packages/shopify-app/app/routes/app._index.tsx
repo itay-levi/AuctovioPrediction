@@ -12,13 +12,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
-  const [store, budget, recentSims] = await Promise.all([
+  const [store, budget] = await Promise.all([
     getStore(shopDomain),
     getMtBudgetStatus(shopDomain),
-    getStore(shopDomain).then((s) =>
-      s ? getRecentSimulations(s.id, 5) : []
-    ),
   ]);
+  const recentSims = store ? await getRecentSimulations(store.id, 5) : [];
 
   const tier = (budget?.tier ?? "FREE") as keyof typeof MT_LIMITS;
   return {
@@ -199,9 +197,9 @@ export default function Dashboard() {
               <Link to="/app/simulate" className={styles.btnPrimary}>
                 ▶ Run New Analysis
               </Link>
-              <button type="button" className={styles.btnSecondary}>
-                ◎ Watch 45-second Demo
-              </button>
+              <Link to="/app/history" className={styles.btnSecondary}>
+                ◎ View Past Analyses
+              </Link>
             </div>
           </div>
           {!isFirstTime && (

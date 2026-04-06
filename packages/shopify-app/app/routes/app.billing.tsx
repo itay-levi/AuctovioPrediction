@@ -13,22 +13,33 @@ import {
   List,
   Divider,
   Banner,
+  Modal,
 } from "@shopify/polaris";
+import { useState } from "react";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { getStore } from "../services/store.server";
-import { createSubscription } from "../services/billing.server";
+import { createSubscription, cancelSubscription } from "../services/billing.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const store = await getStore(session.shop);
-  return { currentTier: store?.planTier ?? "FREE" };
+  const url = new URL(request.url);
+  const paymentError = url.searchParams.get("error") === "payment_not_confirmed";
+  return { currentTier: store?.planTier ?? "FREE", paymentError };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
+  const intent = formData.get("intent") as string;
+
+  if (intent === "downgrade") {
+    await cancelSubscription(session.shop);
+    throw redirect("/app/billing?downgraded=1");
+  }
+
   const plan = formData.get("plan") as "PRO" | "ENTERPRISE";
 
   if (!["PRO", "ENTERPRISE"].includes(plan)) {
@@ -43,18 +54,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function BillingPage() {
-  const { currentTier } = useLoaderData<typeof loader>();
+  const { currentTier, paymentError } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const isSubmitting = fetcher.state !== "idle";
+  const [showDowngradeModal, setShowDowngradeModal] = useState(false);
+  const url = typeof window !== "undefined" ? new URL(window.location.href) : null;
+  const justDowngraded = url?.searchParams.get("downgraded") === "1";
 
   return (
     <Page>
       <TitleBar
         title="Upgrade Plan"
+        breadcrumbs={[{ content: "Dashboard", url: "/app" }]}
       />
       <Layout>
         <Layout.Section>
           <BlockStack gap="500">
+            {paymentError && (
+              <Banner tone="critical" title="Payment not confirmed">
+                <Text as="p" variant="bodyMd">
+                  Your subscription could not be verified with Shopify. Please try again or contact support.
+                </Text>
+              </Banner>
+            )}
+            {justDowngraded && (
+              <Banner tone="success" title="Plan downgraded">
+                <Text as="p" variant="bodyMd">
+                  Your plan has been downgraded to Free. Changes take effect immediately.
+                </Text>
+              </Banner>
+            )}
             {fetcher.data?.error && (
               <Banner tone="critical">
                 <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
@@ -78,9 +107,17 @@ export default function BillingPage() {
                       <List.Item>30 MT budget</List.Item>
                       <List.Item>Basic friction report</List.Item>
                     </List>
-                    <Button disabled={currentTier === "FREE"} variant="plain">
-                      {currentTier === "FREE" ? "Current plan" : "Downgrade"}
-                    </Button>
+                    {currentTier === "FREE" ? (
+                      <Button disabled variant="plain">Current plan</Button>
+                    ) : (
+                      <Button
+                        variant="plain"
+                        tone="critical"
+                        onClick={() => setShowDowngradeModal(true)}
+                      >
+                        Downgrade to Free
+                      </Button>
+                    )}
                   </BlockStack>
                 </Card>
               </div>
@@ -155,6 +192,31 @@ export default function BillingPage() {
           </BlockStack>
         </Layout.Section>
       </Layout>
+
+      <Modal
+        open={showDowngradeModal}
+        onClose={() => setShowDowngradeModal(false)}
+        title="Downgrade to Free?"
+        primaryAction={{
+          content: "Yes, downgrade",
+          destructive: true,
+          onAction: () => {
+            const form = new FormData();
+            form.append("intent", "downgrade");
+            fetcher.submit(form, { method: "POST" });
+            setShowDowngradeModal(false);
+          },
+        }}
+        secondaryActions={[
+          { content: "Cancel", onAction: () => setShowDowngradeModal(false) },
+        ]}
+      >
+        <Modal.Section>
+          <Text as="p" variant="bodyMd">
+            Downgrading to Free will immediately cancel your paid subscription. Your MT budget will reset to 30 MT and you will be limited to 3 analyses per month.
+          </Text>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }

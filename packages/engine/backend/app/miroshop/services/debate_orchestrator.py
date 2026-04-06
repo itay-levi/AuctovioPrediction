@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict, List, Union, Optional
 from dataclasses import dataclass, field
 
+from ...config import Config
 from ...utils.llm_client import LLMClient
 from ..archetypes.definitions import Archetype
 from ..archetypes.niche_contexts import GENERIC_PROFILES
@@ -32,6 +33,16 @@ from .dna_extractor import ProductDNA, format_dna_for_prompt
 logger = logging.getLogger("miroshop.orchestrator")
 
 AnyArchetype = Union[Archetype, DynamicArchetype]
+
+# Shown to merchants in the app — never expose raw JSON/timeout internals.
+_MERCHANT_TIMEOUT_REASONING = (
+    "This panelist needed more time to finish analyzing the listing. "
+    "Treat this as hesitation — the PDP may still be missing a reassurance they need."
+)
+_MERCHANT_MALFORMED_REASONING = (
+    "This panelist's reaction could not be fully captured. "
+    "Assume they still have open concerns about the listing."
+)
 
 # Archetypes that require hard evidence to flip — they will not be moved by peer enthusiasm
 _HIGH_SKEPTICISM_IDS = {"research_analyst", "budget_optimizer"}
@@ -255,20 +266,60 @@ class DebateOrchestrator:
 
         return agents
 
+    def _try_repair_agent_json(self, raw: str) -> Optional[dict]:
+        """One repair pass via fast LLM when the deep model returns invalid JSON."""
+        if not self.fast_llm or not (raw and raw.strip()):
+            return None
+        try:
+            snippet = raw.strip()[:4500]
+            fix_prompt = (
+                "The text below should contain one JSON object with keys: "
+                "final_vote (string BUY or REJECT), reasoning (string), confidence (number 0-1), "
+                "peer_rebuttal (string, may be empty), vote_change_trigger (string, may be empty). "
+                "Reply with ONLY minified valid JSON, no markdown fences.\n\n"
+                f"{snippet}"
+            )
+            fixed = self.fast_llm.chat(
+                messages=[{"role": "user", "content": fix_prompt}],
+                temperature=0.1,
+                max_tokens=400,
+            )
+            data = json.loads(_extract_json(fixed))
+            if not isinstance(data, dict):
+                return None
+            vote = str(data.get("final_vote", data.get("verdict", "REJECT"))).upper()
+            if vote not in ("BUY", "REJECT"):
+                return None
+            reasoning = str(data.get("reasoning", "")).strip()
+            if len(reasoning) < 3:
+                return None
+            return {
+                "final_vote": vote,
+                "reasoning": reasoning,
+                "confidence": float(data.get("confidence", 0.5)),
+                "peer_rebuttal": str(data.get("peer_rebuttal", "")),
+                "vote_change_trigger": str(data.get("vote_change_trigger", "")),
+            }
+        except Exception as ex:
+            logger.debug(f"[{self.__class__.__name__}] JSON repair failed: {ex}")
+            return None
+
     def _call_agent(
         self,
         prompt: str,
         archetype: AnyArchetype,
-        timeout_seconds: int = 150,
+        timeout_seconds: Optional[int] = None,
     ) -> dict:
         """
         Call LLM for a single agent. Returns a parsed dict with keys:
           final_vote, reasoning, confidence, peer_rebuttal, vote_change_trigger.
 
         Raises on fatal errors (rate limit, no fallback, network).
-        Malformed JSON → soft REJECT dict (never stored as error text).
+        Malformed JSON → repair attempt → soft REJECT with merchant-safe copy.
         """
         from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
+
+        tlim = timeout_seconds if timeout_seconds is not None else Config.DEBATE_AGENT_THREAD_TIMEOUT_SEC
 
         def _do_call() -> str:
             effective_temp = min(0.95, max(0.05, archetype.temperature + self.temp_modifier))
@@ -278,35 +329,18 @@ class DebateOrchestrator:
                 max_tokens=350,
             )
 
-        ex = _TPE(max_workers=1)
-        fut = ex.submit(_do_call)
-        try:
-            raw = fut.result(timeout=timeout_seconds)
-        except _TE:
-            ex.shutdown(wait=False)
-            logger.warning(f"[{archetype.name}] timed out after {timeout_seconds}s")
-            return _fallback_reject(f"Agent timed out after {timeout_seconds}s.")
-        except Exception:
-            ex.shutdown(wait=False)
-            raise  # RateLimitError / RuntimeError (no fallback) → kill simulation
-        ex.shutdown(wait=False)
-
-        try:
-            data = json.loads(_extract_json(raw))
+        def _finalize_payload(data: dict) -> dict:
             vote = str(data.get("final_vote", data.get("verdict", "REJECT"))).upper()
             if vote not in ("BUY", "REJECT"):
                 vote = "REJECT"
             reasoning = str(data.get("reasoning", "No reasoning provided."))
 
-            # Strip any leaked prompt instructions from reasoning/rebuttal before storing.
-            # The LLM occasionally echoes internal anchors verbatim in either field.
-            # Order matters: SKEPTIC:.* is a catch-all, so keep it last.
             _PROMPT_LEAK_PATTERNS = [
                 r"VOTE-CHANGE:[^\n]*",
                 r"Physical Reality Check[^\n]*",
                 r"DISSENTER:[^\n]*",
                 r"FOCUS: (?:TRUST|PRICE|SPECS|BRANDING|MOBILE)[^\n]*",
-                r"SKEPTIC:[^\n]*",  # catch-all — matches any SKEPTIC: line
+                r"SKEPTIC:[^\n]*",
             ]
             _LEAK_RE = re.compile(
                 r"\s*↳?\s*(?:" + "|".join(_PROMPT_LEAK_PATTERNS) + r").*",
@@ -318,20 +352,43 @@ class DebateOrchestrator:
                 return cleaned if cleaned else fallback
 
             reasoning = _strip_leaks(reasoning, "No additional reasoning provided.")
-            peer_rebuttal = _strip_leaks(
-                str(data.get("peer_rebuttal", "")), ""
-            )
+            peer_rebuttal = _strip_leaks(str(data.get("peer_rebuttal", "")), "")
 
-            # Coherence check: if reasoning strongly contradicts the vote, fix the mismatch.
-            # The LLM sometimes writes "I'm in because..." but then votes REJECT.
             reasoning_lower = reasoning.lower()
-            buy_signals = sum(1 for s in ("i'm in", "i'd buy", "i would buy", "gets me over the line", "i'm comfortable buying") if s in reasoning_lower)
-            reject_signals = sum(1 for s in ("i'd skip", "i'm not buying", "i'd walk away", "deal-breaker", "red flag", "hesitant") if s in reasoning_lower)
+            buy_signals = sum(
+                1
+                for s in (
+                    "i'm in",
+                    "i'd buy",
+                    "i would buy",
+                    "gets me over the line",
+                    "i'm comfortable buying",
+                )
+                if s in reasoning_lower
+            )
+            reject_signals = sum(
+                1
+                for s in (
+                    "i'd skip",
+                    "i'm not buying",
+                    "i'd walk away",
+                    "deal-breaker",
+                    "red flag",
+                    "hesitant",
+                )
+                if s in reasoning_lower
+            )
             if vote == "REJECT" and buy_signals > reject_signals and buy_signals >= 2:
-                print(f"[{archetype.name}] Coherence fix: reasoning says BUY but vote=REJECT — flipping to BUY", flush=True)
+                print(
+                    f"[{archetype.name}] Coherence fix: reasoning says BUY but vote=REJECT — flipping to BUY",
+                    flush=True,
+                )
                 vote = "BUY"
             elif vote == "BUY" and reject_signals > buy_signals and reject_signals >= 2:
-                print(f"[{archetype.name}] Coherence fix: reasoning says REJECT but vote=BUY — flipping to REJECT", flush=True)
+                print(
+                    f"[{archetype.name}] Coherence fix: reasoning says REJECT but vote=BUY — flipping to REJECT",
+                    flush=True,
+                )
                 vote = "REJECT"
 
             return {
@@ -341,9 +398,35 @@ class DebateOrchestrator:
                 "peer_rebuttal": peer_rebuttal,
                 "vote_change_trigger": str(data.get("vote_change_trigger", "")),
             }
+
+        ex = _TPE(max_workers=1)
+        fut = ex.submit(_do_call)
+        try:
+            raw = fut.result(timeout=tlim)
+        except _TE:
+            ex.shutdown(wait=False)
+            logger.warning(f"[{archetype.name}] timed out after {tlim}s")
+            return _fallback_reject(_MERCHANT_TIMEOUT_REASONING)
+        except Exception:
+            ex.shutdown(wait=False)
+            raise
+        ex.shutdown(wait=False)
+
+        try:
+            data = json.loads(_extract_json(raw))
+            return _finalize_payload(data)
         except (json.JSONDecodeError, KeyError, ValueError):
-            print(f"[{archetype.name}] malformed response — soft REJECT. Raw (first 300 chars): {raw[:300]}", flush=True)
-            return _fallback_reject("Agent response was malformed.")
+            logger.warning(
+                f"[{archetype.name}] malformed primary response — attempting JSON repair. "
+                f"Raw (first 200 chars): {raw[:200]!r}"
+            )
+            repaired = self._try_repair_agent_json(raw)
+            if repaired:
+                try:
+                    return _finalize_payload(repaired)
+                except (KeyError, ValueError):
+                    pass
+            return _fallback_reject(_MERCHANT_MALFORMED_REASONING)
 
     def _build_focus_bias(self) -> str:
         blocks = [FOCUS_AREA_BIASES[f] for f in self.focus_areas if f in FOCUS_AREA_BIASES]

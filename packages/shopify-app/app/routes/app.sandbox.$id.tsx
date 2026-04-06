@@ -5,8 +5,8 @@ import { Page, Text, BlockStack, InlineStack, Button, Badge } from "@shopify/pol
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useEffect } from "react";
 import { authenticate } from "../shopify.server";
-import { getStore } from "../services/store.server";
-import { getSimulation } from "../services/simulation.server";
+import { getStore, getMtBudgetStatus } from "../services/store.server";
+import { getSimulation, getSimulationLabRoot, canRunSimulation } from "../services/simulation.server";
 import { requireTier } from "../services/gates.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import db from "../db.server";
@@ -16,6 +16,7 @@ import {
   ComparisonLaboratory,
   type ExperimentCard,
   type PriceBatchResult,
+  type TrustAuditFriction,
 } from "../components/sandbox/ComparisonLaboratory";
 
 type ProductDna = {
@@ -52,14 +53,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
-  const [simulation, store] = await Promise.all([
+  const [loaded, store] = await Promise.all([
     getSimulation(params.id!),
     getStore(shopDomain),
   ]);
 
-  if (!simulation || simulation.storeId !== store?.id) {
+  if (!loaded || loaded.storeId !== store?.id) {
     throw new Response("Not found", { status: 404 });
   }
+  // Opening the lab on a what-if/delta record shows the wrong "baseline" (child logs + prices).
+  if (loaded.originalSimulationId) {
+    throw redirect(`/app/sandbox/${loaded.originalSimulationId}`);
+  }
+  const simulation = loaded;
   if (simulation.status !== "COMPLETED") {
     throw new Response("Simulation must be completed first", { status: 400 });
   }
@@ -176,6 +182,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     batchLogsMap[d.id] = batchLogsResults[i]?.agentLogs ?? [];
   });
 
+  function frictionFromReportJson(rj: unknown): PriceBatchResult["friction"] {
+    const r = rj as {
+      friction?: {
+        price?: { dropoutPct?: number };
+        trust?: { dropoutPct?: number };
+        logistics?: { dropoutPct?: number };
+      };
+    } | null;
+    if (!r?.friction) return null;
+    return {
+      price: r.friction.price?.dropoutPct,
+      trust: r.friction.trust?.dropoutPct,
+      logistics: r.friction.logistics?.dropoutPct,
+    };
+  }
+
   const priceBatchResults: PriceBatchResult[] = latestBatchDeltas.map((d) => {
     const dp = d.deltaParams as { price?: number; pctDelta?: number } | null;
     const logs = batchLogsMap[d.id] ?? [];
@@ -188,6 +210,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       phase1Logs: logs.filter((l) => l.phase === 1),
       phase2Logs: logs.filter((l) => l.phase === 2),
       comparisonInsight: d.comparisonInsight,
+      friction: frictionFromReportJson(d.reportJson),
     };
   });
 
@@ -217,12 +240,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const activeExperiment = (formData.get("activeExperiment") as string | null) || undefined;
 
   const [originalSim, store] = await Promise.all([
-    getSimulation(params.id!),
+    getSimulationLabRoot(params.id!),
     getStore(shopDomain),
   ]);
 
   if (!originalSim || originalSim.storeId !== store?.id) {
     return { error: "Simulation not found" };
+  }
+
+  const { allowed, reason } = await canRunSimulation(shopDomain, store.id);
+  if (!allowed) {
+    return { error: reason };
   }
 
   const tier = store.planTier;
@@ -435,6 +463,10 @@ export default function SandboxPage() {
     setSelectedCardId((prev) => (prev === id ? null : id));
   }
 
+  function selectExperimentCard(id: string) {
+    setSelectedCardId(id);
+  }
+
   const runLabel = isSubmitting
     ? "Queueing…"
     : selectedCard
@@ -463,6 +495,7 @@ export default function SandboxPage() {
       <BlockStack gap="500">
         <ComparisonLaboratory
           simulationId={simulation.id}
+          productUrl={simulation.productUrl}
           baselineScore={baselineScore}
           baselinePhase1={baselinePhase1}
           labPhase1={labPhase1}
@@ -471,6 +504,7 @@ export default function SandboxPage() {
           priceDropoutPct={priceDropoutPct}
           logisticsDropoutPct={logisticsDropoutPct}
           trustDropoutPct={trustDropoutPct}
+          trustAudit={(simulation.trustAudit as TrustAuditFriction | null) ?? null}
           experimentCards={experimentCards}
           isPro={isPro}
           basePrice={basePrice}
@@ -480,6 +514,7 @@ export default function SandboxPage() {
           setShippingDays={setShippingDays}
           selectedCardId={selectedCardId}
           toggleCard={toggleCard}
+          selectExperimentCard={selectExperimentCard}
           runLabel={runLabel}
           isSubmitting={isSubmitting}
           latestRunning={!!latestRunning}
@@ -506,6 +541,14 @@ export default function SandboxPage() {
               .filter((d) => !(d.deltaParams as { setGroupId?: string } | null)?.setGroupId)
               .map((delta) => {
                 const dp = delta.deltaParams as { price?: number; shippingDays?: number } | null;
+                const created = new Date(delta.createdAt);
+                const when = new Intl.DateTimeFormat(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                }).format(created);
+                const stalePending =
+                  delta.status === "PENDING" &&
+                  Date.now() - created.getTime() > 25 * 60 * 1000;
                 return (
                   <InlineStack key={delta.id} align="space-between" blockAlign="center">
                     <BlockStack gap="0">
@@ -514,7 +557,8 @@ export default function SandboxPage() {
                         {dp?.shippingDays != null ? ` · ${dp.shippingDays}d shipping` : ""}
                       </Text>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        {new Date(delta.createdAt).toLocaleDateString()}
+                        {when}
+                        {stalePending ? " · Still pending — engine may have dropped this job; try re-running." : ""}
                       </Text>
                     </BlockStack>
                     <InlineStack gap="200" blockAlign="center">

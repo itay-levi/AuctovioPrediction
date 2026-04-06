@@ -7,13 +7,11 @@ export async function loader(_args: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
+  // Always require auth — fail closed if ENV is missing
   const cronSecret = process.env.CRON_SECRET;
-
-  if (cronSecret) {
-    const authHeader = request.headers.get("Authorization");
-    if (authHeader !== `Bearer ${cronSecret}`) {
-      return json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authHeader = request.headers.get("Authorization");
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    return json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);

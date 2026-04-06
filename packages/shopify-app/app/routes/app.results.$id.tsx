@@ -34,6 +34,7 @@ import { IntelligenceExport } from "../components/IntelligenceExport";
 import { RecommendationsPanel } from "../components/RecommendationsPanel";
 import type { Recommendation, TrustAudit } from "../components/RecommendationsPanel";
 import { OnboardingTour } from "../components/OnboardingTour";
+import { sanitizeAgentReasoning } from "../utils/sanitizeAgentReasoning";
 
 type ScoreBreakdown = {
   panelScore: number;
@@ -236,7 +237,7 @@ function PersonaCard({
 
         <Divider />
 
-        <Text as="p" variant="bodyMd">"{log.reasoning}"</Text>
+        <Text as="p" variant="bodyMd">&ldquo;{sanitizeAgentReasoning(log.reasoning)}&rdquo;</Text>
       </BlockStack>
     </Box>
   );

@@ -2,8 +2,18 @@ import type { FetcherWithComponents } from "@remix-run/react";
 
 type SandboxActionData = { error?: string } | undefined;
 import { useState } from "react";
-import { Button, Banner, Text, BlockStack, InlineStack, RangeSlider, CalloutCard } from "@shopify/polaris";
+import {
+  Button,
+  Banner,
+  Text,
+  BlockStack,
+  InlineStack,
+  RangeSlider,
+  CalloutCard,
+  SkeletonBodyText,
+} from "@shopify/polaris";
 import { ConfidenceGauge } from "../ConfidenceGauge";
+import { sanitizeAgentReasoning } from "../../utils/sanitizeAgentReasoning";
 import styles from "./ComparisonLaboratory.module.css";
 
 const ROSTER_ORDER = [
@@ -42,6 +52,12 @@ export type PriceBatchResult = {
   phase1Logs: AgentLogLite[];
   phase2Logs: AgentLogLite[];
   comparisonInsight: string | null;
+  /** Parsed from simulation reportJson.friction.*.dropoutPct when present */
+  friction: {
+    price?: number;
+    trust?: number;
+    logistics?: number;
+  } | null;
 };
 
 type DeltaRow = {
@@ -62,11 +78,19 @@ const ARCHETYPE_FALLBACK: Record<string, { emoji: string; name: string }> = {
 };
 
 // ── Static friction category metadata ────────────────────────────────────────
+export type TrustAuditFriction = {
+  hasShippingInfo?: boolean;
+  hasReturnPolicy?: boolean;
+  hasContact?: boolean;
+} | null;
+
 const FRICTION_META: Record<"price" | "logistics" | "trust", {
   icon: string;
   label: string;
   bullets: [string, string];
+  bulletsWhenShippingPresent?: [string, string];
   impact: string;
+  impactWhenShippingPresent?: string;
 }> = {
   price: {
     icon: "💰",
@@ -84,7 +108,13 @@ const FRICTION_META: Record<"price" | "logistics" | "trust", {
       "Return policy unclear for opened or used items",
       "No shipping timeline, threshold, or handling note visible",
     ],
+    bulletsWhenShippingPresent: [
+      "Shipping or delivery details appear in the listing — check if timelines feel specific enough",
+      "Returns may still need clearer windows or process steps for hesitant buyers",
+    ],
     impact: "Buyers won't commit without knowing what happens if it doesn't work out.",
+    impactWhenShippingPresent:
+      "Some shipping cues exist — panel dropout here often means timing, cost clarity, or returns still feel vague.",
   },
   trust: {
     icon: "🛡️",
@@ -212,8 +242,9 @@ function PersonaRows({
         const bv = b?.verdict ?? "—";
         const lv = l?.verdict ?? null;
         const converted = Boolean(lv) && bv === "REJECT" && lv === "BUY";
-        const snippet = base.reasoning.slice(0, 88);
-        const hasMore = base.reasoning.length > 88;
+        const safeReason = sanitizeAgentReasoning(base.reasoning);
+        const snippet = safeReason.slice(0, 88);
+        const hasMore = safeReason.length > 88;
         return (
           <div key={arch} className={`${styles.panelCard} ${converted ? styles.panelCardConverted : ""}`}>
             <div className={styles.pcTop}>
@@ -236,7 +267,7 @@ function PersonaRows({
                 )}
               </div>
             </div>
-            {base.reasoning && (
+            {safeReason && (
               <details className={styles.pcDetails}>
                 <summary className={styles.pcSummary}>
                   <span className={styles.pcSnippet}>
@@ -244,7 +275,7 @@ function PersonaRows({
                   </span>
                   <span className={styles.pcExpandHint}>Expand</span>
                 </summary>
-                <p className={styles.pcFull}>&ldquo;{base.reasoning}&rdquo;</p>
+                <p className={styles.pcFull}>&ldquo;{safeReason}&rdquo;</p>
               </details>
             )}
           </div>
@@ -292,10 +323,12 @@ function FrictionCards({
   pricePct,
   logisticsPct,
   trustPct,
+  trustAudit,
 }: {
   pricePct: number;
   logisticsPct: number;
   trustPct: number;
+  trustAudit: TrustAuditFriction;
 }) {
   const items: { key: "price" | "logistics" | "trust"; pct: number }[] = [
     { key: "price",     pct: pricePct     },
@@ -307,6 +340,13 @@ function FrictionCards({
       {items.map(({ key, pct }) => {
         const meta = FRICTION_META[key];
         const sev: FrictionSev = pct >= 40 ? "critical" : pct >= 15 ? "warning" : "growth";
+        const useShippingAligned =
+          key === "logistics" &&
+          trustAudit?.hasShippingInfo &&
+          meta.bulletsWhenShippingPresent &&
+          meta.impactWhenShippingPresent;
+        const bullets = useShippingAligned ? meta.bulletsWhenShippingPresent! : meta.bullets;
+        const impact = useShippingAligned ? meta.impactWhenShippingPresent! : meta.impact;
         return (
           <div key={key} className={`${styles.frictionCard} ${SEV_CARD_CLS[sev]}`}>
             <div className={styles.fcHeader}>
@@ -320,11 +360,11 @@ function FrictionCards({
             </div>
             <div className={styles.fcDivider} />
             <ul className={styles.fcBullets}>
-              {meta.bullets.map((b, i) => <li key={i}>{b}</li>)}
+              {bullets.map((b, i) => <li key={i}>{b}</li>)}
             </ul>
             <div className={styles.fcDivider} />
             <p className={styles.fcImpact}>
-              <strong>Impact: </strong>{meta.impact}
+              <strong>Impact: </strong>{impact}
             </p>
           </div>
         );
@@ -333,24 +373,145 @@ function FrictionCards({
   );
 }
 
+// ── Price Optimizer helpers ─────────────────────────────────────────────────
+export function pickBestSweepRun(results: PriceBatchResult[]): PriceBatchResult | null {
+  const ok = results.filter((r) => r.status === "COMPLETED" && r.score != null);
+  if (!ok.length) return null;
+  return ok.reduce((best, r) => {
+    const rs = r.score ?? 0;
+    const bs = best.score ?? 0;
+    if (rs > bs) return r;
+    if (rs < bs) return best;
+    return r.pctDelta > best.pctDelta ? r : best;
+  });
+}
+
+function blockerSummaryPhrase(price: number, logistics: number, trust: number): string {
+  const items = [
+    { label: "trust and social proof", v: trust },
+    { label: "price sensitivity", v: price },
+    { label: "logistics and returns", v: logistics },
+  ].sort((a, b) => b.v - a.v);
+  const top = items[0];
+  const second = items[1];
+  if (top.v < 12) {
+    return "dropout is relatively balanced across drivers — use panel notes for nuance.";
+  }
+  if (second.v >= top.v - 4) {
+    return `${top.label} and ${second.label} remain the strongest modeled dropout drivers.`;
+  }
+  return `${top.label} remains the dominant modeled dropout driver.`;
+}
+
+function buildPriceSweepTakeaway(
+  baselineScore: number,
+  bestScore: number,
+  blockerPhrase: string,
+): string {
+  const delta = bestScore - baselineScore;
+  if (delta >= 5) {
+    return `Discounting lifted modeled intent by about ${delta} points; still validate with trust and shipping experiments before you rely on it. ${blockerPhrase.charAt(0).toUpperCase()}${blockerPhrase.slice(1)}`;
+  }
+  if (delta <= -2) {
+    return `Lowering price did not improve modeled intent. ${blockerPhrase.charAt(0).toUpperCase()}${blockerPhrase.slice(1)}`;
+  }
+  return `Price had limited impact on the headline score. ${blockerPhrase.charAt(0).toUpperCase()}${blockerPhrase.slice(1)}`;
+}
+
+function matchExperimentByTerms(cards: ExperimentCard[], terms: string[]): ExperimentCard | undefined {
+  const t = terms.map((x) => x.toLowerCase()).filter(Boolean);
+  if (!t.length) return undefined;
+  return cards.find((c) => {
+    const h = `${c.name} ${c.hypothesis}`.toLowerCase();
+    return t.some((term) => h.includes(term));
+  });
+}
+
+function dropoutDeltaText(before: number, after: number | undefined): string {
+  if (after == null || Number.isNaN(after)) return `${Math.round(before)}% → —`;
+  const d = Math.round(after - before);
+  const sign = d > 0 ? "+" : "";
+  return `${Math.round(before)}% → ${Math.round(after)}% (${sign}${d} pts)`;
+}
+
+function dropoutDeltaClass(before: number, after: number | undefined): string {
+  if (after == null || Number.isNaN(after)) return styles.poDeltaNeutral;
+  const d = after - before;
+  if (d < -1) return styles.poDeltaGood;
+  if (d > 1) return styles.poDeltaBad;
+  return styles.poDeltaFlat;
+}
+
+function dropoutDeltaCaption(before: number, after: number | undefined): string {
+  if (after == null || Number.isNaN(after)) return "No simulated split in this report";
+  const d = after - before;
+  if (d < -1) return "Lower dropout vs. baseline";
+  if (d > 1) return "Higher dropout vs. baseline";
+  return "Roughly flat vs. baseline";
+}
+
+const PRICE_OPT_NEXT_STEPS: {
+  title: string;
+  body: string;
+  impact: string;
+  terms: string[];
+}[] = [
+  {
+    title: "Clarify value vs. alternatives",
+    body: "Give price-sensitive buyers a reason your offer wins on total value, not sticker price alone.",
+    impact: "Estimated +3–8 pts when price friction leads dropout",
+    terms: ["value", "comparison", "alternative", "price"],
+  },
+  {
+    title: "Surface reviews and trust",
+    body: "Add visible ratings, testimonials, or guarantees so first-time buyers can commit.",
+    impact: "Estimated +4–10 pts when trust leads dropout",
+    terms: ["review", "trust", "rating", "testimonial", "guarantee"],
+  },
+  {
+    title: "Shipping and returns clarity",
+    body: "Spell out timelines, thresholds, and what happens if the product is not a fit.",
+    impact: "Estimated +3–8 pts when logistics leads dropout",
+    terms: ["shipping", "return", "delivery", "logistics"],
+  },
+  {
+    title: "Run a focused What-If",
+    body: "Change one lever at a time with an experiment card or custom hypothesis below.",
+    impact: "Isolate which barrier actually moves the panel",
+    terms: [],
+  },
+];
+
 // ── Price Optimizer ───────────────────────────────────────────────────────────
 function PriceOptimizerSection({
   basePrice,
   baselineScore,
+  priceDropoutPct,
+  logisticsDropoutPct,
+  trustDropoutPct,
   priceBatchResults,
   batchRunning,
   isSubmitting,
   selectedChipId,
   onChipClick,
+  experimentCards,
+  selectExperimentCard,
+  onOptimizerNavHint,
   fetcher,
 }: {
   basePrice: number;
   baselineScore: number;
+  priceDropoutPct: number;
+  logisticsDropoutPct: number;
+  trustDropoutPct: number;
   priceBatchResults: PriceBatchResult[];
   batchRunning: boolean;
   isSubmitting: boolean;
   selectedChipId: string | null;
   onChipClick: (r: PriceBatchResult | null) => void;
+  experimentCards: ExperimentCard[];
+  selectExperimentCard: (id: string) => void;
+  onOptimizerNavHint: (message: string) => void;
   fetcher: FetcherWithComponents<SandboxActionData>;
 }) {
   const hasBatch = priceBatchResults.length > 0;
@@ -372,6 +533,43 @@ function PriceOptimizerSection({
   // Sort chips -5, -10, -15 (least to most aggressive)
   const sortedChips = [...priceBatchResults].sort((a, b) => b.pctDelta - a.pctDelta);
 
+  const batchFullyComplete =
+    sortedChips.length === 3 &&
+    sortedChips.every((r) => r.status === "COMPLETED" && r.score != null);
+
+  const bestSweep = pickBestSweepRun(priceBatchResults);
+  const showCompletionSummary = hasBatch && batchFullyComplete && !isBusy && bestSweep != null;
+
+  function scrollToExperiments() {
+    document.getElementById("experiment-dashboard")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
+  function runExperimentStep(terms: string[]) {
+    scrollToExperiments();
+    const match = matchExperimentByTerms(experimentCards, terms);
+    if (match) {
+      selectExperimentCard(match.id);
+      onOptimizerNavHint(
+        "We selected a matching experiment card below. Adjust sliders if needed, then run What-If.",
+      );
+    } else {
+      onOptimizerNavHint(
+        "Pick an experiment card below (or write a custom hypothesis), adjust price or shipping if needed, then run What-If.",
+      );
+    }
+  }
+
+  const blockerPhrase = blockerSummaryPhrase(
+    priceDropoutPct,
+    logisticsDropoutPct,
+    trustDropoutPct,
+  );
+  const bestScore = bestSweep?.score ?? baselineScore;
+  const scoreDelta = bestScore - baselineScore;
+
   return (
     <div className={styles.priceOptBand}>
       <div className={styles.priceOptHeader}>
@@ -381,7 +579,11 @@ function PriceOptimizerSection({
             <span className={styles.priceOptLabel}>Price Optimizer</span>
             {hasBatch && (
               <span className={styles.priceOptTag}>
-                {batchRunning ? "Running…" : "3 runs complete"}
+                {batchRunning
+                  ? "Running…"
+                  : batchFullyComplete
+                    ? "Completed"
+                    : "In progress / partial"}
               </span>
             )}
           </div>
@@ -389,6 +591,9 @@ function PriceOptimizerSection({
             <p className={styles.priceOptSubtitle}>
               Runs −5%, −10%, −15% in parallel · uses cached DNA · no re-extraction
             </p>
+          )}
+          {showCompletionSummary && (
+            <p className={styles.poRunCompleteTitle}>Price Optimizer run — completed</p>
           )}
         </div>
         <fetcher.Form method="post" style={{ flexShrink: 0 }}>
@@ -403,14 +608,143 @@ function PriceOptimizerSection({
         </fetcher.Form>
       </div>
 
+      {batchRunning && hasBatch && (
+        <div className={styles.priceOptRunningBlock}>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Running three price scenarios in parallel. This usually takes a few minutes — the page
+            refreshes as each panel completes.
+          </Text>
+          <div style={{ marginTop: 10 }}>
+            <SkeletonBodyText lines={3} />
+          </div>
+        </div>
+      )}
+
+      {showCompletionSummary && bestSweep && (
+        <>
+          <p className={styles.poTakeaway}>
+            <strong>Takeaway: </strong>
+            {buildPriceSweepTakeaway(baselineScore, bestScore, blockerPhrase)}
+          </p>
+
+          <div className={styles.poImpactGrid}>
+            <div className={styles.poImpactCard}>
+              <span className={styles.poImpactLabel}>Overall score</span>
+              <span className={styles.poImpactValue}>
+                {baselineScore} → {bestScore}
+              </span>
+              <span
+                className={`${styles.poImpactDelta} ${
+                  scoreDelta > 2
+                    ? styles.poDeltaGood
+                    : scoreDelta < -2
+                      ? styles.poDeltaBad
+                      : styles.poDeltaFlat
+                }`}
+              >
+                {scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} pts vs. baseline
+              </span>
+            </div>
+            <div className={styles.poImpactCard}>
+              <span className={styles.poImpactLabel}>Price dropout</span>
+              <span className={styles.poImpactValue}>
+                {dropoutDeltaText(priceDropoutPct, bestSweep.friction?.price)}
+              </span>
+              <span
+                className={`${styles.poImpactDelta} ${dropoutDeltaClass(
+                  priceDropoutPct,
+                  bestSweep.friction?.price,
+                )}`}
+              >
+                {dropoutDeltaCaption(priceDropoutPct, bestSweep.friction?.price)}
+              </span>
+            </div>
+            <div className={styles.poImpactCard}>
+              <span className={styles.poImpactLabel}>Trust dropout</span>
+              <span className={styles.poImpactValue}>
+                {dropoutDeltaText(trustDropoutPct, bestSweep.friction?.trust)}
+              </span>
+              <span
+                className={`${styles.poImpactDelta} ${dropoutDeltaClass(
+                  trustDropoutPct,
+                  bestSweep.friction?.trust,
+                )}`}
+              >
+                {dropoutDeltaCaption(trustDropoutPct, bestSweep.friction?.trust)}
+              </span>
+            </div>
+            <div className={styles.poImpactCard}>
+              <span className={styles.poImpactLabel}>Logistics dropout</span>
+              <span className={styles.poImpactValue}>
+                {dropoutDeltaText(logisticsDropoutPct, bestSweep.friction?.logistics)}
+              </span>
+              <span
+                className={`${styles.poImpactDelta} ${dropoutDeltaClass(
+                  logisticsDropoutPct,
+                  bestSweep.friction?.logistics,
+                )}`}
+              >
+                {dropoutDeltaCaption(logisticsDropoutPct, bestSweep.friction?.logistics)}
+              </span>
+            </div>
+          </div>
+
+          <div className={styles.poInsightCard}>
+            <span className={styles.poInsightKicker}>Main insight</span>
+            <p className={styles.poInsightBody}>
+              {bestSweep.comparisonInsight?.trim() ||
+                `Best sweep at ${bestSweep.pctDelta}% ($${bestSweep.price.toFixed(2)}) scored ${bestScore}. Use the steps below to address remaining friction.`}
+            </p>
+            <p className={styles.poInsightRec}>
+              <strong>Recommendation: </strong>
+              {scoreDelta >= 5
+                ? "Capture margin impact before you scale the discount; pair with trust or logistics tests."
+                : scoreDelta <= -2
+                  ? "Pause broad discounting; prioritize listing and policy clarity over price cuts."
+                  : "Treat price as one lever among several — run targeted What-Ifs on trust and fulfillment next."}
+            </p>
+          </div>
+
+          <div className={styles.poStepsSection}>
+            <h3 className={styles.poStepsHeading}>Recommended next steps</h3>
+            <p className={styles.poStepsSub}>
+              Each card links to your experiment dashboard. Estimated ranges are directional, not guarantees.
+            </p>
+            <div className={styles.poStepsGrid}>
+              {PRICE_OPT_NEXT_STEPS.map((step) => (
+                <div key={step.title} className={styles.poStepCard}>
+                  <h4 className={styles.poStepTitle}>{step.title}</h4>
+                  <p className={styles.poStepBody}>{step.body}</p>
+                  <p className={styles.poStepImpact}>{step.impact}</p>
+                  <button
+                    type="button"
+                    className={styles.poStepRunBtn}
+                    onClick={() => runExperimentStep(step.terms)}
+                  >
+                    Run this experiment →
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
       {hasBatch && (
-        <div className={styles.priceChipRow}>
+        <div className={showCompletionSummary ? styles.poSimCompact : undefined}>
+          {showCompletionSummary && (
+            <p className={styles.poSimCompactTitle}>Simulation results (best sweep highlighted)</p>
+          )}
+          <div
+            className={`${styles.priceChipRow} ${showCompletionSummary ? styles.priceChipRowCompact : ""}`}
+          >
           {sortedChips.map((r) => {
             const isPending = r.status === "PENDING" || r.status === "RUNNING";
             const isDone = r.status === "COMPLETED" && r.score != null;
             const isFailed = r.status === "FAILED";
+            const isBestSweep = showCompletionSummary && bestSweep?.id === r.id;
             const isRec = recommended?.id === r.id;
-            const scoreDelta = isDone ? r.score! - baselineScore : null;
+            const chipScoreDelta = isDone ? r.score! - baselineScore : null;
             const isSelected = selectedChipId === r.id;
 
             const barColor =
@@ -434,7 +768,7 @@ function PriceOptimizerSection({
                 className={[
                   styles.priceChip,
                   isSelected ? styles.priceChipSelected : "",
-                  isRec && !isSelected ? styles.priceChipRec : "",
+                  (isRec && !isSelected) || (isBestSweep && !isSelected) ? styles.priceChipRec : "",
                   isDone ? styles.priceChipDone : "",
                 ].join(" ")}
                 onClick={() => {
@@ -444,8 +778,10 @@ function PriceOptimizerSection({
                 disabled={!isDone && !isPending}
                 aria-pressed={isSelected}
               >
-                {isRec && (
-                  <span className={styles.recBadge}>★ Best ROI</span>
+                {(isRec || isBestSweep) && (
+                  <span className={styles.recBadge}>
+                    {isBestSweep ? "★ Best sweep" : "★ Best ROI"}
+                  </span>
                 )}
 
                 <div className={styles.chipTop}>
@@ -474,19 +810,19 @@ function PriceOptimizerSection({
                       </span>
                       <span className={styles.chipScoreOf}>/100</span>
                     </div>
-                    {scoreDelta !== null && (
+                    {chipScoreDelta !== null && (
                       <div
                         className={`${styles.chipDeltaRow} ${
-                          scoreDelta > 0
+                          chipScoreDelta > 0
                             ? styles.chipDeltaPos
-                            : scoreDelta < 0
+                            : chipScoreDelta < 0
                               ? styles.chipDeltaNeg
                               : styles.chipDeltaFlat
                         }`}
                       >
-                        {scoreDelta > 0 ? "▲" : scoreDelta < 0 ? "▼" : "—"}
+                        {chipScoreDelta > 0 ? "▲" : chipScoreDelta < 0 ? "▼" : "—"}
                         {" "}
-                        {scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} pts
+                        {chipScoreDelta > 0 ? `+${chipScoreDelta}` : chipScoreDelta} pts
                       </div>
                     )}
                     {isSelected && (
@@ -501,6 +837,7 @@ function PriceOptimizerSection({
               </button>
             );
           })}
+          </div>
         </div>
       )}
     </div>
@@ -509,6 +846,7 @@ function PriceOptimizerSection({
 
 type Props = {
   simulationId: string;
+  productUrl: string;
   baselineScore: number;
   baselinePhase1: AgentLogLite[];
   labPhase1: AgentLogLite[];
@@ -517,6 +855,7 @@ type Props = {
   priceDropoutPct: number;
   logisticsDropoutPct: number;
   trustDropoutPct: number;
+  trustAudit: TrustAuditFriction;
   experimentCards: ExperimentCard[];
   isPro: boolean;
   basePrice: number;
@@ -526,6 +865,7 @@ type Props = {
   setShippingDays: (n: number) => void;
   selectedCardId: string | null;
   toggleCard: (id: string) => void;
+  selectExperimentCard: (id: string) => void;
   runLabel: string;
   isSubmitting: boolean;
   latestRunning: boolean;
@@ -544,6 +884,7 @@ type Props = {
 
 export function ComparisonLaboratory({
   simulationId,
+  productUrl,
   baselineScore,
   baselinePhase1,
   labPhase1,
@@ -552,6 +893,7 @@ export function ComparisonLaboratory({
   priceDropoutPct,
   logisticsDropoutPct,
   trustDropoutPct,
+  trustAudit,
   experimentCards,
   isPro,
   basePrice,
@@ -561,6 +903,7 @@ export function ComparisonLaboratory({
   setShippingDays,
   selectedCardId,
   toggleCard,
+  selectExperimentCard,
   runLabel,
   isSubmitting,
   latestRunning,
@@ -578,6 +921,7 @@ export function ComparisonLaboratory({
 }: Props) {
   const [mobileTab, setMobileTab] = useState<"baseline" | "simulation">("baseline");
   const [selectedBatchSim, setSelectedBatchSim] = useState<PriceBatchResult | null>(null);
+  const [optimizerNavHint, setOptimizerNavHint] = useState<string | null>(null);
 
   const baselineMap = phase1ByArchetype(baselinePhase1);
   const labMap = phase1ByArchetype(labPhase1);
@@ -600,6 +944,13 @@ export function ComparisonLaboratory({
 
   const rec = getRecommendation(baselineScore);
 
+  const batchFullyCompleteForBanner =
+    isPro &&
+    priceBatchResults.length === 3 &&
+    priceBatchResults.every((r) => r.status === "COMPLETED" && r.score != null);
+  const bestSweepForBanner =
+    !batchRunning && batchFullyCompleteForBanner ? pickBestSweepRun(priceBatchResults) : null;
+
   const baselinePane = (
     <>
       <div className={styles.labPaneHeader}>
@@ -617,6 +968,7 @@ export function ComparisonLaboratory({
         pricePct={priceDropoutPct}
         logisticsPct={logisticsDropoutPct}
         trustPct={trustDropoutPct}
+        trustAudit={trustAudit}
       />
       <div style={{ marginTop: 16 }}>
         <p className={styles.panelSectionLabel}>First-scan panel votes — Phase 1</p>
@@ -627,6 +979,30 @@ export function ComparisonLaboratory({
 
   const simulationPane = (
     <>
+      {bestSweepForBanner && !activeBatchSim && (
+        <div className={styles.simPaneBanner}>
+          <Banner
+            tone="success"
+            title="Optimization complete"
+            action={
+              productUrl
+                ? {
+                    content: "Go to product page",
+                    url: productUrl,
+                    external: true,
+                  }
+                : undefined
+            }
+          >
+            <Text as="p" variant="bodySm">
+              Best sweep: ${bestSweepForBanner.price.toFixed(2)} ({bestSweepForBanner.pctDelta}% vs. list). Modeled
+              purchase intent {baselineScore} → {bestSweepForBanner.score} (
+              {bestSweepForBanner.score! - baselineScore >= 0 ? "+" : ""}
+              {bestSweepForBanner.score! - baselineScore} pts).
+            </Text>
+          </Banner>
+        </div>
+      )}
       <div className={styles.labPaneHeader}>
         <h3 className={styles.labPaneTitle}>
           {activeBatchSim
@@ -677,8 +1053,17 @@ export function ComparisonLaboratory({
 
   return (
     <div className={styles.labRoot}>
-      <div className={styles.labSticky}>
+      <div className={styles.labSticky} id="experiment-dashboard" tabIndex={-1}>
         <p className={styles.labStickyTitle}>Experiment dashboard</p>
+        {optimizerNavHint && (
+          <div className={styles.optimizerNavHintWrap}>
+            <Banner tone="info" onDismiss={() => setOptimizerNavHint(null)}>
+              <Text as="p" variant="bodySm">
+                {optimizerNavHint}
+              </Text>
+            </Banner>
+          </div>
+        )}
         {!isPro && (
           <Text as="p" variant="bodySm" tone="subdued">
             Upgrade to Pro to adjust price, shipping, and run simulations.
@@ -828,11 +1213,17 @@ export function ComparisonLaboratory({
         <PriceOptimizerSection
           basePrice={basePrice}
           baselineScore={baselineScore}
+          priceDropoutPct={priceDropoutPct}
+          logisticsDropoutPct={logisticsDropoutPct}
+          trustDropoutPct={trustDropoutPct}
           priceBatchResults={priceBatchResults}
           batchRunning={batchRunning}
           isSubmitting={isSubmitting}
           selectedChipId={selectedBatchSim?.id ?? null}
           onChipClick={setSelectedBatchSim}
+          experimentCards={experimentCards}
+          selectExperimentCard={selectExperimentCard}
+          onOptimizerNavHint={setOptimizerNavHint}
           fetcher={fetcher}
         />
       )}
@@ -976,7 +1367,9 @@ export function ComparisonLaboratory({
                       {(item.log.archetypeEmoji ? `${item.log.archetypeEmoji} ` : "")}
                       {ARCHETYPE_FALLBACK[item.log.archetype]?.name ?? item.log.archetype}
                     </span>
-                    <p className={styles.bubbleQuote}>&ldquo;{item.log.reasoning}&rdquo;</p>
+                    <p className={styles.bubbleQuote}>
+                      &ldquo;{sanitizeAgentReasoning(item.log.reasoning)}&rdquo;
+                    </p>
                   </div>
                 </div>
               ),

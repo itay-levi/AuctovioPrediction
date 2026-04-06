@@ -13,9 +13,8 @@ redirect_urls = [
 ]
 
 [access_scopes]
-# read_products: fetch product data for analysis
-# read_orders: used for shop-type classification
-scopes = "read_products,read_orders"
+# read_products: fetch product catalog for analysis
+scopes = "read_products"
 
 [webhooks]
 api_version = "2024-10"
@@ -27,8 +26,14 @@ api_version = "2024-10"
 
   # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
-  topics = [ "app/scopes_update" ]
+  topics = ["app/scopes_update"]
   uri = "/webhooks/app/scopes_update"
+
+  # Handled by: /app/routes/webhooks.app.subscriptions_update.tsx
+  # Fires on cancellation, expiry, or decline — downgrades store to FREE
+  [[webhooks.subscriptions]]
+  topics = ["app_subscriptions/update"]
+  uri = "/webhooks/app/subscriptions_update"
 
   # Webhooks can have filters
   # Only receive webhooks for product updates with a product price >= 10.00

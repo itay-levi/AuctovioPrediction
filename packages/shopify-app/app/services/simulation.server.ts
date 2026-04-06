@@ -203,6 +203,22 @@ export async function getSimulation(id: string) {
   });
 }
 
+/** Walk `originalSimulationId` chain so lab actions always target the product root scan. */
+export async function getSimulationLabRoot(id: string) {
+  let current = await getSimulation(id);
+  if (!current) return null;
+  const seen = new Set<string>([current.id]);
+  while (current.originalSimulationId) {
+    const parentId = current.originalSimulationId;
+    if (seen.has(parentId)) break;
+    seen.add(parentId);
+    const parent = await getSimulation(parentId);
+    if (!parent) break;
+    current = parent;
+  }
+  return current;
+}
+
 export async function getLabPartnerSimulation(labGroupId: string, excludeId: string) {
   return db.simulation.findFirst({
     where: {
@@ -253,7 +269,7 @@ export async function getPreviousCompletedSimulation(
 
 export async function getRecentSimulations(storeId: string, limit = 10) {
   return db.simulation.findMany({
-    where: { storeId },
+    where: { storeId, originalSimulationId: null },
     orderBy: { createdAt: "desc" },
     take: limit,
     select: {

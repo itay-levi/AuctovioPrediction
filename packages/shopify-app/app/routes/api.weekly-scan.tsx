@@ -3,14 +3,14 @@ import db from "../db.server";
 import { computeShopHealthScore } from "../services/health-score.server";
 import { sendWeeklyDigest } from "../services/email.server";
 
-const CRON_SECRET = process.env.CRON_SECRET ?? "dev-secret";
+const CRON_SECRET = process.env.CRON_SECRET;
 
 // POST /api/weekly-scan
 // Called by external cron (e.g. Upstash QStash, Vercel cron, or curl)
 // Header: Authorization: Bearer <CRON_SECRET>
 export const action = async ({ request }: ActionFunctionArgs) => {
   const auth = request.headers.get("Authorization");
-  if (auth !== `Bearer ${CRON_SECRET}`) {
+  if (!CRON_SECRET || auth !== `Bearer ${CRON_SECRET}`) {
     return new Response("Unauthorized", { status: 401 });
   }
 

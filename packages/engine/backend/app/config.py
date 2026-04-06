@@ -42,6 +42,9 @@ class Config:
     DEEP_LLM_RPM = os.environ.get('DEEP_LLM_RPM', '5')
     DEEP_LLM_TPM_LIMIT = int(os.environ.get('DEEP_LLM_TPM_LIMIT', '5500'))
 
+    # Per-agent thread wait in debate (HTTP client timeout is separate, typically 30s).
+    DEBATE_AGENT_THREAD_TIMEOUT_SEC = int(os.environ.get('DEBATE_AGENT_THREAD_TIMEOUT_SEC', '90'))
+
     # Fallback LLM (Gemini 1.5 Flash) — used when Groq exhausts retries on 429
     FALLBACK_LLM_API_KEY = os.environ.get('FALLBACK_LLM_API_KEY', '')
     FALLBACK_LLM_BASE_URL = os.environ.get(

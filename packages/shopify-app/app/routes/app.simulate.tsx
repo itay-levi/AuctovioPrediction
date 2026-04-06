@@ -16,6 +16,7 @@ import {
   Thumbnail,
   Checkbox,
   Box,
+  EmptyState,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
@@ -81,10 +82,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const productUrl = product.onlineStoreUrl ?? `https://${shopDomain}/products/${product.handle}`;
 
   const rawFocus = formData.get("focusAreas") as string | null;
-  const focusAreas: string[] = rawFocus ? JSON.parse(rawFocus) : [];
+  let focusAreas: string[] = [];
+  try {
+    focusAreas = rawFocus ? JSON.parse(rawFocus) : [];
+    if (!Array.isArray(focusAreas)) focusAreas = [];
+  } catch {
+    focusAreas = [];
+  }
 
   const rawLab = formData.get("labConfig") as string | null;
-  const labConfig = rawLab ? JSON.parse(rawLab) : undefined;
+  let labConfig: unknown;
+  try {
+    labConfig = rawLab ? JSON.parse(rawLab) : undefined;
+  } catch {
+    labConfig = undefined;
+  }
 
   const simulation = await createSimulation(
     store.id,
@@ -95,7 +107,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     budget.tier,
     appUrl,
     focusAreas,
-    labConfig,
+    labConfig as Parameters<typeof createSimulation>[8],
   );
 
   throw redirect(`/app/results/${simulation.id}`);
@@ -248,16 +260,35 @@ export default function SimulatePage() {
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">Select a Product</Text>
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  Choose any product from your catalog — no theme configuration, no A/B setup, no control group needed. Pick a product and run your panel check right now.
-                </Text>
 
-                <Select
-                  label="Product"
-                  options={productOptions}
-                  value={selectedProduct}
-                  onChange={setSelectedProduct}
-                />
+                {products.length === 0 ? (
+                  <EmptyState
+                    heading="No published products found"
+                    image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                  >
+                    <Text as="p" variant="bodyMd">
+                      Auctovio analyses live product pages. Add at least one published product to your
+                      Shopify catalog, then come back here to run your first panel.
+                    </Text>
+                    <Button
+                      url="https://admin.shopify.com/products/new"
+                      target="_blank"
+                      variant="primary"
+                    >
+                      Add a product in Shopify
+                    </Button>
+                  </EmptyState>
+                ) : (
+                  <>
+                    <Text as="p" variant="bodyMd" tone="subdued">
+                      Choose any product from your catalog — no theme configuration, no A/B setup, no control group needed. Pick a product and run your panel check right now.
+                    </Text>
+                    <Select
+                      label="Product"
+                      options={productOptions}
+                      value={selectedProduct}
+                      onChange={setSelectedProduct}
+                    />
 
                 {selectedProductData && (
                   <InlineStack gap="400" align="start">
@@ -356,6 +387,8 @@ export default function SimulatePage() {
                     </Button>
                   </Box>
                 </fetcher.Form>
+                  </>
+                )}
               </BlockStack>
             </Card>
           </BlockStack>

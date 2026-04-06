@@ -500,6 +500,27 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             brief = ingest_product(req.productJson, req.shopDomain)
             _brief_store["brief"] = brief
 
+            # What-if / price-batch: separate live storefront price from simulated price in prompts
+            effective_gap_context = gap_context
+            if delta_context:
+                dp = delta_context.get("deltaParams") or {}
+                orig = dp.get("originalPrice")
+                try:
+                    orig_f = float(orig) if orig is not None else None
+                except (TypeError, ValueError):
+                    orig_f = None
+                try:
+                    sim_p = float(brief.get("price_min") or 0)
+                except (TypeError, ValueError):
+                    sim_p = None
+                if orig_f is not None and sim_p is not None and abs(orig_f - sim_p) > 0.009:
+                    effective_gap_context = (
+                        (effective_gap_context or "")
+                        + "\n\nPRICE GROUND TRUTH: The merchant's live storefront price is $"
+                        + f"{orig_f:.2f}. The PRODUCT block below shows ${sim_p:.2f} for this hypothetical "
+                        + "run only. Base every price objection on the amount printed in the PRODUCT section."
+                    )
+
             # Dynamic Niche Profiler — single LLM call to generate product-specific
             # persona profiles (name, age, occupation, motivation, concern).
             # Cached per product URL so the same product always gets the same panel members.
@@ -536,7 +557,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 focus_areas=effective_focus,
                 trust_context=trust_context,
                 product_context=product_context,
-                gap_context=gap_context,
+                gap_context=effective_gap_context,
                 temp_modifier=lab_temp_modifier,
                 brutality_level=lab_brutality_level,
                 product_dna=product_dna,
