@@ -11,6 +11,8 @@ import {
   RangeSlider,
   CalloutCard,
   SkeletonBodyText,
+  Spinner,
+  ProgressBar,
 } from "@shopify/polaris";
 import { ConfidenceGauge } from "../ConfidenceGauge";
 import { sanitizeAgentReasoning } from "../../utils/sanitizeAgentReasoning";
@@ -146,6 +148,22 @@ const SEV_LABEL: Record<FrictionSev, string> = {
   warning:  "Warning",
   growth:   "Strong",
 };
+
+// ── Raw vote helpers (floor-bypass) ──────────────────────────────────────────
+// The engine applies a trust floor (min 60) to all sims. For delta comparisons
+// we derive buy-vote percentage directly from agent logs so the signal is real.
+
+function rawBuyCount(logs: AgentLogLite[]): number {
+  return logs.filter((l) => l.phase === 1 && l.verdict === "BUY").length;
+}
+function rawAgentTotal(logs: AgentLogLite[]): number {
+  return logs.filter((l) => l.phase === 1).length;
+}
+function rawVotePct(logs: AgentLogLite[]): number | null {
+  const total = rawAgentTotal(logs);
+  if (total === 0) return null;
+  return Math.round((rawBuyCount(logs) / total) * 100);
+}
 
 function getRecommendation(score: number): { emoji: string; text: string; cls: string } {
   if (score >= 80) return { emoji: "✅", text: "Strong — ready to scale",                     cls: styles.recStrong   };
@@ -382,6 +400,10 @@ export function pickBestSweepRun(results: PriceBatchResult[]): PriceBatchResult 
     const bs = best.score ?? 0;
     if (rs > bs) return r;
     if (rs < bs) return best;
+    // Scores tied (likely both floored) — use raw vote pct as tiebreaker
+    const rRaw = rawVotePct(r.phase1Logs);
+    const bRaw = rawVotePct(best.phase1Logs);
+    if (rRaw !== null && bRaw !== null && rRaw !== bRaw) return rRaw > bRaw ? r : best;
     return r.pctDelta > best.pctDelta ? r : best;
   });
 }
@@ -407,7 +429,11 @@ function buildPriceSweepTakeaway(
   baselineScore: number,
   bestScore: number,
   blockerPhrase: string,
+  floorMasking?: boolean,
 ): string {
+  if (floorMasking) {
+    return `Score floor (min 60) is masking the real signal. Check vote counts per chip to see which price point moved the panel. ${blockerPhrase.charAt(0).toUpperCase()}${blockerPhrase.slice(1)}`;
+  }
   const delta = bestScore - baselineScore;
   if (delta >= 5) {
     return `Discounting lifted modeled intent by about ${delta} points; still validate with trust and shipping experiments before you rely on it. ${blockerPhrase.charAt(0).toUpperCase()}${blockerPhrase.slice(1)}`;
@@ -486,6 +512,7 @@ const PRICE_OPT_NEXT_STEPS: {
 function PriceOptimizerSection({
   basePrice,
   baselineScore,
+  baselinePhase1,
   priceDropoutPct,
   logisticsDropoutPct,
   trustDropoutPct,
@@ -501,6 +528,7 @@ function PriceOptimizerSection({
 }: {
   basePrice: number;
   baselineScore: number;
+  baselinePhase1: AgentLogLite[];
   priceDropoutPct: number;
   logisticsDropoutPct: number;
   trustDropoutPct: number;
@@ -516,6 +544,15 @@ function PriceOptimizerSection({
 }) {
   const hasBatch = priceBatchResults.length > 0;
   const isBusy = isSubmitting || batchRunning;
+
+  // Detect floor masking: all completed chips scored the same as baseline
+  const baseRawBuy = rawBuyCount(baselinePhase1);
+  const baseRawTotal = rawAgentTotal(baselinePhase1);
+  const completedChips = priceBatchResults.filter((r) => r.status === "COMPLETED" && r.score != null);
+  const sweepFloorMasking =
+    completedChips.length > 0 &&
+    completedChips.every((r) => r.score === baselineScore) &&
+    completedChips.some((r) => rawVotePct(r.phase1Logs) !== rawVotePct(baselinePhase1));
 
   // Find best ROI chip: highest (scoreDelta / priceLost) where scoreDelta > 0
   const recommended = priceBatchResults
@@ -569,6 +606,8 @@ function PriceOptimizerSection({
   );
   const bestScore = bestSweep?.score ?? baselineScore;
   const scoreDelta = bestScore - baselineScore;
+  const bestSweepRawBuy = bestSweep ? rawBuyCount(bestSweep.phase1Logs) : null;
+  const bestSweepRawTotal = bestSweep ? rawAgentTotal(bestSweep.phase1Logs) : null;
 
   return (
     <div className={styles.priceOptBand}>
@@ -624,26 +663,39 @@ function PriceOptimizerSection({
         <>
           <p className={styles.poTakeaway}>
             <strong>Takeaway: </strong>
-            {buildPriceSweepTakeaway(baselineScore, bestScore, blockerPhrase)}
+            {buildPriceSweepTakeaway(baselineScore, bestScore, blockerPhrase, sweepFloorMasking)}
           </p>
 
           <div className={styles.poImpactGrid}>
             <div className={styles.poImpactCard}>
               <span className={styles.poImpactLabel}>Overall score</span>
-              <span className={styles.poImpactValue}>
-                {baselineScore} → {bestScore}
-              </span>
-              <span
-                className={`${styles.poImpactDelta} ${
-                  scoreDelta > 2
-                    ? styles.poDeltaGood
-                    : scoreDelta < -2
-                      ? styles.poDeltaBad
-                      : styles.poDeltaFlat
-                }`}
-              >
-                {scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} pts vs. baseline
-              </span>
+              {sweepFloorMasking ? (
+                <>
+                  <span className={styles.poImpactValue}>
+                    {baseRawBuy}/{baseRawTotal} → {bestSweepRawBuy}/{bestSweepRawTotal} BUY
+                  </span>
+                  <span className={`${styles.poImpactDelta} ${styles.poDeltaFlat}`}>
+                    Score floored at {baselineScore} — vote signal used
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className={styles.poImpactValue}>
+                    {baselineScore} → {bestScore}
+                  </span>
+                  <span
+                    className={`${styles.poImpactDelta} ${
+                      scoreDelta > 2
+                        ? styles.poDeltaGood
+                        : scoreDelta < -2
+                          ? styles.poDeltaBad
+                          : styles.poDeltaFlat
+                    }`}
+                  >
+                    {scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} pts vs. baseline
+                  </span>
+                </>
+              )}
             </div>
             <div className={styles.poImpactCard}>
               <span className={styles.poImpactLabel}>Price dropout</span>
@@ -746,6 +798,11 @@ function PriceOptimizerSection({
             const isRec = recommended?.id === r.id;
             const chipScoreDelta = isDone ? r.score! - baselineScore : null;
             const isSelected = selectedChipId === r.id;
+            // Floor-bypass: show raw vote delta when score is tied at floor
+            const chipRawBuy = rawBuyCount(r.phase1Logs);
+            const chipRawTotal = rawAgentTotal(r.phase1Logs);
+            const chipVoteDelta = chipRawTotal > 0 ? chipRawBuy - baseRawBuy : null;
+            const chipFloorMasking = isDone && chipScoreDelta === 0 && chipVoteDelta !== null && chipVoteDelta !== 0;
 
             const barColor =
               r.score != null && r.score >= 70
@@ -811,19 +868,25 @@ function PriceOptimizerSection({
                       <span className={styles.chipScoreOf}>/100</span>
                     </div>
                     {chipScoreDelta !== null && (
-                      <div
-                        className={`${styles.chipDeltaRow} ${
-                          chipScoreDelta > 0
-                            ? styles.chipDeltaPos
-                            : chipScoreDelta < 0
-                              ? styles.chipDeltaNeg
-                              : styles.chipDeltaFlat
-                        }`}
-                      >
-                        {chipScoreDelta > 0 ? "▲" : chipScoreDelta < 0 ? "▼" : "—"}
-                        {" "}
-                        {chipScoreDelta > 0 ? `+${chipScoreDelta}` : chipScoreDelta} pts
-                      </div>
+                      chipFloorMasking ? (
+                        <div className={`${styles.chipDeltaRow} ${chipVoteDelta! > 0 ? styles.chipDeltaPos : styles.chipDeltaNeg}`}>
+                          {chipVoteDelta! > 0 ? "▲" : "▼"} {chipRawBuy}/{chipRawTotal} BUY
+                        </div>
+                      ) : (
+                        <div
+                          className={`${styles.chipDeltaRow} ${
+                            chipScoreDelta > 0
+                              ? styles.chipDeltaPos
+                              : chipScoreDelta < 0
+                                ? styles.chipDeltaNeg
+                                : styles.chipDeltaFlat
+                          }`}
+                        >
+                          {chipScoreDelta > 0 ? "▲" : chipScoreDelta < 0 ? "▼" : "—"}
+                          {" "}
+                          {chipScoreDelta > 0 ? `+${chipScoreDelta}` : chipScoreDelta} pts
+                        </div>
+                      )
                     )}
                     {isSelected && (
                       <div className={styles.chipViewingHint}>Viewing ↑</div>
@@ -841,6 +904,138 @@ function PriceOptimizerSection({
         </div>
       )}
     </div>
+  );
+}
+
+// ── Live What-If progress pane ────────────────────────────────────────────────
+const PANEL_SIZE = 5; // expected agents per phase
+
+function WhatIfRunningPane({
+  labPhase1,
+  baselinePhase1,
+  elapsed,
+  stale,
+}: {
+  labPhase1: AgentLogLite[];
+  baselinePhase1: AgentLogLite[];
+  elapsed: number;
+  stale: boolean;
+}) {
+  const votedCount = labPhase1.length;
+  const totalAgents = Math.max(PANEL_SIZE, baselinePhase1.length);
+  const progressPct = Math.min(100, Math.round((votedCount / totalAgents) * 100));
+
+  const elapsedStr = elapsed < 60
+    ? `${elapsed}s`
+    : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+
+  // Build a roster: voted agents first, then placeholders for remaining
+  const votedIds = new Set(labPhase1.map((l) => l.archetype));
+  const allArchetypes = baselinePhase1.length > 0
+    ? baselinePhase1.map((l) => l.archetype)
+    : ROSTER_ORDER as unknown as string[];
+
+  // Agents not yet voted
+  const pending = allArchetypes.filter((a) => !votedIds.has(a));
+
+  return (
+    <BlockStack gap="300">
+      {/* Status header */}
+      <InlineStack align="space-between" blockAlign="center">
+        <InlineStack gap="200" blockAlign="center">
+          <Spinner size="small" />
+          <BlockStack gap="050">
+            <Text as="p" variant="bodyMd" fontWeight="semibold">
+              {votedCount === 0
+                ? "Preparing panel…"
+                : `Phase 1 — ${votedCount} of ${totalAgents} panelists voted`}
+            </Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {stale
+                ? "Still running — large panels can take a few minutes"
+                : "Votes appear as they come in"}
+            </Text>
+          </BlockStack>
+        </InlineStack>
+        <Text as="p" variant="bodySm" tone="subdued">{elapsedStr}</Text>
+      </InlineStack>
+
+      {/* Progress bar */}
+      <ProgressBar progress={votedCount === 0 ? 5 : progressPct} size="small" tone="highlight" />
+
+      {/* Live votes */}
+      {labPhase1.length > 0 && (
+        <BlockStack gap="200">
+          {labPhase1.map((log) => {
+            const fallback = ARCHETYPE_FALLBACK[log.archetype] ?? { emoji: "🧑", name: log.archetypeName ?? log.archetype };
+            const isBuy = log.verdict === "BUY";
+            return (
+              <div
+                key={log.agentId}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${isBuy ? "#d1fae5" : "#fee2e2"}`,
+                  background: isBuy ? "#f0fdf4" : "#fff5f5",
+                }}
+              >
+                <span style={{ fontSize: "1.2rem", lineHeight: 1 }}>
+                  {log.archetypeEmoji ?? fallback.emoji}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                    <Text as="span" variant="bodySm" fontWeight="semibold">
+                      {log.personaName ? `${log.personaName} · ` : ""}{log.archetypeName ?? fallback.name}
+                    </Text>
+                    <span style={{
+                      fontSize: "0.7rem",
+                      fontWeight: 700,
+                      padding: "2px 7px",
+                      borderRadius: 12,
+                      background: isBuy ? "#dcfce7" : "#fee2e2",
+                      color: isBuy ? "#15803d" : "#dc2626",
+                    }}>
+                      {isBuy ? "✓ BUY" : "✗ REJECT"}
+                    </span>
+                  </div>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {sanitizeAgentReasoning(log.reasoning)}
+                  </Text>
+                </div>
+              </div>
+            );
+          })}
+        </BlockStack>
+      )}
+
+      {/* Skeleton placeholders for agents still thinking */}
+      {pending.map((archetype) => {
+        const fallback = ARCHETYPE_FALLBACK[archetype] ?? { emoji: "🧑", name: archetype };
+        return (
+          <div
+            key={archetype}
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid #e5e7eb",
+              background: "#f9fafb",
+            }}
+          >
+            <span style={{ fontSize: "1.2rem", lineHeight: 1, opacity: 0.4 }}>{fallback.emoji}</span>
+            <div style={{ flex: 1 }}>
+              <Text as="span" variant="bodySm" tone="subdued">{fallback.name}</Text>
+            </div>
+            <Spinner size="small" />
+          </div>
+        );
+      })}
+    </BlockStack>
   );
 }
 
@@ -869,6 +1064,8 @@ type Props = {
   runLabel: string;
   isSubmitting: boolean;
   latestRunning: boolean;
+  deltaElapsed?: number;
+  deltaStale?: boolean;
   fetcher: FetcherWithComponents<SandboxActionData>;
   fetcherError?: string;
   labScore: number | null;
@@ -907,6 +1104,8 @@ export function ComparisonLaboratory({
   runLabel,
   isSubmitting,
   latestRunning,
+  deltaElapsed = 0,
+  deltaStale = false,
   fetcher,
   fetcherError,
   labScore,
@@ -940,7 +1139,20 @@ export function ComparisonLaboratory({
   const debateItems = buildDebateItems(baselinePhase2.length ? baselinePhase2 : activeLabPhase2);
 
   const priceMax = Math.max(500, basePrice * 3);
-  const showMeterShift = hasLab && activeLabScore !== baselineScore;
+
+  // Floor-bypass: detect when engine's min-60 floor masks real panel signal
+  const baselineRawPct = rawVotePct(baselinePhase1);
+  const activeLabRawPct = rawVotePct(activeLabPhase1);
+  const floorMasking =
+    hasLab &&
+    activeLabScore === baselineScore &&
+    baselineRawPct !== null &&
+    activeLabRawPct !== null &&
+    baselineRawPct !== activeLabRawPct;
+
+  // When floor is masking, use raw vote pct for meter so signal is visible
+  const meterDisplayValue = floorMasking ? activeLabRawPct! : (activeLabScore ?? 0);
+  const showMeterShift = hasLab && (activeLabScore !== baselineScore || floorMasking);
 
   const rec = getRecommendation(baselineScore);
 
@@ -950,6 +1162,10 @@ export function ComparisonLaboratory({
     priceBatchResults.every((r) => r.status === "COMPLETED" && r.score != null);
   const bestSweepForBanner =
     !batchRunning && batchFullyCompleteForBanner ? pickBestSweepRun(priceBatchResults) : null;
+  const bannerFloorMasking =
+    bestSweepForBanner != null &&
+    bestSweepForBanner.score === baselineScore &&
+    rawVotePct(bestSweepForBanner.phase1Logs) !== baselineRawPct;
 
   const baselinePane = (
     <>
@@ -982,8 +1198,8 @@ export function ComparisonLaboratory({
       {bestSweepForBanner && !activeBatchSim && (
         <div className={styles.simPaneBanner}>
           <Banner
-            tone="success"
-            title="Optimization complete"
+            tone={bannerFloorMasking ? "warning" : "success"}
+            title={bannerFloorMasking ? "Optimization complete — score floor active" : "Optimization complete"}
             action={
               productUrl
                 ? {
@@ -995,10 +1211,9 @@ export function ComparisonLaboratory({
             }
           >
             <Text as="p" variant="bodySm">
-              Best sweep: ${bestSweepForBanner.price.toFixed(2)} ({bestSweepForBanner.pctDelta}% vs. list). Modeled
-              purchase intent {baselineScore} → {bestSweepForBanner.score} (
-              {bestSweepForBanner.score! - baselineScore >= 0 ? "+" : ""}
-              {bestSweepForBanner.score! - baselineScore} pts).
+              {bannerFloorMasking
+                ? `Best sweep: $${bestSweepForBanner.price.toFixed(2)} (${bestSweepForBanner.pctDelta}% vs. list). Score floored at ${baselineScore} — raw panel: ${rawBuyCount(bestSweepForBanner.phase1Logs)}/${rawAgentTotal(bestSweepForBanner.phase1Logs)} BUY vs. ${rawBuyCount(baselinePhase1)}/${rawAgentTotal(baselinePhase1)} baseline. Use the chip vote counts to compare scenarios.`
+                : `Best sweep: $${bestSweepForBanner.price.toFixed(2)} (${bestSweepForBanner.pctDelta}% vs. list). Modeled purchase intent ${baselineScore} → ${bestSweepForBanner.score} (${bestSweepForBanner.score! - baselineScore >= 0 ? "+" : ""}${bestSweepForBanner.score! - baselineScore} pts).`}
             </Text>
           </Banner>
         </div>
@@ -1017,11 +1232,27 @@ export function ComparisonLaboratory({
               : "Idle"}
         </span>
       </div>
-      {hasLab ? (
+      {latestRunning && !activeBatchSim ? (
+        <WhatIfRunningPane
+          labPhase1={labPhase1}
+          baselinePhase1={baselinePhase1}
+          elapsed={deltaElapsed}
+          stale={deltaStale}
+        />
+      ) : hasLab ? (
         <>
+          {floorMasking && !activeBatchSim && (
+            <div style={{ marginBottom: 12 }}>
+              <Banner tone="warning" title="Score floor active — raw votes shown">
+                <Text as="p" variant="bodySm">
+                  Engine applies a min score of 60. Raw panel: {rawBuyCount(activeLabPhase1)}/{rawAgentTotal(activeLabPhase1)} BUY vs. {rawBuyCount(baselinePhase1)}/{rawAgentTotal(baselinePhase1)} BUY baseline. The meter shows vote % — run more What-Ifs or use Price Optimizer to find the best configuration.
+                </Text>
+              </Banner>
+            </div>
+          )}
           <Meter
-            label="Modeled purchase intent (panel)"
-            value={activeLabScore!}
+            label={floorMasking && !activeBatchSim ? "Raw buy-vote % (score floored)" : "Modeled purchase intent (panel)"}
+            value={meterDisplayValue}
             animate={showMeterShift}
           />
           <div className={styles.labCompareRow}>
@@ -1188,7 +1419,7 @@ export function ComparisonLaboratory({
             </fetcher.Form>
             {latestRunning && (
               <Text as="p" variant="bodySm" tone="subdued">
-                Panel running — this page refreshes every few seconds.
+                Panelists voting — results appear in the simulation pane on the right.
               </Text>
             )}
           </div>
@@ -1213,6 +1444,7 @@ export function ComparisonLaboratory({
         <PriceOptimizerSection
           basePrice={basePrice}
           baselineScore={baselineScore}
+          baselinePhase1={baselinePhase1}
           priceDropoutPct={priceDropoutPct}
           logisticsDropoutPct={logisticsDropoutPct}
           trustDropoutPct={trustDropoutPct}

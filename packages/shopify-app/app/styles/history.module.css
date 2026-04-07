@@ -589,3 +589,10 @@
   border-radius: var(--ah-radius);
   border: 1px solid var(--ah-border);
 }
+
+.failureReason {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--p-color-text-critical, #d72c0d);
+  line-height: 1.4;
+}

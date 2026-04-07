@@ -2,7 +2,7 @@
 ComparisonEngine — generates an AI insight explaining WHY a What-If score changed.
 
 Runs once after a delta simulation completes.
-Uses the Gemini client (passed in) for quality output.
+Uses the LLM client (passed in) for quality output.
 
 Returns a single insight string like:
   "Dropping the price increased suspicion because your Trust signals are still missing.

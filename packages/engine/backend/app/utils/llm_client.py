@@ -1,28 +1,25 @@
 """
-LLM client — dual-model (8B fast / 70B deep) on Groq + Gemini fallback.
+LLM client — configurable primary provider, dual-model routing.
+
+Current config: DeepInfra / nvidia/NVIDIA-Nemotron-3-Super-120B-A12B (both fast + deep roles).
+Previous config (Groq): llama-3.1-8b-instant (fast) + llama-3.3-70b-versatile (deep).
+Switch providers by editing packages/engine/backend/.env.
 
 Dual-model routing:
-  Fast (8B  — llama-3.1-8b-instant):    DNA extraction, product intelligence, gap analysis,
-                                          archetype generation, niche profiles, friction classification.
-  Deep (70B — llama-3.3-70b-versatile): All debate phases (P1/P2/P3) + recommendations.
+  Fast — DNA extraction, product intelligence, gap analysis, archetypes, friction classification.
+  Deep — All debate phases (P1/P2/P3) + recommendations.
 
-Each model has its OWN rate-limit pool on Groq — separate RPM / TPM quotas.
+Rate limiting:
+  LLM_RPM=0 / DEEP_LLM_RPM=0  → throttles disabled (paid tier / DeepInfra).
+  LLM_RPM=5 / DEEP_LLM_RPM=5  → ~12s gap between calls (Groq free tier).
 
-Rate-limiting strategy (Groq free tier, per model):
-  Limits:  30 RPM  |  6,000 TPM  (rolling 60-second windows)
-  Actual:  ~1,100 tok/call → max ~5.4 calls/min before TPM ceiling
-  Config:  LLM_RPM=5 / DEEP_LLM_RPM=5  →  12s gap between calls
-
-Two complementary guards per model tier:
-  1. RPM throttle  — enforces minimum gap between requests
-  2. TPM guard     — tracks tokens in a sliding 60s window
-
-Exponential backoff: 1s → 2s → 4s on 429 before handing off to Gemini fallback.
-Set LLM_RPM=0 / DEEP_LLM_RPM=0 to disable throttles (paid tier).
+Exponential backoff: 1s → 2s → 4s on 429.
+LLM_CLIENT_TIMEOUT (default 90s) controls per-request timeout.
 """
 
 import json
 import logging
+import os
 import re
 import time
 import threading
@@ -50,11 +47,6 @@ _deep_last_call: float = 0.0
 
 _deep_tpm_lock = threading.Lock()
 _deep_tpm_calls: collections.deque = collections.deque()
-
-# ── Fallback rate limiter (Gemini) ─────────────────────────────────────────────
-_fallback_lock = threading.Lock()
-_fallback_last_call: float = 0.0
-_FALLBACK_MIN_INTERVAL = 5.0   # 12 RPM max for Gemini free tier
 
 
 def _tpm_guard_for(
@@ -124,23 +116,13 @@ def _throttle_deep() -> None:
 _primary_lock = _fast_lock
 
 
-def _throttle_fallback() -> None:
-    global _fallback_last_call
-    with _fallback_lock:
-        now = time.monotonic()
-        wait = _FALLBACK_MIN_INTERVAL - (now - _fallback_last_call)
-        if wait > 0:
-            logger.debug(f"[throttle:fallback] sleeping {wait:.1f}s")
-            time.sleep(wait)
-        _fallback_last_call = time.monotonic()
-
 
 class LLMClient:
     """
-    LLM client with Groq → Gemini fallback and exponential backoff on 429.
+    LLM client with exponential backoff on 429.
 
-    use_deep_throttle=True  → uses the 70B rate-limit pool (DEEP_LLM_RPM / DEEP_LLM_TPM_LIMIT)
-    use_deep_throttle=False → uses the 8B rate-limit pool (LLM_RPM / _FAST_TPM_LIMIT)
+    use_deep_throttle=True  → uses the deep rate-limit pool (DEEP_LLM_RPM / DEEP_LLM_TPM_LIMIT)
+    use_deep_throttle=False → uses the fast rate-limit pool (LLM_RPM / _FAST_TPM_LIMIT)
     """
 
     def __init__(
@@ -156,30 +138,19 @@ class LLMClient:
         self._use_deep_throttle = use_deep_throttle
 
         if not self.api_key:
-            raise ValueError("LLM_API_KEY 未配置")
+            raise ValueError("LLM_API_KEY is not configured")
+
+        # Allow up to 90s per completion — configurable for large/slow models.
+        _client_timeout = float(os.environ.get("LLM_CLIENT_TIMEOUT", "90"))
 
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=30.0,
+            timeout=_client_timeout,
         )
 
-        # Fallback client — Gemini, only created when credentials are present
-        self._fallback_client: Optional[OpenAI] = None
-        self._fallback_model: Optional[str] = None
-        tier_label = "deep(70B)" if use_deep_throttle else "fast(8B)"
-        if Config.FALLBACK_LLM_API_KEY and Config.FALLBACK_LLM_BASE_URL:
-            self._fallback_client = OpenAI(
-                api_key=Config.FALLBACK_LLM_API_KEY,
-                base_url=Config.FALLBACK_LLM_BASE_URL,
-                timeout=30.0,
-            )
-            self._fallback_model = Config.FALLBACK_LLM_MODEL_NAME
-            logger.info(
-                f"LLMClient [{tier_label}]: primary={self.model} | fallback={self._fallback_model}"
-            )
-        else:
-            logger.info(f"LLMClient [{tier_label}]: primary={self.model} | no fallback configured")
+        tier_label = "deep" if use_deep_throttle else "fast"
+        logger.info(f"LLMClient [{tier_label}]: model={self.model} base_url={self.base_url}")
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -214,47 +185,9 @@ class LLMClient:
                 logger.error(f"[{tier_label}] LLM call failed ({type(e).__name__}): {e}")
                 raise
 
-    def _call_fallback(self, kwargs: dict) -> Any:
-        """
-        Call Gemini fallback. No internal retry — if this 429s too, let it raise.
-        Strips response_format on error (Gemini compat) and retries once.
-        """
-        if self._fallback_client is None:
-            raise RuntimeError(
-                "Fallback LLM not configured (FALLBACK_LLM_API_KEY / FALLBACK_LLM_BASE_URL missing)"
-            )
-        _throttle_fallback()
-        fallback_kwargs = {**kwargs, "model": self._fallback_model}
-        try:
-            return self._fallback_client.chat.completions.create(**fallback_kwargs)
-        except Exception as e:
-            # Some Gemini models don't support response_format — retry without it
-            if "response_format" in fallback_kwargs and "response_format" in str(e).lower():
-                logger.warning("Fallback: stripping response_format and retrying")
-                fallback_kwargs.pop("response_format", None)
-                _throttle_fallback()
-                return self._fallback_client.chat.completions.create(**fallback_kwargs)
-            raise
-
     def _complete(self, kwargs: dict) -> str:
-        """
-        Core dispatch: try primary with backoff, fall back to Gemini on exhaustion.
-        Returns the raw content string (think-tags stripped).
-        """
-        try:
-            response = self._call_primary_with_backoff(kwargs)
-        except RateLimitError:
-            if self._fallback_client is None:
-                logger.error(
-                    "[fallback] Groq quota exhausted and no fallback configured — "
-                    "simulation will fail. Add GOOGLE_AI_API_KEY to enable Gemini fallback."
-                )
-                raise
-            logger.warning(
-                "[fallback] Primary quota exhausted — routing this call to Gemini"
-            )
-            response = self._call_fallback(kwargs)
-
+        """Call primary LLM with backoff. Returns the response string (think-tags stripped)."""
+        response = self._call_primary_with_backoff(kwargs)
         content = response.choices[0].message.content or ""
         # Strip <think> CoT blocks emitted by some models
         content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
@@ -286,12 +219,15 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int = 800,
     ) -> Dict[str, Any]:
-        """Send a chat request and return a parsed JSON dict."""
+        """Send a chat request and return a parsed JSON dict.
+
+        Does NOT pass response_format — not all models support json_object mode.
+        Relies on prompt-based JSON instruction + fence stripping.
+        """
         response = self.chat(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format={"type": "json_object"},
         )
         cleaned = response.strip()
         cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
@@ -299,4 +235,4 @@ class LLMClient:
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            raise ValueError(f"LLM返回的JSON格式无效: {cleaned}")
+            raise ValueError(f"LLM returned invalid JSON: {cleaned}")

@@ -1,9 +1,9 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher, useRevalidator } from "@remix-run/react";
-import { Page, Text, BlockStack, InlineStack, Button, Badge } from "@shopify/polaris";
+import { Page, Text, BlockStack, InlineStack, Button, Badge, Banner } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { authenticate } from "../shopify.server";
 import { getStore, getMtBudgetStatus } from "../services/store.server";
 import { getSimulation, getSimulationLabRoot, canRunSimulation } from "../services/simulation.server";
@@ -231,7 +231,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
-  await requireTier(shopDomain, "PRO");
+  await requireTier(shopDomain, "PRO", "sandbox");
 
   const formData = await request.formData();
   const intent = (formData.get("intent") as string | null) ?? "run_whatif";
@@ -298,10 +298,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           productDna,
           activeExperiment: card.hypothesis,
           isPro: true,
+          skipFloor: true,
         }).catch((err: unknown) => {
           console.error(`[Engine] Experiment card "${card.name}" trigger failed:`, err);
           db.simulation
-            .update({ where: { id: deltaSim.id }, data: { status: "FAILED" } })
+            .update({
+              where: { id: deltaSim.id },
+              data: {
+                status: "FAILED",
+                failureReason: "The experiment could not be started. Please try again.",
+              } as Parameters<typeof db.simulation.update>[0]["data"],
+            })
             .catch(() => {});
         });
       }),
@@ -350,10 +357,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           originalTrustAudit: (originalSim as { trustAudit?: unknown }).trustAudit ?? undefined,
           productDna,
           isPro: true,
+          skipFloor: true,
         }).catch((err: unknown) => {
           console.error(`[Engine] Price batch ${pct}% trigger failed:`, err);
           db.simulation
-            .update({ where: { id: deltaSim.id }, data: { status: "FAILED" } })
+            .update({
+              where: { id: deltaSim.id },
+              data: {
+                status: "FAILED",
+                failureReason: "The price simulation could not be started. Please try again.",
+              } as Parameters<typeof db.simulation.update>[0]["data"],
+            })
             .catch(() => {});
         });
       }),
@@ -392,10 +406,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     productDna,
     activeExperiment,
     isPro: tier === "PRO" || tier === "ENTERPRISE",
+    skipFloor: true,
   }).catch((err: unknown) => {
     console.error("[Engine] Delta trigger failed:", err);
     db.simulation
-      .update({ where: { id: deltaSim.id }, data: { status: "FAILED" } })
+      .update({
+        where: { id: deltaSim.id },
+        data: {
+          status: "FAILED",
+          failureReason: "The scenario could not be started. Please try again.",
+        } as Parameters<typeof db.simulation.update>[0]["data"],
+      })
       .catch(() => {});
   });
 
@@ -423,11 +444,38 @@ export default function SandboxPage() {
   );
 
   const hasInProgress = deltas.some((d) => d.status === "PENDING" || d.status === "RUNNING");
+  const [deltaElapsed, setDeltaElapsed] = useState(0);
+  const [deltaStale, setDeltaStale] = useState(false);
+  const prevHasInProgress = useRef(hasInProgress);
+
+  // Reset stale state when a new run starts
+  useEffect(() => {
+    if (hasInProgress && !prevHasInProgress.current) {
+      setDeltaElapsed(0);
+      setDeltaStale(false);
+    }
+    prevHasInProgress.current = hasInProgress;
+  }, [hasInProgress]);
+
+  // Keep polling while running — slow to 10s after stale threshold, never stop
   useEffect(() => {
     if (!hasInProgress) return;
-    const interval = setInterval(revalidate, 4000);
+    const interval = setInterval(revalidate, deltaStale ? 10000 : 4000);
     return () => clearInterval(interval);
-  }, [hasInProgress, revalidate]);
+  }, [hasInProgress, deltaStale, revalidate]);
+
+  useEffect(() => {
+    if (!hasInProgress) { setDeltaElapsed(0); return; }
+    const timer = setInterval(() => setDeltaElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [hasInProgress]);
+
+  // Show stale notice after 10 min (What-If panels are faster than root scans)
+  useEffect(() => {
+    if (deltaElapsed >= 600 && hasInProgress && !deltaStale) {
+      setDeltaStale(true);
+    }
+  }, [deltaElapsed, hasInProgress, deltaStale]);
 
   const latestRunning = deltas.find((d) => d.status === "PENDING" || d.status === "RUNNING");
 
@@ -493,6 +541,23 @@ export default function SandboxPage() {
         ]}
       />
       <BlockStack gap="500">
+        {fetcher.data?.error && (
+          <Banner tone="critical" title="Could not start analysis">
+            <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
+          </Banner>
+        )}
+
+        {deltaStale && hasInProgress && (
+          <Banner tone="warning" title="Analysis is taking longer than expected">
+            <BlockStack gap="200">
+              <Text as="p" variant="bodyMd">
+                The connection to the analysis engine may have been interrupted. You can wait for it to complete or run a new scenario.
+              </Text>
+              <Button onClick={revalidate} variant="plain">Refresh now</Button>
+            </BlockStack>
+          </Banner>
+        )}
+
         <ComparisonLaboratory
           simulationId={simulation.id}
           productUrl={simulation.productUrl}
@@ -518,6 +583,8 @@ export default function SandboxPage() {
           runLabel={runLabel}
           isSubmitting={isSubmitting}
           latestRunning={!!latestRunning}
+          deltaElapsed={deltaElapsed}
+          deltaStale={deltaStale}
           fetcher={fetcher}
           fetcherError={fetcher.data?.error}
           labScore={labScore}

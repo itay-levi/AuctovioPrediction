@@ -73,16 +73,6 @@ def _make_deep_llm() -> LLMClient:
     )
 
 
-def _make_gemini_client() -> LLMClient:
-    """Gemini fallback — used for recommendations on What-If runs if configured."""
-    if not Config.FALLBACK_LLM_API_KEY or not Config.FALLBACK_LLM_BASE_URL:
-        return _make_deep_llm()   # fall back to 70B if Gemini not configured
-    return LLMClient(
-        api_key=Config.FALLBACK_LLM_API_KEY,
-        base_url=Config.FALLBACK_LLM_BASE_URL,
-        model=Config.FALLBACK_LLM_MODEL_NAME,
-    )
-
 
 def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context: dict | None = None):
     """
@@ -116,11 +106,20 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
     try:
         fast_llm = _make_fast_llm()    # 8B — pre-processing, classification
         deep_llm = _make_deep_llm()    # 70B — debate phases, recommendations
-        # What-If runs use Gemini for recommendations (higher quality, separate quota).
-        # Non-delta runs use 70B directly.
-        summary_llm = _make_gemini_client() if delta_context else deep_llm
+        summary_llm = deep_llm
         # Keep `llm` as alias pointing to fast_llm for any legacy call sites not yet updated
         llm = fast_llm
+
+        # Heartbeat — moves UI from PENDING to RUNNING immediately so the user
+        # sees activity during the pre-processing LLM calls (can take 60-120s).
+        post_phase_update(
+            callback_url=req.callbackUrl,
+            api_key=getattr(Config, "SHOPIFY_APP_API_KEY", None),
+            simulation_id=req.simulationId,
+            phase=0,
+            status="RUNNING",
+            partial=True,
+        )
 
         # Panel cache key — stable identifier for this product listing
         _panel_key = req.productUrl or req.productJson.get("handle", "")
@@ -154,6 +153,9 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             product_dna = dna_from_dict(_supplied_dna)
             logger.info(f"[{req.simulationId}] Delta run — reusing cached DNA (skipping Phase 0)")
 
+        from concurrent.futures import ThreadPoolExecutor as _PreTPE
+        from ..archetypes.niche_contexts import generate_niche_profiles as _gen_niche
+
         if _panel_key and _panel_key in _intelligence_cache:
             cached_intel = _intelligence_cache[_panel_key]
             product_context = cached_intel["product_context"]
@@ -162,12 +164,37 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             gap_items_for_recs = cached_intel.get("gap_items", [])
             if product_dna is None:
                 product_dna = dna_from_dict(cached_intel.get("product_dna"))
+            # Niche profiles may still need generating if not yet cached
+            _need_niche = not (_panel_key and _panel_key in _niche_profile_cache)
+            if _need_niche:
+                niche_map = _gen_niche(llm, req.productJson)
+                if _panel_key:
+                    _niche_profile_cache[_panel_key] = niche_map
+            else:
+                niche_map = _niche_profile_cache[_panel_key]
         else:
-            intelligence = generate_product_intelligence(llm, req.productJson)
+            # Run DNA + niche profiles concurrently with intelligence extraction
+            # (all three only need product_json — no mutual dependency)
+            _need_dna = product_dna is None and not _supplied_dna
+            _need_niche = not (_panel_key and _panel_key in _niche_profile_cache)
+
+            with _PreTPE(max_workers=3) as _pre_pool:
+                _intel_fut = _pre_pool.submit(generate_product_intelligence, llm, req.productJson)
+                _dna_fut   = _pre_pool.submit(extract_product_dna, llm, req.productJson) if _need_dna else None
+                _niche_fut = _pre_pool.submit(_gen_niche, llm, req.productJson) if _need_niche else None
+
+                intelligence = _intel_fut.result()
+                if _dna_fut and product_dna is None:
+                    product_dna = _dna_fut.result()
+                niche_map = _niche_fut.result() if _niche_fut else _niche_profile_cache.get(_panel_key or "", {})
+
+            if _panel_key and _need_niche:
+                _niche_profile_cache[_panel_key] = niche_map
+
             product_context = format_product_context(intelligence)
             no_return_from_intelligence = intelligence.no_return_acceptable if intelligence else None
 
-            # Gap analysis — score the listing against the category checklist
+            # Gap analysis — must run after intelligence (needs intelligence.checklist)
             if intelligence and intelligence.checklist:
                 from ..services.shopify_ingestion import ingest_product as _ingest_for_gaps
                 try:
@@ -186,10 +213,6 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     logger.warning(f"Gap analysis failed for {req.simulationId}: {_gap_err}")
                     gap_analysis = None
 
-            # DNA extraction — single fast call, cached with intelligence
-            if product_dna is None and not _supplied_dna:
-                product_dna = extract_product_dna(llm, req.productJson)
-
             if _panel_key:
                 _intelligence_cache[_panel_key] = {
                     "product_context": product_context,
@@ -205,7 +228,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         lab_temp_modifier = 0.0
         lab_audience_context = ""
         lab_focus_override: list[str] = []
-        lab_brutality_level = 5
+        lab_brutality_level = 3  # Default: balanced — no extra evidence rule injected
 
         if lab:
             # Skepticism → temperature modifier
@@ -316,7 +339,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         except Exception as e:
             logger.warning(f"Trust audit failed for {req.simulationId}: {e}")
 
-        # ── Vision analysis (PRO only, uses Gemini Vision) ────────────────────
+        # ── Vision analysis (PRO only) ────────────────────────────────────────
         # Extracts image quality, trust signals, and visual gaps from product images.
         # Injected into trust_context so all agents can comment on visual credibility.
         if getattr(req, 'isPro', False):
@@ -376,16 +399,16 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 critical_signals = {"return_policy", "no_shipping_info", "no_contact_info"}
                 all_critical_resolved = not critical_signals.intersection(killer_signals)
 
-                # Quality bonus: reward merchant-controllable listing signals on top of vote score.
-                # This ensures a well-prepared listing gets credit even with low social proof.
+                # Quality bonus: small reward for merchant-controllable listing signals.
+                # Capped at 10pts so it nudges but never drowns out the panel vote.
                 _raw_score = score  # preserve pre-bonus score for breakdown display
                 _brief_for_bonus = _brief_store.get("brief") or {}
                 quality_bonus = 0
-                if trust_audit.get("hasReturnPolicy"):    quality_bonus += 5
-                if trust_audit.get("hasShippingInfo"):    quality_bonus += 5
-                if trust_audit.get("hasContact"):         quality_bonus += 5
-                if len(_brief_for_bonus.get("description_text", "")) > 300: quality_bonus += 5
-                if _brief_for_bonus.get("image_count", 0) > 1:              quality_bonus += 3
+                if trust_audit.get("hasReturnPolicy"):    quality_bonus += 2
+                if trust_audit.get("hasShippingInfo"):    quality_bonus += 2
+                if trust_audit.get("hasContact"):         quality_bonus += 2
+                if len(_brief_for_bonus.get("description_text", "")) > 300: quality_bonus += 2
+                if _brief_for_bonus.get("image_count", 0) > 1:              quality_bonus += 2
                 if quality_bonus:
                     new_score = min(95, score + quality_bonus)
                     logger.info(
@@ -394,12 +417,14 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     )
                     score = new_score
 
-                # Score floor: all 3 critical trust killers resolved → minimum 60
+                # Score floor: only apply when the listing clearly has solid trust signals
+                # AND the raw panel score was already close (≥40) — avoids masking genuinely
+                # poor listings that happen to have a return policy.
                 _floor_applied = False
-                if all_critical_resolved and score < 60:
+                if all_critical_resolved and _raw_score >= 40 and score < 60:
                     logger.info(
-                        f"[score_floor] {req.simulationId}: all 3 critical trust killers "
-                        f"resolved — lifting score {score} → 60"
+                        f"[score_floor] {req.simulationId}: trust killers resolved and "
+                        f"raw score {_raw_score}≥40 — lifting {score} → 60"
                     )
                     score = 60
                     _floor_applied = True
@@ -422,7 +447,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 }
                 # All votes are now accumulated from previous partial callbacks
                 all_votes = list(_accumulated_votes)
-                # Use Gemini (summary_llm) for recommendations — higher quality output
+                # Use deep LLM for recommendations
                 try:
                     recommendations = generate_recommendations(
                         llm=summary_llm,
@@ -521,22 +546,9 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                         + "run only. Base every price objection on the amount printed in the PRODUCT section."
                     )
 
-            # Dynamic Niche Profiler — single LLM call to generate product-specific
-            # persona profiles (name, age, occupation, motivation, concern).
-            # Cached per product URL so the same product always gets the same panel members.
-            from ..archetypes.niche_contexts import generate_niche_profiles
-            if _panel_key and _panel_key in _niche_profile_cache:
-                niche_map = _niche_profile_cache[_panel_key]
-                print(
-                    f"[{req.productJson.get('title', '?')}] Using cached niche profiles",
-                    flush=True,
-                )
-            else:
-                niche_map = generate_niche_profiles(llm, req.productJson)
-                if _panel_key:
-                    _niche_profile_cache[_panel_key] = niche_map
+            # niche_map is already set by the parallel pre-processing block above
             print(
-                f"[{req.productJson.get('title', '?')}] Persona profiles generated: "
+                f"[{req.productJson.get('title', '?')}] Persona profiles ready: "
                 + ", ".join(
                     f"{k[:8]}={p.get('name','?')},{p.get('age','?')},{p.get('motivation','?')}"
                     for k, p in niche_map.items()
@@ -814,7 +826,7 @@ def generate_fix():
     prompt = _FIX_PROMPTS[signal].format(product_type=product_type)
 
     try:
-        llm = _make_gemini_client()
+        llm = _make_deep_llm()
         text = llm.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
@@ -893,7 +905,7 @@ Respond with valid JSON only:
 {{"why_gap":"one sentence max 20 words","divergence_topics":["topic1","topic2","topic3"],"target_persona_card":"2-3 sentences","baseline_label":"General Public","target_label":"{scenario_label}"}}"""
 
     try:
-        llm = _make_gemini_client()
+        llm = _make_deep_llm()
         result = llm.chat_json([{"role": "user", "content": prompt}])
         return jsonify({
             "scoreDelta": score_delta,

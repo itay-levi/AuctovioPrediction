@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, Link } from "@remix-run/react";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
-import { Page } from "@shopify/polaris";
+import { Page, Banner, Text } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { getStore, getMtBudgetStatus, MT_LIMITS, SIM_LIMITS } from "../services/store.server";
-import { getRecentSimulations } from "../services/simulation.server";
+import { getRecentSimulations, expireStuckSimulations } from "../services/simulation.server";
 import styles from "../styles/dashboard.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -16,9 +16,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getStore(shopDomain),
     getMtBudgetStatus(shopDomain),
   ]);
+  if (store) await expireStuckSimulations(store.id);
   const recentSims = store ? await getRecentSimulations(store.id, 5) : [];
 
   const tier = (budget?.tier ?? "FREE") as keyof typeof MT_LIMITS;
+  const url = new URL(request.url);
   return {
     shopDomain,
     store,
@@ -27,6 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     mtLimit: MT_LIMITS[tier],
     simLimit: SIM_LIMITS[tier],
     isDev: process.env.NODE_ENV === "development",
+    justUpgraded: url.searchParams.get("upgraded") === "1",
   };
 };
 
@@ -142,7 +145,7 @@ function AnalysisRow({ sim }: {
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const { store, budget, recentSims, mtLimit, simLimit, isDev } = useLoaderData<typeof loader>();
+  const { store, budget, recentSims, mtLimit, simLimit, isDev, justUpgraded } = useLoaderData<typeof loader>();
 
   const tierLabel = budget?.tier ?? "FREE";
   const mtUsed    = budget?.used ?? 0;
@@ -169,6 +172,15 @@ export default function Dashboard() {
     <Page>
       <TitleBar title="CustomerPanel AI" />
       <div className={styles.root}>
+
+        {/* ── Upgrade success ── */}
+        {justUpgraded && (
+          <Banner tone="success" title="You're on the new plan!">
+            <Text as="p" variant="bodyMd">
+              Your subscription is active. All Pro features are now unlocked — run your first advanced analysis below.
+            </Text>
+          </Banner>
+        )}
 
         {/* ── Budget warning ── */}
         {mtPct >= 80 && !isDev && (

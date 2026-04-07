@@ -21,6 +21,9 @@ export async function canRunSimulation(
   const budget = await getMtBudgetStatus(shopDomain);
   if (!budget) return { allowed: false, reason: "Store not found" };
 
+  // Expire zombies first so they don't inflate the monthly count
+  await expireStuckSimulations(storeId);
+
   const estimate = await estimateSimulationCost(budget.tier);
   if (budget.remaining < estimate) {
     return {
@@ -34,9 +37,12 @@ export async function canRunSimulation(
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
 
+  // Only count root (product scan) simulations — What-Ifs / delta runs are not
+  // new analyses and should not consume the monthly slot quota.
   const simCount = await db.simulation.count({
     where: {
       storeId,
+      originalSimulationId: null,
       createdAt: { gte: monthStart },
       status: { not: "FAILED" as SimulationStatus },
     },
@@ -61,7 +67,13 @@ function _triggerWithErrorHandling(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Engine] ❌ Simulation ${simulationId} failed to trigger: ${msg}`);
     db.simulation
-      .update({ where: { id: simulationId }, data: { status: "FAILED" } })
+      .update({
+        where: { id: simulationId },
+        data: {
+          status: "FAILED",
+          failureReason: "The analysis could not be started. Please try again.",
+        } as Parameters<typeof db.simulation.update>[0]["data"],
+      })
       .catch(() => {});
   });
 }
@@ -297,6 +309,7 @@ export async function updateSimulationFromCallback(
     trustAudit?: unknown;
     comparisonInsight?: string;
     productDna?: unknown;
+    failureReason?: string;
     agentLogs?: {
       agentId: string;
       archetype: string;
@@ -326,6 +339,7 @@ export async function updateSimulationFromCallback(
         trustAudit: data.trustAudit as object | undefined,
         comparisonInsight: data.comparisonInsight,
         ...(data.productDna !== undefined && { productDna: data.productDna as object }),
+        ...(data.failureReason !== undefined && { failureReason: data.failureReason }),
       },
     });
 
@@ -350,4 +364,31 @@ export async function updateSimulationFromCallback(
       });
     }
   });
+}
+
+/**
+ * Mark any PENDING or RUNNING simulation older than `timeoutMinutes` as FAILED.
+ * Call this on page load (history, results) and at engine startup so zombie
+ * simulations never stay stuck forever after a crash or restart.
+ *
+ * Returns the number of simulations that were expired.
+ */
+export async function expireStuckSimulations(
+  storeId: string,
+  timeoutMinutes = 20
+): Promise<number> {
+  const cutoff = new Date(Date.now() - timeoutMinutes * 60 * 1000);
+  const result = await db.simulation.updateMany({
+    where: {
+      storeId,
+      status: { in: ["PENDING", "RUNNING"] },
+      updatedAt: { lt: cutoff },
+    },
+    data: {
+      status: "FAILED",
+      failureReason:
+        "The analysis did not complete — the server may have restarted mid-run. Your budget has not been charged. Please run a new analysis.",
+    },
+  });
+  return result.count;
 }

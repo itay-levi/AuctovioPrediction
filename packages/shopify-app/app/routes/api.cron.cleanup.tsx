@@ -21,7 +21,10 @@ export async function action({ request }: ActionFunctionArgs) {
       status: { in: ["PENDING", "RUNNING"] },
       updatedAt: { lt: fifteenMinutesAgo },
     },
-    data: { status: "FAILED" },
+    data: {
+      status: "FAILED",
+      failureReason: "The analysis timed out. The AI model took longer than expected. Please try again.",
+    } as Parameters<typeof db.simulation.updateMany>[0]["data"],
   });
 
   return json({ expired: result.count });

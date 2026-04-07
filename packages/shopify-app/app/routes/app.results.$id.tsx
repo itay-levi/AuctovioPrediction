@@ -25,6 +25,7 @@ import {
   getPreviousCompletedSimulation,
   getLabPartnerSimulation,
   saveComparisonSummary,
+  expireStuckSimulations,
 } from "../services/simulation.server";
 import { compareLabSimulations } from "../services/engine.server";
 import { getStore } from "../services/store.server";
@@ -377,6 +378,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Not found", { status: 404 });
   }
 
+  // Expire any zombie simulations for this store (fire-and-forget, doesn't block render)
+  if (store) expireStuckSimulations(store.id).catch(() => {});
+
   const productJson = simulation.productJson as { title?: string; id?: string } | null;
 
   // ── Lab dual-sim: fetch partner baseline when this is a Lab run ─────────────
@@ -486,6 +490,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     labComparison,
     labPartnerStatus: labPartner?.status ?? null,
     labPartnerScore: labPartner?.score ?? null,
+    failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
   };
 };
 
@@ -531,9 +536,10 @@ function PhaseBar({ phase, status }: { phase: number; status: string }) {
 }
 
 export default function ResultsPage() {
-  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore } = useLoaderData<typeof loader>();
+  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason } = useLoaderData<typeof loader>();
   const { revalidate } = useRevalidator();
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [staleWarning, setStaleWarning] = useState(false);
 
   const isDone = simulation.status === "COMPLETED" || simulation.status === "FAILED";
   const isPro = isDev || tier === "PRO" || tier === "ENTERPRISE";
@@ -545,17 +551,29 @@ export default function ResultsPage() {
     if (isDone) setSelectedTab(0);
   }, [isDone]);
 
+  // Keep polling while running — slow to 10s after the stale threshold, but never stop
   useEffect(() => {
     if (isDone) return;
-    const interval = setInterval(revalidate, 4000);
+    const interval = setInterval(revalidate, staleWarning ? 10000 : 4000);
     return () => clearInterval(interval);
-  }, [isDone, revalidate]);
+  }, [isDone, staleWarning, revalidate]);
 
   useEffect(() => {
     if (isDone) return;
     const timer = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
     return () => clearInterval(timer);
   }, [isDone]);
+
+  // After 10 minutes, show a "still working" notice (large panels can take this long)
+  useEffect(() => {
+    if (isDone) {
+      setStaleWarning(false);
+      return;
+    }
+    if (elapsedSeconds >= 600 && !staleWarning) {
+      setStaleWarning(true);
+    }
+  }, [elapsedSeconds, isDone, staleWarning]);
 
   const report = simulation.reportJson as ReportJson | null;
   const labConfig = report?.labConfig ?? null;
@@ -691,21 +709,44 @@ export default function ResultsPage() {
 
         {/* ── Status banners ── */}
         {simulation.status === "FAILED" && (
-          <Banner tone="critical">
-            <Text as="p" variant="bodyMd">Analysis failed. This has not used your budget. Please try again.</Text>
+          <Banner tone="critical" title="Analysis did not complete">
+            <BlockStack gap="200">
+              <Text as="p" variant="bodyMd">
+                {failureReason ?? "The analysis was interrupted. Your budget has not been charged."}
+              </Text>
+              <Button url="/app/simulate" variant="plain">Run a new analysis</Button>
+            </BlockStack>
           </Banner>
         )}
 
         {!isDone && (
-          <Banner tone="info">
+          <Banner tone={staleWarning ? "warning" : "info"}>
             <InlineStack align="space-between" blockAlign="center">
               <InlineStack gap="300" blockAlign="center">
                 <Spinner size="small" />
-                <Text as="p" variant="bodyMd">Your customer panel is working — new results appear every few seconds</Text>
+                <BlockStack gap="050">
+                  <Text as="p" variant="bodyMd">
+                    {staleWarning
+                      ? "Large panels take a while — your analysis is still running"
+                      : elapsedSeconds < 60
+                        ? "Preparing your panel and profiling the product…"
+                        : "Your customer panel is debating — votes appear as they come in"}
+                  </Text>
+                  {staleWarning && (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      15-agent panels can take up to 15 minutes with a large AI model. This page will update automatically.
+                    </Text>
+                  )}
+                </BlockStack>
               </InlineStack>
-              <InlineStack gap="200">
-                {elapsedSeconds > 0 && <Text as="p" variant="bodySm" tone="subdued">{formatElapsed(elapsedSeconds)}</Text>}
-                <Text as="p" variant="bodySm" tone="subdued">Auto-refreshing</Text>
+              <InlineStack gap="200" blockAlign="center">
+                {elapsedSeconds > 0 && (
+                  <Text as="p" variant="bodySm" tone="subdued">{formatElapsed(elapsedSeconds)}</Text>
+                )}
+                {staleWarning
+                  ? <Button onClick={revalidate} variant="plain" size="slim">Refresh</Button>
+                  : <Text as="p" variant="bodySm" tone="subdued">Auto-refreshing</Text>
+                }
               </InlineStack>
             </InlineStack>
           </Banner>
@@ -721,6 +762,36 @@ export default function ResultsPage() {
                 <AnalyticsSafeBadge />
               </BlockStack>
             </InlineStack>
+          </Banner>
+        )}
+
+        {simulation.status === "COMPLETED" && simulation.score != null && (
+          <Banner tone="info" title="Download a PDF of this analysis">
+            <BlockStack gap="300">
+              <Text as="p" variant="bodyMd">
+                We deliver the report as a print-friendly page. Your browser turns it into a PDF — no extra
+                software needed.
+              </Text>
+              <BlockStack gap="150">
+                <Text as="p" variant="bodySm">
+                  <strong>1.</strong> Open the printable report (button below).
+                </Text>
+                <Text as="p" variant="bodySm">
+                  <strong>2.</strong> On that page, click <strong>Print / Save as PDF</strong> or press{" "}
+                  <strong>Ctrl+P</strong> (Windows) / <strong>⌘+P</strong> (Mac).
+                </Text>
+                <Text as="p" variant="bodySm">
+                  <strong>3.</strong> In the print dialog, set <strong>Destination</strong> to{" "}
+                  <strong>Save as PDF</strong> (Chrome / Edge) or <strong>PDF</strong> → Save (Safari), then save
+                  the file.
+                </Text>
+              </BlockStack>
+              <Box paddingBlockStart="100">
+                <Button url={`/app/reports/${simulation.id}`} variant="primary">
+                  Open printable report
+                </Button>
+              </Box>
+            </BlockStack>
           </Banner>
         )}
 
@@ -1070,13 +1141,24 @@ export default function ResultsPage() {
                 )}
 
                 {isDone && (
-                  <InlineStack gap="300">
-                    <Button url="/app/simulate" variant="primary">Run Another Panel Check</Button>
-                    <Button url={`/app/sandbox/${simulation.id}`} disabled={!isPro}>
-                      {isPro ? "Open What-If Sandbox" : "What-If Sandbox (Pro)"}
-                    </Button>
-                    <Button url="/app/history" variant="plain">View History</Button>
-                  </InlineStack>
+                  <BlockStack gap="300">
+                    <InlineStack gap="300">
+                      <Button url="/app/simulate" variant="primary">Run Another Panel Check</Button>
+                      <Button
+                        url={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
+                        variant={isPro ? "secondary" : "plain"}
+                        tone={isPro ? undefined : "critical"}
+                      >
+                        {isPro ? "Open What-If Sandbox" : "Unlock What-If Sandbox →"}
+                      </Button>
+                      <Button url="/app/history" variant="plain">View History</Button>
+                    </InlineStack>
+                    {!isPro && (
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        What-If Sandbox lets you simulate price changes, shipping updates, and copy rewrites against your customer panel — available on Pro and Enterprise plans.
+                      </Text>
+                    )}
+                  </BlockStack>
                 )}
 
               </BlockStack>

@@ -285,54 +285,12 @@ Evaluate the images and respond with ONLY valid JSON:
 
 def extract_visual_trust(image_urls: list[str], product_title: str) -> Optional[str]:
     """
-    Call Gemini Vision to get a visual trust assessment for the agent panel.
-    Returns the `agent_context` string to be injected into trust_context, or None on failure.
-    Only called for PRO-tier simulations. Uses Gemini directly (Groq has no vision support).
+    Visual trust assessment — currently disabled (requires a vision-capable model).
+    Returns None so callers degrade gracefully.
+    To enable: configure a vision LLM and implement the call here.
     """
-    try:
-        from ...config import Config
-        if not Config.FALLBACK_LLM_API_KEY or not Config.FALLBACK_LLM_BASE_URL:
-            logger.info("Vision analysis skipped — Gemini not configured")
-            return None
-
-        from openai import OpenAI
-        vision_client = OpenAI(
-            api_key=Config.FALLBACK_LLM_API_KEY,
-            base_url=Config.FALLBACK_LLM_BASE_URL,
-            timeout=40.0,
-        )
-
-        content: list = [
-            {"type": "text", "text": _VISUAL_TRUST_PROMPT.format(title=product_title)},
-        ]
-        for url in image_urls[:3]:
-            content.append({"type": "image_url", "image_url": {"url": url}})
-
-        response = vision_client.chat.completions.create(
-            model=Config.FALLBACK_LLM_MODEL_NAME,
-            messages=[{"role": "user", "content": content}],
-            temperature=0.2,
-            max_tokens=400,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r'^```(?:json)?\s*\n?', '', raw, flags=re.IGNORECASE)
-        raw = re.sub(r'\n?```\s*$', '', raw)
-        data = json.loads(raw.strip())
-
-        context = data.get("agent_context", "")
-        gaps = data.get("trust_gaps", [])
-        quality = data.get("image_quality", "")
-        if quality == "poor":
-            context += " Image quality is poor — agents should factor in low visual trust."
-        if gaps:
-            context += " Visual gaps: " + "; ".join(gaps) + "."
-
-        logger.info(f"Visual trust extracted for '{product_title}': quality={quality}")
-        return context.strip() or None
-
-    except Exception as e:
-        logger.warning(f"Visual trust extraction failed for '{product_title}': {e}")
-        return None
+    logger.info("Vision analysis skipped — no vision provider configured")
+    return None
 
 
 def dna_from_dict(data: Optional[dict]) -> Optional[ProductDNA]:

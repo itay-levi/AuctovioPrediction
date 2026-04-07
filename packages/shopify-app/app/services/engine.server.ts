@@ -73,6 +73,7 @@ export interface DeltaSimulationPayload {
   productDna?: unknown;          // cached DNA from original sim — skips Phase 0 extraction
   activeExperiment?: string;     // experiment card hypothesis being tested
   isPro?: boolean;               // unlocks vision analysis
+  skipFloor?: boolean;           // skip trust/quality floor — deltas must reflect real signal
 }
 
 export interface SimulationPhaseResult {

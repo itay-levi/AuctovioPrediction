@@ -25,6 +25,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     trustAudit?: unknown;
     comparisonInsight?: string;
     productDna?: unknown;
+    failureReason?: string;
     agentLogs?: {
       agentId: string;
       archetype: string;
@@ -50,7 +51,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const {
     simulationId, phase, status, score, imageScore,
     reportJson, agentLogs, actualMtCost, recommendations, trustAudit,
-    comparisonInsight, productDna,
+    comparisonInsight, productDna, failureReason,
   } = body;
 
   if (!simulationId || typeof simulationId !== "string") {
@@ -74,6 +75,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     trustAudit,
     comparisonInsight,
     productDna,
+    ...(failureReason && { failureReason }),
   });
 
   // Update MT usage when simulation completes

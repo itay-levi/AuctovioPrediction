@@ -5,11 +5,16 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace=packages/shopify-app --",
+    "dev": "concurrently --kill-others --names \"engine,shopify\" --prefix-colors \"cyan,magenta\" \"npm run dev:engine\" \"npm run dev:shopify\"",
+    "dev:shopify": "npm run dev --workspace=packages/shopify-app -- --tunnel-url https://dev.auctovio.com:443",
+    "dev:engine": "cd packages/engine/backend && python run.py",
     "build": "npm run build --workspace=packages/shopify-app",
     "deploy": "npm run deploy --workspace=packages/shopify-app"
   },
   "engines": {
     "node": ">=20.19 <22 || >=22.12"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

@@ -109,38 +109,43 @@ TONE_RULE = "Tone: Write like a real person. Raw, direct gut reactions. No corpo
 
 SKEPTIC_ANCHOR = "SKEPTIC: Only flip REJECT→BUY with hard data from the listing. Peer enthusiasm ≠ evidence."
 
-# Anti-politeness constraint — injected into ALL phase prompts.
-# Forces every agent to open with an attack before any positive statement.
+# Anti-sycophancy rule — prevents empty praise but does NOT bias toward REJECT.
+# Agents must give a concrete, persona-specific reason for whichever way they vote.
 ATTACK_FIRST_RULE = (
-    "MANDATORY OPENING RULE: Your FIRST sentence must name a specific weakness, gap, or concern "
-    "with this listing. Do not open with praise, agreement, or a positive framing. "
-    "You are paid to find reasons NOT to buy — start there, every time. "
-    "Only after raising your concern may you balance it with a positive if one genuinely exists."
+    "HONESTY RULE: Do not give vague praise or empty reassurance. "
+    "Whatever you decide — BUY or REJECT — your FIRST sentence must give the single most important "
+    "concrete reason for that decision, specific to this listing and your persona. "
+    "Generic statements like 'looks good' or 'seems fine' are not allowed."
 )
 
 # ── Brutality Slider evidence injection ───────────────────────────────────────
 # Injected into every prompt phase. Higher level = more evidence required to BUY.
 def _brutality_rule(level: int) -> str:
-    """Return the evidence rule string for the given brutality level (1-10)."""
-    if level <= 3:
+    """Return the evidence rule string for the given brutality level (1-10).
+
+    Levels 1-5: no extra rule — balanced, realistic buyer behaviour.
+    Level 6-7:  one evidence requirement before BUY.
+    Level 8:    two evidence requirements; lean REJECT on doubt.
+    Level 9-10: three independent evidence forms required; default REJECT.
+    """
+    if level <= 5:
         return ""  # No extra constraint — balanced review
-    if level <= 6:
+    if level <= 7:
         return (
-            "EVIDENCE RULE: Before voting BUY, name one specific weakness in the listing. "
-            "Unverified marketing claims do not count as evidence of quality."
+            "EVIDENCE RULE: Before voting BUY, name one specific, verifiable signal "
+            "from the listing (a policy, a spec, a real review quote). "
+            "Generic marketing language does not count."
         )
     if level <= 8:
         return (
-            "EVIDENCE RULE (HIGH STRESS): Require 2 concrete signals from the listing "
-            "before voting BUY. Unverified claims count as soft REJECT. "
-            "If in doubt, lean REJECT."
+            "EVIDENCE RULE (HIGH STRESS): Require 2 concrete, verifiable signals from "
+            "the listing before voting BUY. If in doubt, lean REJECT."
         )
     # Level 9-10
     return (
-        "EVIDENCE RULE (MAXIMUM STRESS): Require 3 forms of independent evidence "
+        "EVIDENCE RULE (MAXIMUM STRESS): Require 3 independent, verifiable data points "
         "for every positive claim. Default verdict is REJECT unless proven otherwise. "
-        "Marketing language, stock images, and generic descriptions are not evidence. "
-        "Only specific data points (exact specs, verifiable policies, real reviews) qualify."
+        "Only exact specs, verifiable policies, and real review quotes qualify."
     )
 
 
@@ -164,10 +169,10 @@ VIBE_CHECK_PROMPT = """{focus_bias}{dna_context}{trust_context}{physical_reality
 You are: {persona}
 Threshold: {rejection_threshold}
 
-Gut reaction — 3 seconds. Start with your attack angle from the DNA context above.
-If leaning BUY, name at least 1 specific strength from the listing.
+Gut reaction — 3 seconds. Vote honestly as your persona. Consider both what would make you buy AND what would stop you.
+Name 1 specific thing from the listing that most drives your decision, either way.
 
-JSON only:
+OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
 {{"reasoning":"1-2 sentences referencing the listing","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
 
 WATERCOOLER_PROMPT = """{focus_bias}{dna_context}Panel discussion. Product: {product_brief}
@@ -181,7 +186,7 @@ Your Round 1: {my_verdict} — "{my_reasoning}"
 CHAIN RULE: You are responding to the debate above. Directly address the LAST person who spoke — agree, challenge, or build on their point in 1 sentence. Then pivot to YOUR unique concern.
 UNIQUE ANGLE REQUIRED: Do NOT repeat a concern already raised. Bring your persona's specific perspective.
 
-VOTE-CHANGE: REJECT→BUY only if you quote a specific line from the listing you missed. No evidence = stay REJECT. BUY→REJECT always allowed.
+VOTE-CHANGE: If you flip your vote either direction, cite the specific point from the debate or listing that changed your mind. Peer enthusiasm or peer pressure alone is not enough — you need a concrete reason grounded in the listing.
 {attack_first_rule}
 {physical_reality}
 {tone_rule}
@@ -192,7 +197,7 @@ Threshold: {rejection_threshold}
 
 If leaning BUY, name at least 2 specific strengths from the listing before any caveats.
 
-JSON only:
+OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
 {{"reasoning":"2-3 sentences","peer_rebuttal":"1 sentence directly responding to the last speaker","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
 
 DISSENTER_INSTRUCTION = """
@@ -203,7 +208,7 @@ CONSENSUS_PROMPT = """FINAL verdict. Product: {product_brief}
 Full debate:
 {debate_summary}
 
-VOTE-CHANGE: REJECT→BUY only with specific product text as evidence. No evidence = stay REJECT.
+VOTE-CHANGE: If you flip your vote, cite the specific point from the debate or listing that changed your mind.
 {attack_first_rule}
 {physical_reality}
 {tone_rule}
@@ -214,7 +219,7 @@ Threshold: {rejection_threshold}
 
 If leaning BUY, explicitly name 2 strengths from the listing in your reasoning.
 
-JSON only:
+OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
 {{"reasoning":"2-3 sentences referencing debate points","peer_rebuttal":"1 sentence on strongest counter-argument","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
 
 FRICTION_CLASSIFICATION_PROMPT = """Classify friction from this debate. Product: {product_title} at {price}
@@ -282,7 +287,7 @@ class DebateOrchestrator:
             fixed = self.fast_llm.chat(
                 messages=[{"role": "user", "content": fix_prompt}],
                 temperature=0.1,
-                max_tokens=400,
+                max_tokens=600,
             )
             data = json.loads(_extract_json(fixed))
             if not isinstance(data, dict):
@@ -326,7 +331,7 @@ class DebateOrchestrator:
             return self.llm.chat(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=effective_temp,
-                max_tokens=350,
+                max_tokens=800,
             )
 
         def _finalize_payload(data: dict) -> dict:
@@ -420,12 +425,27 @@ class DebateOrchestrator:
                 f"[{archetype.name}] malformed primary response — attempting JSON repair. "
                 f"Raw (first 200 chars): {raw[:200]!r}"
             )
+            # Pass 1 — LLM repair via fast model
             repaired = self._try_repair_agent_json(raw)
             if repaired:
                 try:
                     return _finalize_payload(repaired)
                 except (KeyError, ValueError):
                     pass
+
+            # Pass 2 — freeform salvage: extract vote + reasoning from plain text
+            salvaged = _salvage_freeform(raw)
+            if salvaged:
+                try:
+                    return _finalize_payload(salvaged)
+                except (KeyError, ValueError):
+                    pass
+
+            # Pass 3 — absolute last resort: log full raw for debugging, return REJECT
+            logger.error(
+                f"[{archetype.name}] all recovery attempts failed. "
+                f"Full raw ({len(raw)} chars): {raw!r}"
+            )
             return _fallback_reject(_MERCHANT_MALFORMED_REASONING)
 
     def _build_focus_bias(self) -> str:
@@ -729,25 +749,165 @@ class DebateOrchestrator:
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 _JSON_OBJ_RE = re.compile(r"\{[\s\S]*\}")
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+# Matches Python-style True/False/None that Llama-family models sometimes emit
+_PYTHON_BOOL_RE = re.compile(r"\bTrue\b|\bFalse\b|\bNone\b")
+# Matches JS-style // line comments
+_JS_COMMENT_RE = re.compile(r"//[^\n]*")
+
+
+def _normalize_json_text(text: str) -> str:
+    """Fix common non-standard JSON quirks emitted by large models."""
+    # Python booleans / None → JSON
+    text = _PYTHON_BOOL_RE.sub(
+        lambda m: {"True": "true", "False": "false", "None": "null"}[m.group(0)],
+        text,
+    )
+    # Strip // line comments (illegal in JSON)
+    text = _JS_COMMENT_RE.sub("", text)
+    # Single-quoted strings → double-quoted  (only when not already inside double quotes)
+    # Simple heuristic: replace 'key' and 'value' patterns
+    text = re.sub(r"'([^'\\]*(?:\\.[^'\\]*)*)'", lambda m: '"' + m.group(1).replace('"', '\\"') + '"', text)
+    return text
 
 
 def _extract_json(raw: str) -> str:
-    """Strip markdown fences and preamble text to find the JSON object.
+    """Strip markdown fences and preamble text, repair common issues, return best JSON string.
 
-    LLMs frequently wrap JSON in ```json ... ``` or add conversational text
-    before/after the object. This extracts the first valid-looking JSON block.
+    Handles:
+    - ```json ... ``` fences
+    - Conversational preamble / trailing text around the object
+    - Trailing commas (Nemotron 120B)
+    - Python-style True/False/None
+    - JS // comments
+    - Single-quoted strings
+    - Truncated responses — walks back to find the last cleanly closable position
     """
     raw = raw.strip()
 
+    # 1. Extract from fence if present
     fence_match = _JSON_FENCE_RE.search(raw)
-    if fence_match:
-        return fence_match.group(1).strip()
+    candidate = fence_match.group(1).strip() if fence_match else raw
 
-    obj_match = _JSON_OBJ_RE.search(raw)
-    if obj_match:
-        return obj_match.group(0)
+    # 2. Normalise common non-standard patterns before any parse attempt
+    candidate = _normalize_json_text(candidate)
 
-    return raw
+    # 3. Find the JSON object boundaries (use balanced-brace scan, not greedy regex,
+    #    so trailing text after the closing } doesn't pollute the candidate)
+    first_brace = candidate.find("{")
+    if first_brace != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        end_pos = -1
+        for idx in range(first_brace, len(candidate)):
+            ch = candidate[idx]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_str:
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+            elif not in_str:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end_pos = idx
+                        break
+        if end_pos != -1:
+            candidate = candidate[first_brace : end_pos + 1]
+    else:
+        obj_match = _JSON_OBJ_RE.search(candidate)
+        if obj_match:
+            candidate = obj_match.group(0)
+
+    # 4. Remove trailing commas before } or ]
+    candidate = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+
+    # 5. Happy path
+    try:
+        json.loads(candidate)
+        return candidate
+    except json.JSONDecodeError:
+        pass
+
+    # 6. Truncation recovery — walk back to find last cleanly closable position
+    for i in range(len(candidate) - 1, 0, -1):
+        if candidate[i] in ('"', '}', ']', '0123456789'):
+            attempt = candidate[: i + 1]
+            open_count = attempt.count("{") - attempt.count("}")
+            if open_count > 0:
+                attempt = attempt + ("}" * open_count)
+            attempt = _TRAILING_COMMA_RE.sub(r"\1", attempt)
+            try:
+                json.loads(attempt)
+                return attempt
+            except json.JSONDecodeError:
+                continue
+
+    return candidate
+
+
+# Patterns used by _salvage_freeform to extract vote from plain text
+_VOTE_BUY_RE = re.compile(
+    r"\b(final[_\s]vote|verdict)\s*[:\"\s]+\s*BUY\b"
+    r"|\bI(?:'d|[ ]would)\s+buy\b"
+    r"|\bvoting\s+BUY\b"
+    r"|\bmy\s+vote\s+is\s+BUY\b",
+    re.IGNORECASE,
+)
+_VOTE_REJECT_RE = re.compile(
+    r"\b(final[_\s]vote|verdict)\s*[:\"\s]+\s*REJECT\b"
+    r"|\bI(?:'d|[ ]would)\s+(?:not\s+buy|reject|skip|walk\s+away)\b"
+    r"|\bvoting\s+REJECT\b"
+    r"|\bmy\s+vote\s+is\s+REJECT\b",
+    re.IGNORECASE,
+)
+
+
+def _salvage_freeform(raw: str) -> Optional[dict]:
+    """Last-resort extractor when JSON parsing and LLM repair both fail.
+
+    Scans the raw model output for vote signals and treats the whole text as
+    the reasoning.  Returns a valid agent dict or None if even the vote is
+    unrecoverable.
+    """
+    if not raw or not raw.strip():
+        return None
+
+    text = raw.strip()
+
+    # Determine vote from explicit markers first, then fall back to keyword count
+    if _VOTE_BUY_RE.search(text):
+        vote = "BUY"
+    elif _VOTE_REJECT_RE.search(text):
+        vote = "REJECT"
+    else:
+        # Count loose BUY / REJECT mentions — take whichever wins
+        buy_count = len(re.findall(r"\bBUY\b", text, re.IGNORECASE))
+        reject_count = len(re.findall(r"\bREJECT\b", text, re.IGNORECASE))
+        if buy_count == 0 and reject_count == 0:
+            return None   # Completely uninterpretable — give up
+        vote = "BUY" if buy_count > reject_count else "REJECT"
+
+    # Use the raw text as reasoning (strip any JSON noise / fences)
+    reasoning = re.sub(r"```[^\n]*\n?", "", text).strip()
+    # Trim to a sane length
+    if len(reasoning) > 600:
+        reasoning = reasoning[:597] + "…"
+
+    logger.info(f"[salvage_freeform] recovered vote={vote} from freeform text ({len(text)} chars)")
+    return {
+        "final_vote": vote,
+        "reasoning": reasoning,
+        "confidence": 0.5,
+        "peer_rebuttal": "",
+        "vote_change_trigger": "",
+    }
 
 
 def _fallback_reject(reason: str) -> dict:

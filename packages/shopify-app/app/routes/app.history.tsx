@@ -5,6 +5,7 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { useMemo, useState } from "react";
 import { authenticate } from "../shopify.server";
 import { getStore } from "../services/store.server";
+import { expireStuckSimulations } from "../services/simulation.server";
 import db from "../db.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import styles from "../styles/history.module.css";
@@ -14,11 +15,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const store = await getStore(session.shop);
   if (!store) throw new Response("Store not found", { status: 404 });
 
+  // Clean up zombie simulations before rendering the list
+  await expireStuckSimulations(store.id);
+
   const monthStart = new Date();
   monthStart.setDate(1);
   monthStart.setHours(0, 0, 0, 0);
 
-  const [simulations, mtAgg] = await Promise.all([
+  const [rawSimulations, mtAgg] = await Promise.all([
     db.simulation.findMany({
       where: { storeId: store.id, originalSimulationId: null },
       orderBy: { createdAt: "desc" },
@@ -44,6 +48,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
   ]);
 
+  // Cast to include failureReason (added via db push; Prisma types regenerate on restart)
+  const simulations = rawSimulations as Array<typeof rawSimulations[number] & { failureReason?: string | null }>;
   const mtUsedThisMonth = mtAgg._sum.mtCost ?? 0;
 
   const completedWithScore = simulations.filter((s) => s.status === "COMPLETED" && s.score != null);
@@ -403,6 +409,11 @@ export default function HistoryPage() {
                             <div className={styles.badgeRow}>
                               <span className={statusBadgeClass(sim.status)}>{sim.status}</span>
                             </div>
+                            {sim.status === "FAILED" && sim.failureReason && (
+                              <p className={styles.failureReason}>
+                                {sim.failureReason}
+                              </p>
+                            )}
                           </div>
                         </div>
                         <div className={styles.scoreBlock}>
@@ -443,6 +454,11 @@ export default function HistoryPage() {
                               className={styles.btnSecondary}
                             >
                               {sim.status === "COMPLETED" ? "View report" : "Watch live"}
+                            </Link>
+                          )}
+                          {sim.status === "FAILED" && (
+                            <Link to="/app/simulate" className={styles.btnSecondary}>
+                              Try again
                             </Link>
                           )}
                           {sim.status === "COMPLETED" && (

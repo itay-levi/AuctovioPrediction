@@ -24,10 +24,11 @@ export async function createSubscription(
   returnUrl: string
 ): Promise<string> {
   const planConfig = PLANS[plan];
+  const isTest = process.env.NODE_ENV !== "production";
 
   const response = await admin.graphql(`
-    mutation appSubscriptionCreate($name: String!, $lineItems: [AppSubscriptionLineItemInput!]!, $returnUrl: URL!, $trialDays: Int) {
-      appSubscriptionCreate(name: $name, lineItems: $lineItems, returnUrl: $returnUrl, trialDays: $trialDays) {
+    mutation appSubscriptionCreate($name: String!, $lineItems: [AppSubscriptionLineItemInput!]!, $returnUrl: URL!, $trialDays: Int, $test: Boolean) {
+      appSubscriptionCreate(name: $name, lineItems: $lineItems, returnUrl: $returnUrl, trialDays: $trialDays, test: $test) {
         userErrors { field message }
         confirmationUrl
         appSubscription { id status }
@@ -46,6 +47,7 @@ export async function createSubscription(
       }],
       returnUrl,
       trialDays: planConfig.trialDays,
+      test: isTest,
     },
   });
 
