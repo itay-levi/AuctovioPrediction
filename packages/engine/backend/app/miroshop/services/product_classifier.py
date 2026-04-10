@@ -1,19 +1,31 @@
 """
-ProductClassifier — rule-based product category detection.
+ProductClassifier — LLM-based product category detection.
 
 Classifies a product into a category that drives context-aware audit logic.
-No LLM call — keyword matching only, runs in <1ms.
+Uses a single fast LLM call — works for any store, language, or product type
+without hardcoded keyword lists.
 
 Categories:
   standard_retail  — default; normal return/shipping expectations apply
-  hygienic         — earrings, underwear, cosmetics; no-returns is industry-normal
+  hygienic         — personal care/intimate items; no-returns is industry-normal
   custom_made      — personalised, engraved, made-to-order; shipping = production lead time
-  handmade         — artisan goods; slow shipping is a feature not a bug
-  perishable       — food, plants, flowers; returns physically impossible
+  handmade         — artisan goods; slower shipping is expected
+  perishable       — food, consumables, plants; returns physically impossible
   digital          — downloads, templates; instant delivery, no shipping applies
+
+Falls back to standard_retail when:
+  - No LLM is provided
+  - SKIP_ARCHETYPE_GEN=1 env flag is set
+  - LLM call fails for any reason
 """
 
+import json
+import logging
+import os
+import re
 from dataclasses import dataclass
+
+logger = logging.getLogger("miroshop.product_classifier")
 
 
 @dataclass(frozen=True)
@@ -28,156 +40,170 @@ class ProductCategory:
     shipping_is_lead_time: bool  # True = shipping time = production time, audit accordingly
 
 
-_HYGIENIC_KEYWORDS = {
-    "earring", "piercing", "nose ring", "belly ring", "septum",
-    "underwear", "lingerie", "swimwear", "bikini", "swimsuit",
-    "thong", "bra", "panty", "panties", "intimate",
-    "cosmetic", "makeup", "mascara", "foundation", "lipstick", "lip balm",
-    "eyeliner", "eyeshadow", "concealer", "blush",
-    "skincare", "serum", "face mask", "face wash", "moisturizer", "toner",
-    "exfoliant", "scrub", "cleanser", "sunscreen",
-    "tattoo needle", "tattoo ink", "personal care", "hygiene",
-    "deodorant", "razor", "shaver", "contact lens",
-    "insole", "orthotic", "mouth guard", "retainer",
-}
+_STANDARD_RETAIL = ProductCategory(
+    category="standard_retail",
+    label="Standard Retail",
+    is_hygienic=False,
+    is_custom_made=False,
+    is_perishable=False,
+    is_digital=False,
+    no_return_acceptable=False,
+    shipping_is_lead_time=False,
+)
 
-_CUSTOM_MADE_KEYWORDS = {
-    "custom", "personalized", "personalised", "engraved", "engraving",
-    "made to order", "made-to-order", "bespoke", "commissioned",
-    "custom-made", "custom made", "your name", "your text", "your photo",
-    "monogram", "monogrammed", "embroidered", "print on demand",
-    "custom order", "custom print",
-}
+_CLASSIFIER_PROMPT = """You are classifying a product for an e-commerce audit system. Answer strictly based on what you know about this type of product.
 
-_HANDMADE_KEYWORDS = {
-    "handmade", "hand-made", "hand made", "handcrafted", "hand-crafted",
-    "hand crafted", "artisan", "artisanal", "hand-poured", "hand poured",
-    "small batch", "made in my", "made in our", "one-of-a-kind",
-    "one of a kind", "limited edition", "hand-sewn", "hand sewn",
-    "hand-knit", "hand knit", "hand-woven", "hand woven",
-    "hand-painted", "hand painted", "handbuilt", "hand-built",
-    "hand built", "studio", "workshop made",
-}
+Product:
+- Title: {title}
+- Type: {product_type}
+- Tags: {tags}
+- Description (excerpt): {description}
 
-_PERISHABLE_KEYWORDS = {
-    "food", "organic", "fresh", "edible", "candy", "chocolate", "cake",
-    "cookie", "bakery", "jam", "honey", "spice", "herb", "tea", "coffee",
-    "plant", "seeds", "flower", "bouquet", "succulent",
-    "fruit", "vegetable", "supplement", "vitamin", "protein powder", "snack",
-    # Note: product_classifier is a fallback only. The primary path for determining
-    # no_return_acceptable is ProductIntelligence (LLM-based), which handles any
-    # product type correctly without manual keyword lists.
-}
+Answer these 5 questions with true or false only:
 
-_DIGITAL_KEYWORDS = {
-    "digital download", "instant download", "printable", "ebook", "e-book",
-    "template", "font", "svg file", "vector", "preset", "lightroom preset",
-    "plugin", "software license", "mp3", "audio file", "pdf download",
-    "digital product", "digital file",
-}
+1. is_digital: Is this a digital/downloadable product that has no physical shipping? (software, ebooks, templates, presets, audio files, fonts, digital files of any kind)
+
+2. is_hygienic: Is this a personal care or intimate item where accepting returns is physically impossible or unhygienic once used? (items worn against skin/body, personal care devices, cosmetics that touch skin, intimate items)
+
+3. is_perishable: Is this a consumable, food, beverage, supplement, plant, or item that physically cannot be returned once opened or used?
+
+4. is_custom_made: Is this made specifically to order for the buyer? (personalized, engraved with their name/text, custom printed, bespoke, commissioned)
+
+5. is_handmade: Is this handmade, artisan-crafted, or produced in small batches by the seller themselves? (not factory-manufactured)
+
+Respond with ONLY valid JSON, no markdown:
+{{
+  "is_digital": true or false,
+  "is_hygienic": true or false,
+  "is_perishable": true or false,
+  "is_custom_made": true or false,
+  "is_handmade": true or false
+}}"""
 
 
-def classify_product_category(brief: dict, product_json: dict) -> ProductCategory:
+def classify_product_category(
+    brief: dict,
+    product_json: dict,
+    llm=None,
+) -> ProductCategory:
     """
-    Classify a product into a category using rule-based keyword matching.
-    Checks title, product_type, tags, and description (brief).
+    Classify a product into a category using a single LLM call.
+    Falls back to standard_retail if no LLM is provided or the call fails.
 
     The returned ProductCategory is passed to audit_trust_signals and
     generate_recommendations to enable context-aware logic.
     """
-    title = (product_json.get("title") or "").lower()
+    if llm is None or os.environ.get("SKIP_ARCHETYPE_GEN") == "1":
+        return _STANDARD_RETAIL
+
+    title = (product_json.get("title") or "").strip()
     product_type = (
         product_json.get("productType") or product_json.get("product_type") or ""
-    ).lower()
-    tags = " ".join(str(t) for t in (product_json.get("tags") or [])).lower()
-    description = (brief.get("description_text") or "").lower()
-    merchant_notes = (product_json.get("__merchant_notes__") or "").lower()
+    ).strip()
+    tags = product_json.get("tags") or []
+    tags_str = ", ".join(str(t) for t in tags[:10]) if isinstance(tags, list) else str(tags)
 
-    combined = f"{title} {product_type} {tags} {description} {merchant_notes}"
+    desc_html = product_json.get("descriptionHtml", product_json.get("body_html", ""))
+    desc_text = re.sub(r"<[^>]+>", " ", desc_html).strip()[:250]
 
-    def _matches(keyword_set: set) -> bool:
-        return any(kw in combined for kw in keyword_set)
-
-    is_digital = _matches(_DIGITAL_KEYWORDS)
-    is_hygienic = _matches(_HYGIENIC_KEYWORDS)
-    is_custom = _matches(_CUSTOM_MADE_KEYWORDS)
-    is_handmade = _matches(_HANDMADE_KEYWORDS)
-    is_perishable = _matches(_PERISHABLE_KEYWORDS)
-
-    # Also treat merchant notes about garage/workshop production as handmade
-    handmade_signals = ["garage", "workshop", "studio", "i make", "i build", "i craft",
-                        "we make", "we build", "we craft", "hand made", "handmade"]
-    if any(sig in merchant_notes for sig in handmade_signals):
-        is_handmade = True
-
-    # Priority order: digital > hygienic > perishable > handmade > custom > standard
-    if is_digital:
-        return ProductCategory(
-            category="digital",
-            label="Digital Product",
-            is_hygienic=False,
-            is_custom_made=False,
-            is_perishable=False,
-            is_digital=True,
-            no_return_acceptable=True,
-            shipping_is_lead_time=False,
-        )
-
-    if is_hygienic:
-        return ProductCategory(
-            category="hygienic",
-            label="Personal / Hygienic Product",
-            is_hygienic=True,
-            is_custom_made=is_custom or is_handmade,
-            is_perishable=False,
-            is_digital=False,
-            no_return_acceptable=True,
-            shipping_is_lead_time=is_custom or is_handmade,
-        )
-
-    if is_perishable:
-        return ProductCategory(
-            category="perishable",
-            label="Perishable / Consumable",
-            is_hygienic=False,
-            is_custom_made=is_custom or is_handmade,
-            is_perishable=True,
-            is_digital=False,
-            no_return_acceptable=True,
-            shipping_is_lead_time=False,
-        )
-
-    if is_handmade and not is_custom:
-        return ProductCategory(
-            category="handmade",
-            label="Handmade / Artisan",
-            is_hygienic=False,
-            is_custom_made=True,
-            is_perishable=False,
-            is_digital=False,
-            no_return_acceptable=False,
-            shipping_is_lead_time=True,
-        )
-
-    if is_custom or is_handmade:
-        return ProductCategory(
-            category="custom_made",
-            label="Custom / Personalized",
-            is_hygienic=False,
-            is_custom_made=True,
-            is_perishable=False,
-            is_digital=False,
-            no_return_acceptable=False,
-            shipping_is_lead_time=True,
-        )
-
-    return ProductCategory(
-        category="standard_retail",
-        label="Standard Retail",
-        is_hygienic=False,
-        is_custom_made=False,
-        is_perishable=False,
-        is_digital=False,
-        no_return_acceptable=False,
-        shipping_is_lead_time=False,
+    prompt = _CLASSIFIER_PROMPT.format(
+        title=title or "Unknown Product",
+        product_type=product_type or "not specified",
+        tags=tags_str or "none",
+        description=desc_text or "(no description provided)",
     )
+
+    try:
+        raw = llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=150,
+        )
+        if not raw or not raw.strip():
+            raise ValueError("Empty response")
+
+        cleaned = raw.strip()
+        cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+
+        data = json.loads(cleaned.strip())
+
+        def _bool(key: str) -> bool:
+            v = data.get(key, False)
+            if isinstance(v, str):
+                return v.lower() == "true"
+            return bool(v)
+
+        is_digital = _bool("is_digital")
+        is_hygienic = _bool("is_hygienic")
+        is_perishable = _bool("is_perishable")
+        is_custom = _bool("is_custom_made")
+        is_handmade = _bool("is_handmade")
+
+        # Priority: digital > hygienic > perishable > handmade > custom > standard
+        if is_digital:
+            return ProductCategory(
+                category="digital",
+                label="Digital Product",
+                is_hygienic=False,
+                is_custom_made=False,
+                is_perishable=False,
+                is_digital=True,
+                no_return_acceptable=True,
+                shipping_is_lead_time=False,
+            )
+
+        if is_hygienic:
+            return ProductCategory(
+                category="hygienic",
+                label="Personal / Hygienic Product",
+                is_hygienic=True,
+                is_custom_made=is_custom or is_handmade,
+                is_perishable=False,
+                is_digital=False,
+                no_return_acceptable=True,
+                shipping_is_lead_time=is_custom or is_handmade,
+            )
+
+        if is_perishable:
+            return ProductCategory(
+                category="perishable",
+                label="Perishable / Consumable",
+                is_hygienic=False,
+                is_custom_made=is_custom or is_handmade,
+                is_perishable=True,
+                is_digital=False,
+                no_return_acceptable=True,
+                shipping_is_lead_time=False,
+            )
+
+        if is_handmade and not is_custom:
+            return ProductCategory(
+                category="handmade",
+                label="Handmade / Artisan",
+                is_hygienic=False,
+                is_custom_made=True,
+                is_perishable=False,
+                is_digital=False,
+                no_return_acceptable=False,
+                shipping_is_lead_time=True,
+            )
+
+        if is_custom or is_handmade:
+            return ProductCategory(
+                category="custom_made",
+                label="Custom / Personalized",
+                is_hygienic=False,
+                is_custom_made=True,
+                is_perishable=False,
+                is_digital=False,
+                no_return_acceptable=False,
+                shipping_is_lead_time=True,
+            )
+
+        logger.info(f"Classified '{title}' as standard_retail")
+        return _STANDARD_RETAIL
+
+    except Exception as e:
+        logger.warning(f"Product classification failed for '{title}': {e}. Defaulting to standard_retail.")
+        return _STANDARD_RETAIL

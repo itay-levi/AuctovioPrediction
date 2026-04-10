@@ -43,6 +43,11 @@ model Store {
   simulations     Simulation[]
 }
 
+enum SimulationType {
+  WHATIF
+  RETAKE
+}
+
 model Simulation {
   id                   String           @id @default(cuid())
   storeId              String
@@ -54,8 +59,10 @@ model Simulation {
   score                Int?
   imageScore           Int?
   reportJson           Json?
-  originalSimulationId String?          // set on delta/what-if runs
+  originalSimulationId String?          // set on delta/what-if/retake runs
   deltaParams          Json?            // {price?, shippingDays?} overrides
+  simulationType       SimulationType?  // null = original scan, WHATIF = lab delta, RETAKE = retake test
+  retakeEvaluation     Json?            // {verdicts:[{lens,verdict,delta,polishingTouch}], overallVerdict, overallPolishingTouch}
   synthesisText        String?          // Compressed Intelligence Report text
   synthesisGeneratedAt DateTime?
   focusAreas           Json?            // ["trust_credibility", "price_value"]
@@ -89,6 +96,7 @@ model AgentLog {
   nicheConcern      String?    // "Why I'm here" — product-specific concern
   phase             Int
   verdict           String
+  confidenceScore   Int?       // 0-100 continuous score (null for legacy rows)
   reasoning         String
   createdAt         DateTime   @default(now())
   simulation        Simulation @relation(fields: [simulationId], references: [id])

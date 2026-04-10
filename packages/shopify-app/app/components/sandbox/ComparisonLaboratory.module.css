@@ -26,14 +26,21 @@
   --lab-radius:         12px;
   --lab-shadow:         0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
   --lab-shadow-md:      0 4px 16px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.05);
+  /* Horizontal inset for tab panels, sticky bars, and footers (wide layouts need breathing room) */
+  --lab-pad-x: clamp(1.5rem, 4vw, 2.75rem);
 
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--lab-text);
   border-radius: calc(var(--lab-radius) + 4px);
   border: 1px solid var(--lab-border);
   background: var(--lab-bg);
-  overflow: hidden;
+  /* Avoid clipping long panels (Price Optimizer, debrief); wide layouts use full Page width */
+  overflow-x: auto;
+  overflow-y: visible;
   box-shadow: var(--lab-shadow-md);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* ── Sticky controls header ───────────────────────────────────────────────── */
@@ -45,7 +52,7 @@
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  padding: 1rem 1.25rem;
+  padding: 1rem var(--lab-pad-x);
   border-bottom: 1px solid var(--lab-border);
   box-shadow: 0 1px 0 var(--lab-border);
 }
@@ -73,7 +80,7 @@
 }
 
 .labPane {
-  padding: 1.25rem;
+  padding: 1.25rem var(--lab-pad-x);
   min-height: 280px;
   transition: background 0.35s ease, box-shadow 0.35s ease;
 }
@@ -171,7 +178,7 @@
 
 .labMobilePane {
   display: none;
-  padding: 1.25rem;
+  padding: 1.25rem var(--lab-pad-x);
 }
 
 @media (max-width: 768px) {
@@ -675,13 +682,13 @@
 .frictionGrid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 12px;
-  margin: 14px 0 6px;
+  gap: 14px;
+  margin: 1rem 0 0.5rem;
 }
 
 .frictionCard {
   border-radius: 12px;
-  padding: 16px;
+  padding: 18px 20px;
   background: var(--lab-surface);
   border: 1px solid var(--lab-border);
   border-left-width: 4px;
@@ -852,7 +859,7 @@
 
 /* ── Price Optimizer band ─────────────────────────────────────────────────── */
 .priceOptBand {
-  padding: 1rem 1.25rem 1.125rem;
+  padding: 1rem var(--lab-pad-x) 1.125rem;
   background: linear-gradient(165deg, #f0fdf4 0%, #ecfdf5 35%, #f8fafc 100%);
   border-top: 1px solid var(--lab-border);
   border-bottom: 1px solid #bbf7d0;
@@ -1212,7 +1219,7 @@
 
 /* ── Price Optimizer band ────────────────────────────────────────────────── */
 .priceOptBand {
-  padding: 1rem 1.25rem 1.125rem;
+  padding: 1rem var(--lab-pad-x) 1.125rem;
   background: var(--lab-surface);
   border-bottom: 1px solid var(--lab-border);
   border-top: 1px solid var(--lab-border);
@@ -1748,4 +1755,354 @@
 
 .simPaneBanner {
   margin-bottom: 1rem;
+}
+
+/* ── Lab tab UX (Overview / Insights / Experiments / Simulation) ─────────── */
+.labTabBarWrap {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem var(--lab-pad-x) 1rem;
+  background: var(--lab-surface);
+  border-bottom: 2px solid var(--lab-border-strong);
+}
+
+.labTabBarHint {
+  margin: 0 0 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--lab-muted);
+  letter-spacing: 0.02em;
+}
+
+.labTabNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.labTabSegment {
+  flex: 1 1 0;
+  min-width: min(100%, 140px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem 0.6rem;
+  margin: 0;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 10px;
+  border: 2px solid var(--lab-border-strong);
+  background: var(--lab-elevated);
+  color: var(--lab-text-2);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+.labTabSegment:hover {
+  background: #e8eef5;
+  border-color: var(--lab-muted-2);
+  color: var(--lab-text);
+}
+
+.labTabSegment:focus {
+  outline: none;
+}
+
+.labTabSegment:focus-visible {
+  outline: 3px solid var(--lab-accent);
+  outline-offset: 2px;
+}
+
+.labTabSegment[data-active="true"] {
+  background: var(--lab-surface);
+  border-color: var(--lab-accent);
+  color: var(--lab-text);
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.25),
+    0 2px 8px rgba(37, 99, 235, 0.12);
+  font-weight: 700;
+}
+
+.labTabSegmentLabel {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.labTabSegment[data-active="true"] .labTabSegmentLabel {
+  color: var(--lab-accent);
+}
+
+.labTabSegmentSub {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--lab-muted);
+  line-height: 1.3;
+}
+
+.labTabSegment[data-active="true"] .labTabSegmentSub {
+  color: var(--lab-text-2);
+}
+
+.labTabPanel {
+  padding: 1.5rem var(--lab-pad-x) 2.75rem;
+  background: var(--lab-bg);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.labTabPanelExperiments {
+  width: 100%;
+  box-sizing: border-box;
+  padding-bottom: 2.75rem;
+  background: var(--lab-bg);
+}
+
+.labExperimentsBatchInset {
+  margin: 0 var(--lab-pad-x) 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: var(--lab-radius);
+  border: 1px solid var(--lab-border);
+  background: var(--lab-surface);
+}
+
+.labOverviewHero {
+  padding: 1rem 1.1rem;
+  border-radius: var(--lab-radius);
+  border: 1px solid var(--lab-border-strong);
+  background: var(--lab-surface);
+  box-shadow: var(--lab-shadow);
+}
+
+.frictionMiniStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.35rem;
+}
+
+.frictionMiniItem {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 88px;
+  cursor: help;
+}
+
+.frictionMiniLabel {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--lab-muted);
+}
+
+.frictionMiniBar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--lab-elevated);
+  border: 1px solid var(--lab-border);
+  overflow: hidden;
+}
+
+.frictionMiniFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--lab-accent), #60a5fa);
+  min-width: 2px;
+}
+
+.frictionMiniPct {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--lab-text-2);
+}
+
+.insightsPriorityList {
+  padding: 1rem 1.25rem 1.1rem;
+  border-radius: var(--lab-radius);
+  border: 1px solid var(--lab-border);
+  background: var(--lab-surface);
+}
+
+.insightsPriorityUl {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Row lives in a div so display:grid is not lost if host CSS forces li { display:list-item } */
+.insightsPriorityLi {
+  list-style: none;
+  margin: 0;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--lab-border);
+  font-size: 0.8125rem;
+}
+
+.insightsPriorityLi:last-child {
+  border-bottom: none;
+}
+
+.insightsPriorityRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 0.75rem;
+  row-gap: 0.45rem;
+  align-items: baseline;
+}
+
+.insightsPriorityLabel {
+  font-weight: 700;
+  color: var(--lab-text);
+}
+
+.insightsPriorityPct {
+  font-weight: 800;
+  color: var(--lab-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.insightsPriorityHint {
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  color: var(--lab-muted);
+  line-height: 1.4;
+}
+
+.listingSignalsBox {
+  padding: 0.75rem 1rem;
+  border-radius: var(--lab-radius);
+  background: var(--lab-elevated);
+  border: 1px solid var(--lab-border);
+}
+
+.panelGlanceBox {
+  padding: 0.75rem 1rem;
+  border-radius: var(--lab-radius);
+  border: 1px solid var(--lab-border-strong);
+  background: var(--lab-surface);
+}
+
+.panelGlanceUl {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.panelGlanceLi {
+  margin-bottom: 0.35rem;
+}
+
+/* ── Scenario history (footer inside lab card) ───────────────────────────── */
+.labScenarioHistory {
+  margin: 0;
+  border-top: 2px solid var(--lab-border-strong);
+  background: var(--lab-surface);
+  padding: 1.1rem var(--lab-pad-x) 1.25rem;
+}
+
+.labScenarioHistoryHead {
+  margin-bottom: 0.65rem;
+}
+
+.labScenarioHistoryTitle {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lab-text-2);
+}
+
+.labScenarioHistorySub {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--lab-muted);
+}
+
+.labScenarioHistoryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--lab-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--lab-bg);
+}
+
+.labScenarioHistoryRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--lab-border);
+}
+
+.labScenarioHistoryRow:last-child {
+  border-bottom: none;
+}
+
+.labScenarioHistoryMain {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.labScenarioHistoryLine {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--lab-text);
+}
+
+.labScenarioHistoryMeta {
+  font-size: 0.75rem;
+  color: var(--lab-muted);
+  line-height: 1.4;
+}
+
+.labScenarioHistoryActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.65rem;
+  flex-shrink: 0;
+}
+
+.labScenarioHistoryScore {
+  font-size: 0.875rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  min-width: 3.25rem;
+}
+
+.shScoreStrong {
+  color: var(--lab-buy);
+}
+
+.shScoreMixed {
+  color: var(--lab-amber);
+}
+
+.shScoreLow {
+  color: var(--lab-reject);
+}
+
+.labFooterBar {
+  padding: 0.85rem var(--lab-pad-x) 1.25rem;
+  border-top: 1px solid var(--lab-border);
+  background: var(--lab-bg);
 }

@@ -9,7 +9,9 @@
     "dev:shopify": "npm run dev --workspace=packages/shopify-app -- --tunnel-url https://dev.auctovio.com:443",
     "dev:engine": "cd packages/engine/backend && python run.py",
     "build": "npm run build --workspace=packages/shopify-app",
-    "deploy": "npm run deploy --workspace=packages/shopify-app"
+    "deploy": "npm run deploy --workspace=packages/shopify-app",
+    "test": "npm run test:coverage --workspace=packages/shopify-app",
+    "test:engine": "cd packages/engine/backend && uv run pytest tests/ -q --cov=app.utils.retry --cov-report=term-missing --cov-fail-under=95"
   },
   "engines": {
     "node": ">=20.19 <22 || >=22.12"

@@ -19,7 +19,7 @@ from .shopify_ingestion import ProductBrief
 
 logger = logging.getLogger("miroshop.recommendations")
 
-RECOMMENDATION_PROMPT = """You are a CRO specialist. Extract exactly 3 Golden Actions from this product debate.
+RECOMMENDATION_PROMPT = """You are a senior e-commerce growth team reviewing a customer panel debate. Three specialists are each delivering one Golden Action — their highest-conviction recommendation for this specific product.
 
 Product: "{product_title}" at ${price}
 Panel score: {score}/100 ({reject_count} of {total} panelists rejected)
@@ -27,52 +27,73 @@ Panel score: {score}/100 ({reject_count} of {total} panelists rejected)
 Trust audit — issues found in the listing:
 {trust_killers_text}
 
-Listing gaps — buyer questions not answered by this listing:
+Listing gaps — buyer questions not answered:
 {gap_analysis_text}
 
-Friction by category:
-- Price: {price_dropout}% of panel rejected over price — "{price_objections}"
-- Trust: {trust_dropout}% of panel rejected over trust — "{trust_objections}"
-- Logistics: {logistics_dropout}% rejected over logistics — "{logistics_objections}"
+Panel friction:
+- Price friction: {price_dropout}% of panel rejected over price — "{price_objections}"
+- Trust friction: {trust_dropout}% of panel rejected over trust — "{trust_objections}"
+- Logistics friction: {logistics_dropout}% rejected over logistics — "{logistics_objections}"
 
-Panelist objections from the debate:
+What panelists actually said (direct quotes):
 {key_objections}
 
-Focus areas the merchant cares most about: {focus_areas_text}
+Merchant focus areas: {focus_areas_text}
 
-Generate EXACTLY 3 Golden Actions. These are the 3 changes with the highest conversion impact.
+---
 
-SPECIFICITY RULES (critical — generic actions are useless):
-- title: must describe the EXACT change (max 8 words). Include color, position, or metric where relevant.
-  WRONG: "Improve shipping communication"
-  RIGHT: "Add shipping timeline banner above the Add to Cart button"
-  WRONG: "Build trust"
-  RIGHT: "Pin a 30-day guarantee badge directly below the price"
-- impact: name the SPECIFIC friction category it addresses (e.g. "Eliminates trust dropout at checkout")
-- the_why: quote a panelist by name AND reference the core fear/desire from product DNA if available
+SPECIALIST 1 — PRICING STRATEGIST
+Focus: margin, perceived value, price anchoring, cost justification.
+Delivers: One specific change to how the price is presented, positioned, or justified — not "lower the price".
+Example output: "Add a per-unit cost breakdown beneath the bulk price to show the 40% savings vs. single-unit competitors"
 
-Priority rule: address the core_fear first, then the highest-dropout friction category, then the deepest gap item.
+SPECIALIST 2 — CRO SPECIALIST
+Focus: trust signals, visual hierarchy, friction points in the buying journey.
+Delivers: One specific on-page element to add, move, or reword to remove a conversion blocker.
+Example output: "Move the 30-day guarantee from the footer to directly beneath the Add to Cart button — {trust_dropout}% of the panel flagged trust uncertainty at the decision moment"
+
+SPECIALIST 3 — PRODUCT MARKETING MANAGER
+Focus: the 'Why' — unique value proposition, DNA hooks, emotional narrative.
+Delivers: One specific copy or story change that connects the product's core desire to what the listing currently says.
+Example output: "Rewrite the first sentence of the description to lead with the core desire ('{core_desire_short}') instead of the ingredient list — panelists skipped past the features to ask 'but what does it DO for me?'"
+
+---
+
+DOMINANT FRICTION ROTATION — mandatory lens assignment:
+{dominant_friction_rule}
+
+---
+
+SPECIFICITY RULES — non-negotiable:
+- title: name the EXACT element being changed and WHERE (max 10 words). Include position, metric, or visual anchor.
+  BAD: "Improve trust signals" | GOOD: "Pin money-back badge directly under the Add to Cart button"
+  BAD: "Better description" | GOOD: "Lead with '{core_desire_short}' in the first 10 words of description"
+- the_why: must reference either (a) a panelist by name + their quote, or (b) a specific trust audit finding, or (c) a specific gap item. No vague statements.
+- Each recommendation must come from a different specialist perspective — no two can address the same friction category.
 
 RESPOND WITH EXACTLY THIS JSON (no other text):
 {{
   "recommendations": [
     {{
       "priority": "High",
-      "title": "Exact, specific action in max 8 words",
-      "impact": "Specific friction category + metric it improves",
-      "the_why": "Panelist name + quote, or trust audit finding + core fear connection"
+      "lens": "Pricing Strategist",
+      "title": "Exact action naming the element and location",
+      "impact": "Which friction category this kills and approximately what % of rejectors it addresses",
+      "the_why": "Panelist name + MAX 12-word quote, OR one trust audit finding, OR one gap item. No full sentences."
     }},
     {{
       "priority": "High",
-      "title": "Exact, specific action in max 8 words",
-      "impact": "Specific friction category + metric it improves",
-      "the_why": "Panelist name + quote, or gap finding"
+      "lens": "CRO Specialist",
+      "title": "Exact action naming the element and location",
+      "impact": "Which friction category this kills and approximately what % of rejectors it addresses",
+      "the_why": "Panelist name + MAX 12-word quote, OR one trust audit finding, OR one gap item. No full sentences."
     }},
     {{
       "priority": "Medium",
-      "title": "Exact, specific action in max 8 words",
-      "impact": "Specific friction category + metric it improves",
-      "the_why": "Supporting evidence from debate or audit"
+      "lens": "Product Marketing Manager",
+      "title": "Exact action naming the copy or story change",
+      "impact": "Which emotional barrier this removes — connect to core fear or desire",
+      "the_why": "Panelist name + MAX 12-word quote, OR core fear/desire in under 15 words. No full sentences."
     }}
   ]
 }}"""
@@ -139,9 +160,13 @@ def generate_recommendations(
 
     # Format DNA context for the prompt
     dna_section = ""
+    core_desire_short = "solve the buyer's core need"
     if product_dna:
         core_fear = product_dna.get("coreFear", "")
         core_desire = product_dna.get("coreDesire", "")
+        if core_desire:
+            # Truncate to ~60 chars for inline use in the prompt
+            core_desire_short = core_desire[:60].rstrip(",. ") + ("…" if len(core_desire) > 60 else "")
         if core_fear or core_desire:
             dna_section = "Product psychology:\n"
             if core_fear:
@@ -167,6 +192,38 @@ def generate_recommendations(
         else:
             gap_analysis_text = "All key buyer questions answered in listing."
 
+    # Rotation rule — prevents two specialists landing on the same friction category
+    price_pct = price_f.get("dropoutPct", 0)
+    trust_pct = trust_f.get("dropoutPct", 0)
+    logistics_pct = logistics_f.get("dropoutPct", 0)
+    _dominant = max(
+        ("price", price_pct),
+        ("trust", trust_pct),
+        ("logistics", logistics_pct),
+        key=lambda x: x[1],
+    )[0]
+    _rotation_map = {
+        "price": (
+            f"Price friction is the #1 dropout driver ({price_pct}%). "
+            "Specialist 1 (Pricing Strategist) MUST lead with price framing or anchoring. "
+            "Specialists 2 and 3 are FORBIDDEN from also recommending price changes — "
+            "they must cover trust signals and product narrative respectively."
+        ),
+        "trust": (
+            f"Trust friction is the #1 dropout driver ({trust_pct}%). "
+            "Specialist 2 (CRO Specialist) MUST lead with trust signals and on-page credibility. "
+            "Specialist 1 must add value justification (not price cuts). "
+            "Specialist 3 covers the emotional hook and product promise."
+        ),
+        "logistics": (
+            f"Logistics friction is the #1 dropout driver ({logistics_pct}%). "
+            "Specialist 2 (CRO Specialist) must address shipping/returns placement and clarity. "
+            "Specialist 1 covers price-value framing to make delivery feel worth it. "
+            "Specialist 3 covers the product narrative."
+        ),
+    }
+    dominant_friction_rule = _rotation_map[_dominant]
+
     prompt = RECOMMENDATION_PROMPT.format(
         product_title=brief["title"][:80],
         price=f"{brief['price_min']:.2f}",
@@ -174,14 +231,16 @@ def generate_recommendations(
         reject_count=reject_count,
         total=total or 1,
         dna_section=dna_section,
+        core_desire_short=core_desire_short,
         trust_killers_text=trust_killers_text,
         gap_analysis_text=gap_analysis_text,
-        price_dropout=price_f.get("dropoutPct", 0),
-        price_objections=", ".join(price_f.get("topObjections", [])[:1]) or "none",
-        trust_dropout=trust_f.get("dropoutPct", 0),
-        trust_objections=", ".join(trust_f.get("topObjections", [])[:1]) or "none",
-        logistics_dropout=logistics_f.get("dropoutPct", 0),
-        logistics_objections=", ".join(logistics_f.get("topObjections", [])[:1]) or "none",
+        dominant_friction_rule=dominant_friction_rule,
+        price_dropout=price_pct,
+        price_objections=", ".join(price_f.get("topObjections", [])[:2]) or "none",
+        trust_dropout=trust_pct,
+        trust_objections=", ".join(trust_f.get("topObjections", [])[:2]) or "none",
+        logistics_dropout=logistics_pct,
+        logistics_objections=", ".join(logistics_f.get("topObjections", [])[:2]) or "none",
         key_objections=key_objections,
         focus_areas_text=focus_areas_text,
     )
@@ -190,11 +249,11 @@ def generate_recommendations(
         data = llm.chat_json(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=800,
+            max_tokens=900,   # 3 recs × ~250 tokens each; short the_why keeps this well under limit
         )
         recs = data.get("recommendations", [])
         if isinstance(recs, list) and recs:
-            recs = recs[:3]   # enforce exactly 3 Golden Actions
+            recs = recs[:3]
             logger.info(f"Generated {len(recs)} Golden Actions for '{brief['title']}'")
             return recs
     except Exception as e:

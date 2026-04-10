@@ -59,6 +59,29 @@ export async function canRunSimulation(
   return { allowed: true };
 }
 
+/** Monthly product-analysis slots (root simulations only — same rules as {@link canRunSimulation}). */
+export async function getMonthlyAnalysesQuota(
+  storeId: string,
+  tier: PlanTier,
+): Promise<{ used: number; limit: number; remaining: number }> {
+  await expireStuckSimulations(storeId);
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const used = await db.simulation.count({
+    where: {
+      storeId,
+      originalSimulationId: null,
+      createdAt: { gte: monthStart },
+      status: { not: "FAILED" as SimulationStatus },
+    },
+  });
+
+  const limit = SIM_LIMITS[tier];
+  return { used, limit, remaining: Math.max(0, limit - used) };
+}
+
 function _triggerWithErrorHandling(
   simulationId: string,
   payload: Parameters<typeof triggerSimulation>[0],
@@ -88,6 +111,7 @@ export async function createSimulation(
   appUrl: string,
   focusAreas: string[] = [],
   labConfig?: import("./engine.server").LabConfig,
+  storeContext?: import("./engine.server").StoreContext,
 ) {
   const devCount = process.env.NODE_ENV === "development" && process.env.DEV_AGENT_COUNT
     ? parseInt(process.env.DEV_AGENT_COUNT, 10)
@@ -154,6 +178,7 @@ export async function createSimulation(
       labGroupId,
       isBaseline: true,
       isPro,
+      storeContext,
     });
 
     _triggerWithErrorHandling(target.id, {
@@ -169,6 +194,7 @@ export async function createSimulation(
       labGroupId,
       isBaseline: false,
       isPro,
+      storeContext,
     });
 
     // Return the TARGET simulation — the results page is keyed to this ID,
@@ -199,9 +225,60 @@ export async function createSimulation(
     callbackUrl,
     focusAreas,
     isPro,
+    storeContext,
   });
 
   return simulation;
+}
+
+/**
+ * Create and fire a Retake Test simulation.
+ * A retake re-runs the full panel on the merchant's CURRENT (updated) live listing.
+ * It is linked to the original simulation and costs MT budget like a full scan,
+ * but does NOT count against the monthly simulation slot quota.
+ */
+export async function createRetakeSimulation(
+  originalSim: { id: string; storeId: string; productUrl: string; productDna?: unknown; score?: number | null },
+  freshProductJson: unknown,
+  shopDomain: string,
+  shopType: string,
+  tier: PlanTier,
+  appUrl: string,
+  labConfig?: import("./engine.server").LabConfig,
+  storeContext?: import("./engine.server").StoreContext,
+) {
+  const agentCount = AGENT_COUNTS[tier];
+  const estimatedMt = agentCount * MT_ESTIMATE_PER_AGENT;
+  const callbackUrl = `${appUrl}/webhooks/engine/callback`;
+  const isPro = tier === "PRO" || tier === "ENTERPRISE";
+
+  const retakeSim = await db.simulation.create({
+    data: {
+      storeId: originalSim.storeId,
+      productUrl: originalSim.productUrl,
+      productJson: freshProductJson as object,
+      status: "PENDING",
+      phase: 0,
+      mtCost: estimatedMt,
+      originalSimulationId: originalSim.id,
+      simulationType: "RETAKE",
+    } as Parameters<typeof db.simulation.create>[0]["data"],
+  });
+
+  _triggerWithErrorHandling(retakeSim.id, {
+    simulationId: retakeSim.id,
+    shopDomain,
+    shopType: shopType || "general_retail",
+    productUrl: originalSim.productUrl,
+    productJson: freshProductJson,
+    agentCount,
+    callbackUrl,
+    isPro,
+    labConfig,
+    storeContext,
+  });
+
+  return retakeSim;
 }
 
 export async function getSimulation(id: string) {
@@ -244,6 +321,7 @@ export async function getLabPartnerSimulation(labGroupId: string, excludeId: str
       reportJson: true,
       isBaseline: true,
       comparisonSummary: true,
+      recommendations: true,
     },
   });
 }
@@ -358,6 +436,7 @@ export async function updateSimulationFromCallback(
           nicheConcern: log.nicheConcern ?? null,
           phase: log.phase,
           verdict: log.verdict,
+          confidenceScore: log.confidenceScore ?? null,
           reasoning: log.reasoning,
         })),
         skipDuplicates: true,

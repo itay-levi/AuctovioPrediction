@@ -8,6 +8,7 @@ export const FEATURE_LABELS: Record<string, string> = {
   sandbox:   "What-If Sandbox requires a Pro or Enterprise plan.",
   synthesis: "Compressed Intelligence Reports require a Pro or Enterprise plan.",
   lab:       "Customer Lab scenarios require a Pro or Enterprise plan.",
+  retake:    "Retake Tests require a Pro or Enterprise plan.",
 };
 
 export async function requireTier(

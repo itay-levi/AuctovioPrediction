@@ -40,6 +40,13 @@ export interface LabComparisonResult {
   targetPersonaCard: string;
   baselineLabel: string;
   targetLabel: string;
+  audienceActions?: { action: string; why: string }[];
+}
+
+export interface StoreContext {
+  returnPolicy?: string;    // full text of the store's return/refund policy page
+  shippingPolicy?: string;  // full text of the store's shipping policy page
+  contactEmail?: string;    // store contact email
 }
 
 export interface TriggerSimulationPayload {
@@ -54,7 +61,8 @@ export interface TriggerSimulationPayload {
   labConfig?: LabConfig;
   labGroupId?: string;
   isBaseline?: boolean;
-  isPro?: boolean;     // unlocks vision analysis
+  isPro?: boolean;          // unlocks vision analysis
+  storeContext?: StoreContext; // store-level pages visible to buyers on every product page
 }
 
 export interface DeltaSimulationPayload {
@@ -74,6 +82,7 @@ export interface DeltaSimulationPayload {
   activeExperiment?: string;     // experiment card hypothesis being tested
   isPro?: boolean;               // unlocks vision analysis
   skipFloor?: boolean;           // skip trust/quality floor — deltas must reflect real signal
+  storeContext?: StoreContext;   // store-level pages visible to buyers
 }
 
 export interface SimulationPhaseResult {
@@ -88,8 +97,16 @@ export interface SimulationPhaseResult {
 export interface AgentLogEntry {
   agentId: string;
   archetype: string;
+  archetypeName?: string;
+  archetypeEmoji?: string;
+  personaName?: string;
+  personaAge?: number;
+  personaOccupation?: string;
+  personaMotivation?: string;
+  nicheConcern?: string;
   phase: number;
-  verdict: "BUY" | "REJECT" | "ABSTAIN";
+  verdict: "BUY" | "REJECT" | "NEUTRAL";
+  confidenceScore?: number;
   reasoning: string;
 }
 
@@ -197,6 +214,49 @@ export async function classifyStoreNiche(
 
     const data = (await res.json()) as { niche: string };
     return data.niche;
+  });
+}
+
+export interface RetakeEvaluationVerdict {
+  lens: string;
+  verdict: "Pass" | "Improving" | "Fail";
+  delta: string;
+  polishingTouch: string;
+}
+
+export interface RetakeEvaluationResult {
+  verdicts: RetakeEvaluationVerdict[];
+  overallVerdict: "Pass" | "Improving" | "Fail";
+  overallPolishingTouch: string;
+}
+
+export interface EvaluateRetakePayload {
+  productTitle: string;
+  originalScore: number;
+  newScore: number;
+  originalRecommendations: { lens: string; title: string; the_why?: string; impact?: string }[];
+  originalFriction: Record<string, unknown>;
+  newFriction: Record<string, unknown>;
+  newVotes: Record<string, unknown>[];
+}
+
+export async function evaluateRetake(
+  payload: EvaluateRetakePayload
+): Promise<RetakeEvaluationResult> {
+  return engineBreaker.execute(async () => {
+    const res = await fetch(`${ENGINE_URL}/miroshop/audit/evaluate`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Audit evaluate error ${res.status}: ${text}`);
+    }
+
+    return res.json() as Promise<RetakeEvaluationResult>;
   });
 }
 

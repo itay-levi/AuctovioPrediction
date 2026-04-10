@@ -1,13 +1,14 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher, useRevalidator } from "@remix-run/react";
-import { Page, Text, BlockStack, InlineStack, Button, Badge, Banner } from "@shopify/polaris";
+import { Page, Text, BlockStack, Button, Banner, Card, Badge, InlineStack } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useEffect, useRef } from "react";
 import { authenticate } from "../shopify.server";
 import { getStore, getMtBudgetStatus } from "../services/store.server";
-import { getSimulation, getSimulationLabRoot, canRunSimulation } from "../services/simulation.server";
+import { getSimulation, getSimulationLabRoot, canRunSimulation, createRetakeSimulation } from "../services/simulation.server";
 import { requireTier } from "../services/gates.server";
+import { fetchProductById, fetchStoreContext } from "../services/products.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import db from "../db.server";
 import { AGENT_COUNTS } from "../services/store.server";
@@ -16,6 +17,7 @@ import {
   ComparisonLaboratory,
   type ExperimentCard,
   type PriceBatchResult,
+  type ScenarioHistoryRow,
   type TrustAuditFriction,
 } from "../components/sandbox/ComparisonLaboratory";
 
@@ -35,6 +37,27 @@ type DeltaRow = {
   trustAudit: unknown;
   comparisonInsight: string | null;
   labGroupId: string | null;
+  createdAt: string;
+};
+
+type RetakeVerdict = {
+  lens: string;
+  verdict: "Pass" | "Improving" | "Fail";
+  delta: string;
+  polishingTouch: string;
+};
+
+type RetakeEvaluation = {
+  verdicts: RetakeVerdict[];
+  overallVerdict: "Pass" | "Improving" | "Fail";
+  overallPolishingTouch: string;
+};
+
+type RetakeRow = {
+  id: string;
+  status: string;
+  score: number | null;
+  retakeEvaluation: unknown;
   createdAt: string;
 };
 
@@ -74,22 +97,36 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const isDev = process.env.NODE_ENV === "development";
   const isPro = isDev || tier === "PRO" || tier === "ENTERPRISE";
 
-  const deltas = await db.simulation.findMany({
-    where: { originalSimulationId: simulation.id },
-    orderBy: { createdAt: "desc" },
-    take: 20,
-    select: {
-      id: true,
-      status: true,
-      score: true,
-      deltaParams: true,
-      reportJson: true,
-      trustAudit: true,
-      comparisonInsight: true,
-      labGroupId: true,
-      createdAt: true,
-    },
-  });
+  const [deltas, retakeSims] = await Promise.all([
+    db.simulation.findMany({
+      where: { originalSimulationId: simulation.id, simulationType: { not: "RETAKE" } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        status: true,
+        score: true,
+        deltaParams: true,
+        reportJson: true,
+        trustAudit: true,
+        comparisonInsight: true,
+        labGroupId: true,
+        createdAt: true,
+      },
+    }),
+    db.simulation.findMany({
+      where: { originalSimulationId: simulation.id, simulationType: "RETAKE" },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        status: true,
+        score: true,
+        retakeEvaluation: true,
+        createdAt: true,
+      },
+    }),
+  ]);
 
   const latestWhatIfDelta = deltas.find(
     (d) =>
@@ -218,6 +255,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     simulation,
     store,
     deltas,
+    retakeSims,
     report,
     productDna,
     isPro,
@@ -228,7 +266,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   await requireTier(shopDomain, "PRO", "sandbox");
@@ -258,6 +296,36 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const appUrl = process.env.SHOPIFY_APP_URL ?? "";
   const callbackUrl = `${appUrl}/webhooks/engine/callback`;
   const productDna = (originalSim as { productDna?: unknown }).productDna ?? undefined;
+
+  if (intent === "run_retake") {
+    await requireTier(shopDomain, "PRO", "retake");
+
+    const productId = (originalSim.productJson as { id?: string } | null)?.id;
+    if (!productId) {
+      return { error: "Product ID not found — cannot re-fetch the latest listing." };
+    }
+
+    const freshProduct = await fetchProductById(admin, productId);
+    if (!freshProduct) {
+      return { error: "Could not fetch the latest version of your product from Shopify." };
+    }
+
+    const storeContext = await fetchStoreContext(admin).catch(() => null) ?? undefined;
+
+    const retakeSim = await createRetakeSimulation(
+      originalSim,
+      freshProduct,
+      shopDomain,
+      store.shopType ?? "general_retail",
+      tier,
+      appUrl,
+      undefined,
+      storeContext,
+    );
+
+    console.info(`[Retake] Created ${retakeSim.id} for original ${originalSim.id}`);
+    throw redirect(`/app/sandbox/${originalSim.id}`);
+  }
 
   if (intent === "simulate_all") {
     const cards = (productDna as ProductDna | undefined)?.experimentCards ?? [];
@@ -427,6 +495,7 @@ export default function SandboxPage() {
   const {
     simulation,
     deltas: rawDeltas,
+    retakeSims: rawRetakeSims,
     report,
     productDna,
     isPro,
@@ -435,6 +504,13 @@ export default function SandboxPage() {
     priceBatchResults,
   } = useLoaderData<typeof loader>();
   const deltas = rawDeltas as DeltaRow[];
+  const retakeSims = rawRetakeSims as RetakeRow[];
+  const latestRetake = retakeSims[0] ?? null;
+  const retakeRunning = latestRetake?.status === "PENDING" || latestRetake?.status === "RUNNING";
+  const retakeEvaluation = latestRetake?.retakeEvaluation as RetakeEvaluation | null;
+  const hasRecs = Array.isArray((simulation as { recommendations?: unknown }).recommendations)
+    && ((simulation as { recommendations: unknown[] }).recommendations).length > 0;
+
   const fetcher = useFetcher<typeof action>();
   const { revalidate } = useRevalidator();
   const isSubmitting = fetcher.state !== "idle";
@@ -459,10 +535,10 @@ export default function SandboxPage() {
 
   // Keep polling while running — slow to 10s after stale threshold, never stop
   useEffect(() => {
-    if (!hasInProgress) return;
+    if (!hasInProgress && !retakeRunning) return;
     const interval = setInterval(revalidate, deltaStale ? 10000 : 4000);
     return () => clearInterval(interval);
-  }, [hasInProgress, deltaStale, revalidate]);
+  }, [hasInProgress, retakeRunning, deltaStale, revalidate]);
 
   useEffect(() => {
     if (!hasInProgress) { setDeltaElapsed(0); return; }
@@ -518,8 +594,8 @@ export default function SandboxPage() {
   const runLabel = isSubmitting
     ? "Queueing…"
     : selectedCard
-      ? `Run: ${selectedCard.name}`
-      : "Run What-If";
+      ? `Preview “${selectedCard.name}” vs baseline`
+      : "Preview change vs baseline";
 
   const baselineScore = simulation.score ?? 0;
   const baselinePhase1 = simulation.agentLogs.filter((l) => l.phase === 1);
@@ -530,8 +606,22 @@ export default function SandboxPage() {
   const labScore = latestWhatIfDelta?.score ?? null;
   const dpLatest = latestWhatIfDelta?.deltaParams as { price?: number; shippingDays?: number } | null;
 
+  const scenarioHistory: ScenarioHistoryRow[] = deltas
+    .filter((d) => !(d.deltaParams as { setGroupId?: string } | null)?.setGroupId)
+    .map((d) => {
+      const dp = d.deltaParams as { price?: number; shippingDays?: number } | null;
+      return {
+        id: d.id,
+        status: d.status,
+        score: d.score,
+        createdAt: d.createdAt,
+        price: dp?.price ?? null,
+        shippingDays: dp?.shippingDays ?? null,
+      };
+    });
+
   return (
-    <Page>
+    <Page fullWidth>
       <TitleBar
         title="Comparison laboratory"
         breadcrumbs={[
@@ -596,57 +686,106 @@ export default function SandboxPage() {
           allSetCompleted={allSetCompleted}
           priceBatchResults={priceBatchResults as PriceBatchResult[]}
           batchRunning={batchRunning}
+          scenarioHistory={scenarioHistory}
         />
 
-        {deltas.filter((d) => !(d.deltaParams as { setGroupId?: string } | null)?.setGroupId).length >
-          0 && (
-          <BlockStack gap="200">
-            <Text as="h2" variant="headingMd">
-              Scenario history
-            </Text>
-            {deltas
-              .filter((d) => !(d.deltaParams as { setGroupId?: string } | null)?.setGroupId)
-              .map((delta) => {
-                const dp = delta.deltaParams as { price?: number; shippingDays?: number } | null;
-                const created = new Date(delta.createdAt);
-                const when = new Intl.DateTimeFormat(undefined, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                }).format(created);
-                const stalePending =
-                  delta.status === "PENDING" &&
-                  Date.now() - created.getTime() > 25 * 60 * 1000;
-                return (
-                  <InlineStack key={delta.id} align="space-between" blockAlign="center">
-                    <BlockStack gap="0">
-                      <Text as="p" variant="bodyMd">
-                        {dp?.price != null ? `$${Number(dp.price).toFixed(2)}` : "Original price"}
-                        {dp?.shippingDays != null ? ` · ${dp.shippingDays}d shipping` : ""}
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {when}
-                        {stalePending ? " · Still pending — engine may have dropped this job; try re-running." : ""}
-                      </Text>
-                    </BlockStack>
-                    <InlineStack gap="200" blockAlign="center">
-                      <Badge tone={delta.status === "COMPLETED" ? "success" : delta.status === "FAILED" ? "critical" : "info"}>
-                        {delta.status}
+        {/* ── Retake Test (PRO) ─────────────────────────────────────────── */}
+        {isPro && hasRecs && (
+          <Card>
+            <BlockStack gap="400">
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">Retake Test</Text>
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  Made changes to your listing based on the Golden Actions? Run a retake to see
+                  your new score and get a Pass / Improving / Fail verdict on each fix.
+                </Text>
+              </BlockStack>
+
+              {retakeRunning && (
+                <Banner tone="info" title="Retake panel is running…">
+                  <Text as="p" variant="bodyMd">
+                    The full panel is re-evaluating your updated listing. This takes 2–4 minutes.
+                  </Text>
+                </Banner>
+              )}
+
+              {!retakeRunning && retakeEvaluation && (
+                <BlockStack gap="300">
+                  <InlineStack gap="200" align="start">
+                    <Badge
+                      tone={
+                        retakeEvaluation.overallVerdict === "Pass"
+                          ? "success"
+                          : retakeEvaluation.overallVerdict === "Improving"
+                          ? "warning"
+                          : "critical"
+                      }
+                    >
+                      Overall: {retakeEvaluation.overallVerdict}
+                    </Badge>
+                    {latestRetake?.score != null && (
+                      <Badge tone="info">
+                        New score: {latestRetake.score}/100
+                        {(simulation.score ?? 0) > 0 && (
+                          <> ({latestRetake.score - (simulation.score ?? 0) >= 0 ? "+" : ""}{latestRetake.score - (simulation.score ?? 0)} pts)</>
+                        )}
                       </Badge>
-                      {delta.score != null && (
-                        <Text as="span" variant="bodyMd" fontWeight="semibold">
-                          {delta.score}/100
-                        </Text>
-                      )}
-                      {delta.status === "COMPLETED" && (
-                        <Button url={`/app/results/${delta.id}`} size="slim" variant="plain">
-                          View
-                        </Button>
-                      )}
-                    </InlineStack>
+                    )}
                   </InlineStack>
-                );
-              })}
-          </BlockStack>
+
+                  {retakeEvaluation.verdicts.map((v) => (
+                    <Card key={v.lens}>
+                      <BlockStack gap="200">
+                        <InlineStack gap="200" align="start">
+                          <Text as="span" variant="headingSm">{v.lens}</Text>
+                          <Badge
+                            tone={
+                              v.verdict === "Pass"
+                                ? "success"
+                                : v.verdict === "Improving"
+                                ? "warning"
+                                : "critical"
+                            }
+                          >
+                            {v.verdict}
+                          </Badge>
+                        </InlineStack>
+                        <Text as="p" variant="bodyMd">{v.delta}</Text>
+                        {v.polishingTouch && (
+                          <Banner tone={v.verdict === "Fail" ? "critical" : "warning"}>
+                            <Text as="p" variant="bodyMd">
+                              <Text as="span" fontWeight="bold">Next step: </Text>
+                              {v.polishingTouch}
+                            </Text>
+                          </Banner>
+                        )}
+                      </BlockStack>
+                    </Card>
+                  ))}
+
+                  {retakeEvaluation.overallPolishingTouch && retakeEvaluation.overallVerdict !== "Pass" && (
+                    <Banner tone="info" title="Your highest-leverage next action">
+                      <Text as="p" variant="bodyMd">{retakeEvaluation.overallPolishingTouch}</Text>
+                    </Banner>
+                  )}
+                </BlockStack>
+              )}
+
+              {!retakeRunning && (
+                <fetcher.Form method="post">
+                  <input type="hidden" name="intent" value="run_retake" />
+                  <Button
+                    submit
+                    variant={retakeEvaluation ? "plain" : "primary"}
+                    loading={fetcher.state !== "idle" && fetcher.formData?.get("intent") === "run_retake"}
+                    disabled={retakeRunning}
+                  >
+                    {retakeEvaluation ? "Run another retake" : "I've made these changes — run retake"}
+                  </Button>
+                </fetcher.Form>
+              )}
+            </BlockStack>
+          </Card>
         )}
       </BlockStack>
     </Page>

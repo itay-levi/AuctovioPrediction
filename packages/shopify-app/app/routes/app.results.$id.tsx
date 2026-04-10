@@ -1,5 +1,5 @@
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useRevalidator } from "@remix-run/react";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
+import { useLoaderData, useRevalidator, useFetcher } from "@remix-run/react";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
   Page,
@@ -16,6 +16,7 @@ import {
   Divider,
   Spinner,
   Tabs,
+  ProgressBar,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useEffect, useState } from "react";
@@ -26,9 +27,13 @@ import {
   getLabPartnerSimulation,
   saveComparisonSummary,
   expireStuckSimulations,
+  createRetakeSimulation,
 } from "../services/simulation.server";
 import { compareLabSimulations } from "../services/engine.server";
+import type { LabConfig, RetakeEvaluationResult } from "../services/engine.server";
 import { getStore } from "../services/store.server";
+import { fetchProductById, fetchStoreContext } from "../services/products.server";
+import db from "../db.server";
 import { ConfidenceGauge } from "../components/ConfidenceGauge";
 import { AnalyticsSafeBadge } from "../components/AnalyticsSafeBadge";
 import { IntelligenceExport } from "../components/IntelligenceExport";
@@ -36,6 +41,7 @@ import { RecommendationsPanel } from "../components/RecommendationsPanel";
 import type { Recommendation, TrustAudit } from "../components/RecommendationsPanel";
 import { OnboardingTour } from "../components/OnboardingTour";
 import { sanitizeAgentReasoning } from "../utils/sanitizeAgentReasoning";
+import analysingStyles from "../styles/results-analysing.module.css";
 
 type ScoreBreakdown = {
   panelScore: number;
@@ -59,7 +65,10 @@ type LabComparisonSummary = {
   targetPersonaCard: string;
   baselineLabel: string;
   targetLabel: string;
+  audienceActions?: { action: string; why: string }[];
 };
+
+type RetakeEvaluation = RetakeEvaluationResult;
 
 type GapItem = {
   question: string;
@@ -365,6 +374,63 @@ function PanelRosterCard({ log }: { log: RosterLog }) {
   return <PanelMemberExpandCard log={log} />;
 }
 
+export const action = async ({ request, params }: ActionFunctionArgs) => {
+  const { admin, session } = await authenticate.admin(request);
+  const shopDomain = session.shop;
+
+  const formData = await request.formData();
+  const intent = formData.get("intent") as string;
+
+  if (intent !== "run_lab_retake") {
+    return new Response("Unknown intent", { status: 400 });
+  }
+
+  // PRO gate
+  const store = await getStore(shopDomain);
+  if (!store) return new Response("Store not found", { status: 404 });
+  const tier = store.planTier;
+  if (tier === "FREE" && process.env.NODE_ENV !== "development") {
+    return { error: "Retake Tests require a Pro or Enterprise plan." };
+  }
+
+  const simulation = await getSimulation(params.id!);
+  if (!simulation || simulation.storeId !== store.id) {
+    return { error: "Simulation not found." };
+  }
+
+  const productId = (simulation.productJson as { id?: string } | null)?.id;
+  if (!productId) {
+    return { error: "Product ID not found." };
+  }
+
+  const freshProduct = await fetchProductById(admin, productId);
+  if (!freshProduct) {
+    return { error: "Could not fetch the latest product from Shopify." };
+  }
+
+  // Get lab config from the report (if this is a Lab sim)
+  const report = simulation.reportJson as { labConfig?: unknown } | null;
+  const labConfig = (report?.labConfig ?? null) as LabConfig | null;
+
+  const appUrl = process.env.SHOPIFY_APP_URL ?? "";
+
+  // Fetch store context non-blocking — retake should see latest policies too
+  const storeContext = await fetchStoreContext(admin).catch(() => null) ?? undefined;
+
+  const retakeSim = await createRetakeSimulation(
+    simulation,
+    freshProduct,
+    shopDomain,
+    store.shopType ?? "general_retail",
+    tier,
+    appUrl,
+    labConfig ?? undefined,
+    storeContext,
+  );
+
+  return { retakeSimId: retakeSim.id };
+};
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
@@ -477,6 +543,19 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     ? `https://${store.shopDomain}/admin/products/${productNumericId}`
     : null;
 
+  // Fetch retake sims for this Lab simulation (PRO only)
+  const retakeSims = simulation.labGroupId ? await db.simulation.findMany({
+    where: { originalSimulationId: simulation.id, simulationType: "RETAKE" } as Parameters<typeof db.simulation.findMany>[0]["where"],
+    orderBy: { createdAt: "desc" },
+    take: 3,
+    select: { id: true, status: true, score: true, retakeEvaluation: true, createdAt: true },
+  }) : [];
+
+  // Target sim recs for audience-targeted actions
+  const targetRecs = simulation.isBaseline
+    ? (labPartner as { recommendations?: unknown } | null)?.recommendations
+    : (simulation as unknown as { recommendations?: unknown }).recommendations;
+
   return {
     simulation,
     tier: store.planTier,
@@ -491,53 +570,124 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     labPartnerStatus: labPartner?.status ?? null,
     labPartnerScore: labPartner?.score ?? null,
     failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
+    retakeSims,
+    targetRecs: targetRecs ?? null,
   };
 };
 
 function PhaseBar({ phase, status }: { phase: number; status: string }) {
   const phases = [
-    { n: 1, label: "Vibe Check",     desc: "Each panelist gives an independent first impression" },
-    { n: 2, label: "Panel Debate",   desc: "Panelists argue, challenge each other, dissenter injected" },
-    { n: 3, label: "Final Verdict",  desc: "Consensus vote and friction report generated" },
+    { n: 1, label: "Vibe check", desc: "Independent first impressions from each panelist" },
+    { n: 2, label: "Panel debate", desc: "Panelists challenge each other; dissenter may join" },
+    { n: 3, label: "Final verdict", desc: "Consensus, score, and friction report" },
   ];
+  const isComplete = status === "COMPLETED";
+  const effectivePhase =
+    isComplete ? 4 : phase <= 0 && (status === "PENDING" || status === "RUNNING") ? 1 : phase;
+  const progressPct = isComplete
+    ? 100
+    : effectivePhase <= 1
+      ? 18
+      : effectivePhase === 2
+        ? 52
+        : 88;
+
   return (
-    <Card>
+    <BlockStack gap="300">
+      <InlineStack align="space-between" blockAlign="center" gap="400" wrap>
+        <Text as="h2" variant="headingSm">
+          Analysis progress
+        </Text>
+        <Text as="p" variant="bodySm" tone="subdued">
+          {isComplete
+            ? "Complete"
+            : effectivePhase >= 1 && effectivePhase <= 3
+              ? `Step ${effectivePhase} of 3`
+              : "Starting…"}
+        </Text>
+      </InlineStack>
+      <ProgressBar progress={progressPct} size="small" tone="highlight" />
+      <div className={analysingStyles.phaseRail} role="list" aria-label="Analysis phases">
+        {phases.map((p) => {
+          const done = effectivePhase > p.n || isComplete;
+          const active = !isComplete && effectivePhase === p.n;
+          const state = done ? "done" : active ? "active" : "upcoming";
+          return (
+            <div
+              key={p.n}
+              className={analysingStyles.phaseStep}
+              data-state={state}
+              role="listitem"
+            >
+              <span className={analysingStyles.phaseStepNum}>
+                {done ? "Done" : active ? "Now" : `Step ${p.n}`}
+              </span>
+              <p className={analysingStyles.phaseStepTitle}>{p.label}</p>
+              <p className={analysingStyles.phaseStepDesc}>{p.desc}</p>
+            </div>
+          );
+        })}
+      </div>
+    </BlockStack>
+  );
+}
+
+function LabRetakeEvaluation({
+  evaluation,
+  newScore,
+  originalScore,
+  audienceLabel,
+}: {
+  evaluation: RetakeEvaluation;
+  newScore: number | null;
+  originalScore: number;
+  audienceLabel: string;
+}) {
+  const scoreDeltaVal = newScore != null ? newScore - originalScore : null;
+  return (
+    <Box padding="400" background="bg-surface-secondary" borderRadius="200" borderWidth="025" borderColor="border">
       <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">Analysis Progress</Text>
-        <InlineStack gap="400" wrap={false}>
-          {phases.map((p) => {
-            const done = phase > p.n || status === "COMPLETED";
-            const active = phase === p.n && status === "RUNNING";
-            return (
-              <Box
-                key={p.n}
-                borderWidth="025"
-                borderColor={done ? "border-success" : active ? "border-magic" : "border"}
-                borderRadius="200"
-                padding="300"
-                background={done ? "bg-surface-success" : active ? "bg-surface-magic" : "bg-surface-disabled"}
-              >
-                <BlockStack gap="100">
-                  <InlineStack gap="200" align="start">
-                    <Text as="span" variant="bodySm" fontWeight="semibold">
-                      {done ? "✅" : active ? "⏳" : "⬜"} Phase {p.n}
-                    </Text>
-                  </InlineStack>
-                  <Text as="p" variant="headingSm">{p.label}</Text>
-                  <Text as="p" variant="bodySm" tone="subdued">{p.desc}</Text>
-                </BlockStack>
-              </Box>
-            );
-          })}
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="p" variant="headingSm">Retake result — {audienceLabel}</Text>
+          {scoreDeltaVal != null && (
+            <Badge tone={scoreDeltaVal > 0 ? "success" : scoreDeltaVal < 0 ? "critical" : "warning"}>
+              {scoreDeltaVal > 0 ? `+${scoreDeltaVal}` : `${scoreDeltaVal}`} pts
+            </Badge>
+          )}
         </InlineStack>
+        <BlockStack gap="200">
+          {evaluation.verdicts.map((v, i) => (
+            <InlineStack key={i} gap="300" blockAlign="start">
+              <Badge tone={v.verdict === "Pass" ? "success" : v.verdict === "Improving" ? "warning" : "critical"}>
+                {v.verdict}
+              </Badge>
+              <BlockStack gap="050">
+                <Text as="p" variant="bodySm" fontWeight="semibold">{v.lens}</Text>
+                {v.delta && <Text as="p" variant="bodySm" tone="subdued">{v.delta}</Text>}
+                {v.polishingTouch && <Text as="p" variant="bodySm" tone="subdued">💡 {v.polishingTouch}</Text>}
+              </BlockStack>
+            </InlineStack>
+          ))}
+        </BlockStack>
+        <Box padding="300" background="bg-surface" borderRadius="200" borderWidth="025" borderColor="border">
+          <BlockStack gap="100">
+            <Badge tone={evaluation.overallVerdict === "Pass" ? "success" : evaluation.overallVerdict === "Improving" ? "warning" : "critical"}>
+              Overall: {evaluation.overallVerdict}
+            </Badge>
+            {evaluation.overallPolishingTouch && (
+              <Text as="p" variant="bodySm" tone="subdued">💡 {evaluation.overallPolishingTouch}</Text>
+            )}
+          </BlockStack>
+        </Box>
       </BlockStack>
-    </Card>
+    </Box>
   );
 }
 
 export default function ResultsPage() {
-  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason } = useLoaderData<typeof loader>();
+  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason, retakeSims } = useLoaderData<typeof loader>();
   const { revalidate } = useRevalidator();
+  const retakeFetcher = useFetcher<typeof action>();
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [staleWarning, setStaleWarning] = useState(false);
 
@@ -577,6 +727,11 @@ export default function ResultsPage() {
 
   const report = simulation.reportJson as ReportJson | null;
   const labConfig = report?.labConfig ?? null;
+
+  // Retake state
+  const latestRetake = retakeSims[0] ?? null;
+  const retakeRunning = latestRetake?.status === "PENDING" || latestRetake?.status === "RUNNING"
+    || retakeFetcher.state !== "idle";
 
   const AUDIENCE_LABELS: Record<string, string> = {
     general: "🌍 General Public",
@@ -641,9 +796,18 @@ export default function ResultsPage() {
     gapIssueCount;
 
   const tabs = [
-    { id: "overview",    content: "📊 Overview",    accessibilityLabel: "Overview" },
-    { id: "debate",      content: isDone ? "🎙️ Panel Debate ✓" : "🎙️ Panel Debate",  accessibilityLabel: "Panel Debate" },
-    { id: "action-plan", content: isDone && issueCount > 0 ? `🎯 Action Plan (${issueCount})` : "🎯 Action Plan", accessibilityLabel: "Action Plan" },
+    { id: "overview", content: "Overview", accessibilityLabel: "Overview" },
+    {
+      id: "debate",
+      content: "Panel debate",
+      accessibilityLabel: "Panel debate",
+    },
+    {
+      id: "action-plan",
+      content:
+        isDone && issueCount > 0 ? `Action plan · ${issueCount} items` : "Action plan",
+      accessibilityLabel: "Action plan",
+    },
   ];
 
   // ── 3-column friction data ───────────────────────────────────────────────────
@@ -720,36 +884,48 @@ export default function ResultsPage() {
         )}
 
         {!isDone && (
-          <Banner tone={staleWarning ? "warning" : "info"}>
-            <InlineStack align="space-between" blockAlign="center">
+          <div
+            className={analysingStyles.statusBar}
+            style={
+              staleWarning
+                ? { borderColor: "var(--p-color-border-warning, #b98900)" }
+                : undefined
+            }
+          >
+            <InlineStack align="space-between" blockAlign="center" gap="400" wrap>
               <InlineStack gap="300" blockAlign="center">
                 <Spinner size="small" />
                 <BlockStack gap="050">
-                  <Text as="p" variant="bodyMd">
+                  <Text as="p" variant="bodyMd" fontWeight="semibold">
                     {staleWarning
-                      ? "Large panels take a while — your analysis is still running"
+                      ? "Still running — large panels can take several minutes"
                       : elapsedSeconds < 60
-                        ? "Preparing your panel and profiling the product…"
-                        : "Your customer panel is debating — votes appear as they come in"}
+                        ? "Preparing your panel"
+                        : "Panel is debating — updates appear as they arrive"}
                   </Text>
-                  {staleWarning && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      15-agent panels can take up to 15 minutes with a large AI model. This page will update automatically.
-                    </Text>
-                  )}
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {staleWarning
+                      ? "This page refreshes automatically. You can leave the tab open."
+                      : "No need to refresh — we poll your results in the background."}
+                  </Text>
                 </BlockStack>
               </InlineStack>
-              <InlineStack gap="200" blockAlign="center">
+              <InlineStack gap="300" blockAlign="center" wrap={false}>
                 {elapsedSeconds > 0 && (
-                  <Text as="p" variant="bodySm" tone="subdued">{formatElapsed(elapsedSeconds)}</Text>
+                  <Badge tone="info">{formatElapsed(elapsedSeconds)}</Badge>
                 )}
-                {staleWarning
-                  ? <Button onClick={revalidate} variant="plain" size="slim">Refresh</Button>
-                  : <Text as="p" variant="bodySm" tone="subdued">Auto-refreshing</Text>
-                }
+                {staleWarning ? (
+                  <Button onClick={revalidate} variant="plain" size="slim">
+                    Refresh now
+                  </Button>
+                ) : (
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    Auto-updating
+                  </Text>
+                )}
               </InlineStack>
             </InlineStack>
-          </Banner>
+          </div>
         )}
 
         {/* ── TL;DR — shown when complete ── */}
@@ -1134,6 +1310,61 @@ export default function ResultsPage() {
                               </Box>
                             );
                           })()}
+
+                          {/* Audience-targeted next actions */}
+                          {labComparison.audienceActions && labComparison.audienceActions.length > 0 && (
+                            <BlockStack gap="200">
+                              <Text as="p" variant="headingSm">🎯 What to fix for {labComparison.targetLabel}</Text>
+                              <BlockStack gap="200">
+                                {labComparison.audienceActions.map((a, i) => (
+                                  <Box key={i} padding="300" background="bg-surface-secondary" borderRadius="200" borderWidth="025" borderColor="border">
+                                    <BlockStack gap="100">
+                                      <Text as="p" variant="bodyMd" fontWeight="semibold">{a.action}</Text>
+                                      <Text as="p" variant="bodySm" tone="subdued">{a.why}</Text>
+                                    </BlockStack>
+                                  </Box>
+                                ))}
+                              </BlockStack>
+                            </BlockStack>
+                          )}
+
+                          {/* Retake with same audience config */}
+                          {isPro && simulation.recommendations && (simulation.recommendations as unknown[]).length > 0 && (
+                            <BlockStack gap="300">
+                              <Text as="p" variant="headingSm">
+                                Made changes? Retake with the same {labConfig ? (AUDIENCE_LABELS[labConfig.audience] ?? "audience") : "audience"} panel
+                              </Text>
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                Re-run the panel with the same audience config to measure your improvement.
+                              </Text>
+
+                              {latestRetake?.retakeEvaluation && (
+                                <LabRetakeEvaluation
+                                  evaluation={latestRetake.retakeEvaluation as RetakeEvaluation}
+                                  newScore={latestRetake.score ?? null}
+                                  originalScore={simulation.score!}
+                                  audienceLabel={labConfig ? (AUDIENCE_LABELS[labConfig.audience] ?? "audience") : "audience"}
+                                />
+                              )}
+
+                              {retakeRunning && (
+                                <Banner tone="info" title="Retake panel running…">
+                                  <Text as="p" variant="bodySm">
+                                    The panel is re-evaluating your updated listing with the {labConfig ? (AUDIENCE_LABELS[labConfig.audience] ?? "same audience") : "same audience"} config.
+                                  </Text>
+                                </Banner>
+                              )}
+
+                              {!retakeRunning && (
+                                <retakeFetcher.Form method="post">
+                                  <input type="hidden" name="intent" value="run_lab_retake" />
+                                  <Button submit loading={retakeFetcher.state !== "idle"} variant={latestRetake?.retakeEvaluation ? "plain" : "primary"}>
+                                    {latestRetake?.retakeEvaluation ? "Run another retake" : "I've made these changes — run retake"}
+                                  </Button>
+                                </retakeFetcher.Form>
+                              )}
+                            </BlockStack>
+                          )}
                         </BlockStack>
                       )}
                     </BlockStack>
@@ -1169,63 +1400,70 @@ export default function ResultsPage() {
           {selectedTab === 1 && (
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
-                <PhaseBar phase={simulation.phase} status={simulation.status} />
+                <Card>
+                  <BlockStack gap="400">
+                    <PhaseBar phase={simulation.phase} status={simulation.status} />
+                  </BlockStack>
+                </Card>
 
                 <Card>
                   <BlockStack gap="400">
-                    <InlineStack align="space-between" blockAlign="center">
+                    <div className={analysingStyles.rosterHeader}>
                       <BlockStack gap="100">
-                        <Text as="h2" variant="headingMd">
-                          {isPending ? "🧑‍🤝‍🧑 Assembling Your Panel…" : "🧑‍🤝‍🧑 Your Customer Panel"}
-                        </Text>
+                        <h2 className={analysingStyles.debatePhaseTitle}>
+                          {isPending ? "Assembling your panel" : "Your customer panel"}
+                        </h2>
                         <Text as="p" variant="bodySm" tone="subdued">
                           {isPending
-                            ? "These 5 AI shoppers are about to evaluate your product. Here's who they are and what they'll look for."
-                            : `${phase1Logs.length} of ${ROSTER_ORDER.length} panelists have voted`}
+                            ? "Five fixed shopper archetypes — each gets a persona matched to your listing before they vote."
+                            : `${phase1Logs.length} of ${ROSTER_ORDER.length} panelists have submitted phase 1`}
                         </Text>
                       </BlockStack>
-                      {isPending && <Spinner size="small" />}
-                      {!isPending && phase1Logs.length === ROSTER_ORDER.length && <Badge tone="success">All voted</Badge>}
-                    </InlineStack>
-                    <BlockStack gap="300">
-                      {phase1Logs.length === 0 ? (
-                        Array.from({ length: 5 }).map((_, i) => (
-                          <Box key={i} borderWidth="025" borderColor="border" borderRadius="200" padding="400" background="bg-surface">
-                            <InlineStack align="space-between" blockAlign="center">
-                              <InlineStack gap="300" blockAlign="center">
-                                <Text as="span" variant="headingLg">🧑</Text>
-                                <BlockStack gap="100">
-                                  <Text as="p" variant="headingSm" tone="subdued">Panelist {i + 1}</Text>
-                                  <Text as="p" variant="bodySm" tone="subdued">Building a persona tailored to this product…</Text>
-                                </BlockStack>
-                              </InlineStack>
-                              <InlineStack gap="200" blockAlign="center">
-                                <Spinner size="small" />
-                                <Text as="span" variant="bodySm" tone="subdued">Profiling…</Text>
-                              </InlineStack>
-                            </InlineStack>
-                          </Box>
-                        ))
-                      ) : (
-                        Array.from(phase1ByArchetype.values()).map((log) => (
-                          <PanelRosterCard key={log.agentId} log={log} />
-                        ))
+                      {isPending && <Spinner size="small" accessibilityLabel="Loading" />}
+                      {!isPending && phase1Logs.length === ROSTER_ORDER.length && (
+                        <Badge tone="success">All voted</Badge>
                       )}
-                    </BlockStack>
+                    </div>
+
+                    {phase1Logs.length === 0 ? (
+                      <div className={analysingStyles.rosterGrid}>
+                        {ROSTER_ORDER.map((archetypeId) => {
+                          const meta = archetypeMeta(archetypeId);
+                          return (
+                            <div
+                              key={archetypeId}
+                              className={analysingStyles.rosterCell}
+                              data-pending="true"
+                            >
+                              <span className={analysingStyles.rosterCellEmoji}>{meta.emoji}</span>
+                              <p className={analysingStyles.rosterCellName}>{meta.name}</p>
+                              <p className={analysingStyles.rosterCellFocus}>{meta.focus}</p>
+                              <div className={analysingStyles.rosterShimmer} aria-hidden />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <BlockStack gap="300">
+                        {Array.from(phase1ByArchetype.values()).map((log) => (
+                          <PanelRosterCard key={log.agentId} log={log} />
+                        ))}
+                      </BlockStack>
+                    )}
                   </BlockStack>
                 </Card>
 
                 {phase1Logs.length > 0 && (
                   <Card>
                     <BlockStack gap="300">
-                      <InlineStack align="space-between">
-                        <Text as="h2" variant="headingMd">⚡ Phase 1 — First Impressions</Text>
+                      <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+                        <h2 className={analysingStyles.debatePhaseTitle}>Phase 1 · First impressions</h2>
                         <Badge tone={phase1Logs.some(l => l.verdict === "REJECT") ? "critical" : "success"}>
                           {`${phase1Logs.filter(l => l.verdict === "BUY").length}/${phase1Logs.length} would buy`}
                         </Badge>
                       </InlineStack>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Each panelist independently evaluates the listing — no groupthink yet.
+                        Each panelist evaluates the listing independently before debate.
                       </Text>
                       <BlockStack gap="300">
                         {phase1Logs.map((log) => <PersonaCard key={log.agentId + log.phase} log={log} />)}
@@ -1237,12 +1475,14 @@ export default function ResultsPage() {
                 {(simulation.phase >= 2 || phase2Logs.length > 0) && (
                   <Card>
                     <BlockStack gap="300">
-                      <InlineStack align="space-between">
-                        <Text as="h2" variant="headingMd">🔥 Phase 2 — Panel Debate</Text>
-                        {phase2Logs.length > 0 && <Badge tone="info">{`${phase2Logs.length} debate entries`}</Badge>}
+                      <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
+                        <h2 className={analysingStyles.debatePhaseTitle}>Phase 2 · Panel debate</h2>
+                        {phase2Logs.length > 0 && (
+                          <Badge tone="info">{`${phase2Logs.length} entries`}</Badge>
+                        )}
                       </InlineStack>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        Panelists challenge each other. If too positive, a dissenter is forced to find flaws.
+                        Panelists challenge each other; a dissenter may surface if consensus is too rosy.
                       </Text>
                       {phase2Logs.length === 0 ? (
                         <SkeletonBodyText lines={4} />

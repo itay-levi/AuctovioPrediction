@@ -3,6 +3,7 @@
 interface ProductVariant {
   id: string;
   price: string;
+  compareAtPrice: string | null;
   title: string;
 }
 
@@ -18,6 +19,14 @@ export interface ShopifyProduct {
   images: { url: string; altText: string | null }[];
   variants: ProductVariant[];
   onlineStoreUrl: string | null;
+  metafields: { key: string; namespace: string; value: string; type: string }[];         // may be [] if shop has no metafields
+  sellingPlanGroups: { name: string; sellingPlans: { name: string; description: string | null }[] }[];  // may be [] if no selling plans
+}
+
+export interface StoreContext {
+  returnPolicy?: string;
+  shippingPolicy?: string;
+  contactEmail?: string;
 }
 
 interface CacheEntry {
@@ -29,35 +38,61 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
-const PRODUCTS_QUERY = `#graphql
-  query GetProducts($first: Int!, $after: String) {
-    products(first: $first, after: $after, query: "status:active") {
-      pageInfo { hasNextPage endCursor }
-      edges {
-        node {
-          id
-          title
-          handle
-          descriptionHtml
-          productType
-          vendor
-          tags
-          status
-          onlineStoreUrl
-          images(first: 5) {
-            edges { node { url altText } }
-          }
-          variants(first: 5) {
-            edges { node { id price title } }
-          }
+const PRODUCT_FIELDS = `
+  id
+  title
+  handle
+  descriptionHtml
+  productType
+  vendor
+  tags
+  status
+  onlineStoreUrl
+  images(first: 5) {
+    edges { node { url altText } }
+  }
+  variants(first: 10) {
+    edges { node { id price compareAtPrice title } }
+  }
+  metafields(first: 10) {
+    edges { node { key namespace value type } }
+  }
+  sellingPlanGroups(first: 3) {
+    edges {
+      node {
+        name
+        sellingPlans(first: 2) {
+          edges { node { name description } }
         }
       }
     }
   }
 `;
 
+const PRODUCTS_QUERY = `#graphql
+  query GetProducts($first: Int!, $after: String) {
+    products(first: $first, after: $after, query: "status:active") {
+      pageInfo { hasNextPage endCursor }
+      edges { node { ${PRODUCT_FIELDS} } }
+    }
+  }
+`;
+
+const STORE_CONTEXT_QUERY = `#graphql
+  query StoreContext {
+    shop {
+      contactEmail
+      refundPolicy { body }
+      shippingPolicy { body }
+    }
+  }
+`;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AdminClient = { graphql: (query: string, opts?: any) => Promise<Response> };
+
 export async function fetchProducts(
-  admin: { graphql: (query: string, opts?: unknown) => Promise<Response> },
+  admin: AdminClient,
   shopDomain: string,
   limit = 50
 ): Promise<ShopifyProduct[]> {
@@ -97,7 +132,9 @@ export async function fetchProducts(
         status: string;
         onlineStoreUrl: string | null;
         images: { edges: { node: { url: string; altText: string | null } }[] };
-        variants: { edges: { node: ProductVariant }[] };
+        variants: { edges: { node: { id: string; price: string; compareAtPrice: string | null; title: string } }[] };
+        metafields?: { edges: { node: { key: string; namespace: string; value: string; type: string } }[] };
+        sellingPlanGroups?: { edges: { node: { name: string; sellingPlans: { edges: { node: { name: string; description: string | null } }[] } } }[] };
       };
       products.push({
         id: node.id,
@@ -111,6 +148,11 @@ export async function fetchProducts(
         onlineStoreUrl: node.onlineStoreUrl,
         images: node.images.edges.map((e) => e.node),
         variants: node.variants.edges.map((e) => e.node),
+        metafields: (node.metafields?.edges ?? []).map((e) => e.node),
+        sellingPlanGroups: (node.sellingPlanGroups?.edges ?? []).map((e) => ({
+          name: e.node.name,
+          sellingPlans: e.node.sellingPlans.edges.map((s) => s.node),
+        })),
       });
     }
 
@@ -124,6 +166,86 @@ export async function fetchProducts(
 
 export function invalidateProductCache(shopDomain: string) {
   cache.delete(`products:${shopDomain}`);
+}
+
+const PRODUCT_BY_ID_QUERY = `#graphql
+  query GetProductById($id: ID!) {
+    product(id: $id) { ${PRODUCT_FIELDS} }
+  }
+`;
+
+/**
+ * Fetch a single product by its Shopify GID, bypassing the cache.
+ * Used for retake tests so the merchant's latest listing changes are captured.
+ */
+export async function fetchProductById(
+  admin: AdminClient,
+  productId: string
+): Promise<ShopifyProduct | null> {
+  const res = await admin.graphql(PRODUCT_BY_ID_QUERY, {
+    variables: { id: productId },
+  });
+  const json = (await res.json()) as {
+    data: { product: Record<string, unknown> | null };
+  };
+
+  const node = json.data?.product;
+  if (!node) return null;
+
+  const images = node.images as { edges: { node: { url: string; altText: string | null } }[] };
+  const variants = node.variants as { edges: { node: { id: string; price: string; compareAtPrice: string | null; title: string } }[] };
+  const metafieldsRaw = node.metafields as { edges: { node: { key: string; namespace: string; value: string; type: string } }[] } | undefined;
+  const sellingPlanGroupsRaw = node.sellingPlanGroups as { edges: { node: { name: string; sellingPlans: { edges: { node: { name: string; description: string | null } }[] } } }[] } | undefined;
+
+  return {
+    id: node.id as string,
+    title: node.title as string,
+    handle: node.handle as string,
+    descriptionHtml: node.descriptionHtml as string,
+    productType: node.productType as string,
+    vendor: node.vendor as string,
+    tags: node.tags as string[],
+    status: node.status as string,
+    onlineStoreUrl: node.onlineStoreUrl as string | null,
+    images: images.edges.map((e) => e.node),
+    variants: variants.edges.map((e) => e.node),
+    metafields: (metafieldsRaw?.edges ?? []).map((e) => e.node),
+    sellingPlanGroups: (sellingPlanGroupsRaw?.edges ?? []).map((e) => ({
+      name: e.node.name,
+      sellingPlans: e.node.sellingPlans.edges.map((s) => s.node),
+    })),
+  };
+}
+
+/**
+ * Fetch store-level context: return policy, shipping policy, contact email.
+ * These are visible to buyers on every product page and critical for trust evaluation.
+ * Returns null on failure — callers should degrade gracefully.
+ */
+export async function fetchStoreContext(
+  admin: AdminClient
+): Promise<StoreContext | null> {
+  try {
+    const res = await admin.graphql(STORE_CONTEXT_QUERY);
+    const json = (await res.json()) as {
+      data?: {
+        shop?: {
+          contactEmail?: string;
+          refundPolicy?: { body?: string } | null;
+          shippingPolicy?: { body?: string } | null;
+        };
+      };
+    };
+    const shop = json.data?.shop;
+    if (!shop) return null;
+    return {
+      returnPolicy: shop.refundPolicy?.body || undefined,
+      shippingPolicy: shop.shippingPolicy?.body || undefined,
+      contactEmail: shop.contactEmail || undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // Extract catalog metadata for store classification

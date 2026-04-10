@@ -1,0 +1,279 @@
+/* Run panel flow — clarity + full-width alignment with Comparison Lab patterns */
+
+/* Main card: fills column in 50/50 layout; comfortable line length */
+.simCardInner {
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  padding-inline: clamp(0.35rem, 1.5vw, 0.85rem);
+}
+
+.simSidebarSticky {
+  position: sticky;
+  top: 1rem;
+}
+
+.simSidebarInner {
+  padding-inline: clamp(0.35rem, 1.5vw, 0.65rem);
+  padding-block: 0.15rem;
+  box-sizing: border-box;
+}
+
+.simSidebarMetrics {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  background: var(--p-color-bg-surface-secondary, #f8fafc);
+  border: 1px solid var(--p-color-border-secondary, #e2e8f0);
+}
+
+.simFocusSelectWrap {
+  max-width: min(100%, 28rem);
+}
+
+/* Pro Scenario Lab — always visible (paid feature), not buried under generic “advanced” */
+.simProLabWrap {
+  border-radius: 12px;
+  padding: 0.35rem;
+  box-sizing: border-box;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  background: linear-gradient(165deg, #f8faff 0%, #f1f5f9 55%, #f8fafc 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.6) inset,
+    0 2px 14px rgba(37, 99, 235, 0.07);
+}
+
+/* One tight line — timing + scope; not the hero of the page */
+.simExpectStrip {
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--p-color-border-secondary, #e2e8f0);
+  background: var(--p-color-bg-surface-secondary, #f8fafc);
+}
+
+.simExpectStripText {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--p-color-text-secondary, #64748b);
+}
+
+.simExpectStripText strong {
+  color: var(--p-color-text, #0f172a);
+  font-weight: 700;
+}
+
+/* Main content + sticky aside (wider run area for product | lab) */
+.simPageGrid {
+  display: grid;
+  gap: 1rem;
+  align-items: start;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (min-width: 960px) {
+  .simPageGrid {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  }
+}
+
+.simPageMain {
+  min-width: 0;
+}
+
+.simPageAside {
+  min-width: 0;
+}
+
+/* Product + Scenario Lab side by side */
+.simSetupGrid {
+  display: grid;
+  gap: 1.25rem;
+  align-items: start;
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .simSetupGrid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.simSetupCol {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.simSetupColHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin: 0;
+  padding-bottom: 0.15rem;
+  border-bottom: 2px solid var(--p-color-border-secondary, #e2e8f0);
+}
+
+.simSetupColTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--p-color-text, #0f172a);
+}
+
+.simSetupColHint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--p-color-text-secondary, #64748b);
+}
+
+.simLabCol .simProLabWrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.simIntro {
+  max-width: 100%;
+  margin-inline: 0;
+  padding-inline: 0;
+}
+
+.simIntroTitle {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--p-color-text, #0f172a);
+  line-height: 1.2;
+}
+
+.simIntroBody {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: var(--p-color-text-secondary, #64748b);
+}
+
+.simStepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 100%;
+  margin-inline: 0;
+  box-sizing: border-box;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.simStep {
+  flex: 1 1 0;
+  min-width: min(100%, 160px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 2px solid var(--p-color-border-secondary, #e2e8f0);
+  background: var(--p-color-bg-surface-secondary, #f8fafc);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.simStepDone {
+  border-color: var(--p-color-border-success, #86efac);
+  background: var(--p-color-bg-surface-success, #f0fdf4);
+}
+
+.simStepCurrent {
+  border-color: var(--p-color-border-emphasis, #2563eb);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2), 0 2px 8px rgba(37, 99, 235, 0.1);
+  background: var(--p-color-bg-surface, #fff);
+}
+
+.simStepLabel {
+  font-size: 0.8125rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--p-color-text, #0f172a);
+}
+
+.simStepCurrent .simStepLabel {
+  color: var(--p-color-text-emphasis, #1d4ed8);
+}
+
+.simStepSub {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--p-color-text-secondary, #64748b);
+}
+
+.simCtaWrap {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  background: var(--p-color-bg-surface-secondary, #f1f5f9);
+  border: 1px solid var(--p-color-border, #e2e8f0);
+}
+
+.simCtaHint {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--p-color-text-secondary, #64748b);
+  line-height: 1.45;
+}
+
+.simCheckList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.simCheckList li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--p-color-text-secondary, #475569);
+  border-bottom: 1px solid var(--p-color-border-secondary, #f1f5f9);
+}
+
+.simCheckList li:last-child {
+  border-bottom: none;
+}
+
+.simCheckIcon {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: var(--p-color-text-success, #16a34a);
+  font-weight: 800;
+}
+
+.simMetaRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid var(--p-color-border-secondary, #f1f5f9);
+}
+
+.simSidebarMetrics .simMetaRow {
+  padding: 0.45rem 0;
+  border-bottom-color: var(--p-color-border-secondary, #e2e8f0);
+}
+
+.simMetaRow:last-child {
+  border-bottom: none;
+}

@@ -169,22 +169,20 @@ def format_product_context(intelligence: ProductIntelligence | None) -> str:
     if intelligence is None:
         return ""
 
-    parts = [f"PRODUCT CONTEXT [{intelligence.category}]:"]
+    parts = [f"\nCATEGORY CONTEXT [{intelligence.category}]:"]
 
     if intelligence.category_norms:
-        parts.append(f"Category norms: {intelligence.category_norms}")
+        parts.append(f"How this market works: {intelligence.category_norms}")
 
     if intelligence.real_concerns:
-        parts.append(f"What real buyers evaluate: {'; '.join(intelligence.real_concerns)}.")
+        parts.append(f"What matters to buyers of this type: {'; '.join(intelligence.real_concerns)}.")
 
     if intelligence.non_concerns:
+        # Frame as "don't be out of touch" rather than a hard rule
         parts.append(
-            f"NEVER flag as a problem for this product type: "
+            f"Things real buyers of this type don't flag: "
             f"{'; '.join(intelligence.non_concerns)}. "
-            f"Raising these will make you look like you have never bought this type of product."
+            f"(Raising these signals you don't know this product category.)"
         )
-
-    if intelligence.differentiators:
-        parts.append(f"What drives the purchase decision: {'; '.join(intelligence.differentiators)}.")
 
     return "\n".join(parts)

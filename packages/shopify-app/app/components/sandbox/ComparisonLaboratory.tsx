@@ -13,6 +13,9 @@ import {
   SkeletonBodyText,
   Spinner,
   ProgressBar,
+  Tooltip,
+  Collapsible,
+  Badge,
 } from "@shopify/polaris";
 import { ConfidenceGauge } from "../ConfidenceGauge";
 import { sanitizeAgentReasoning } from "../../utils/sanitizeAgentReasoning";
@@ -71,6 +74,16 @@ type DeltaRow = {
   createdAt: string;
 };
 
+/** Pre-filtered rows for the lab footer (excludes batch/setGroup runs). */
+export type ScenarioHistoryRow = {
+  id: string;
+  status: string;
+  score: number | null;
+  createdAt: string;
+  price: number | null;
+  shippingDays: number | null;
+};
+
 const ARCHETYPE_FALLBACK: Record<string, { emoji: string; name: string }> = {
   budget_optimizer: { emoji: "💰", name: "Budget Optimizer" },
   brand_loyalist: { emoji: "⭐", name: "Brand Loyalist" },
@@ -84,6 +97,7 @@ export type TrustAuditFriction = {
   hasShippingInfo?: boolean;
   hasReturnPolicy?: boolean;
   hasContact?: boolean;
+  hasSpecificReturn?: boolean;
 } | null;
 
 const FRICTION_META: Record<"price" | "logistics" | "trust", {
@@ -391,6 +405,91 @@ function FrictionCards({
   );
 }
 
+const FRICTION_TOOLTIPS: Record<"price" | "logistics" | "trust", string> = {
+  price:
+    "Estimated share of modeled hesitation tied to price vs. value (not your checkout funnel).",
+  logistics:
+    "Estimated share tied to shipping, delivery, and returns clarity.",
+  trust: "Estimated share tied to reviews, credibility, and policy trust signals.",
+};
+
+function topFrictionIssueRows(
+  pricePct: number,
+  logisticsPct: number,
+  trustPct: number,
+): { key: string; label: string; pct: number; sev: FrictionSev; hint: string }[] {
+  const rows = [
+    {
+      key: "price",
+      label: "Price sensitivity",
+      pct: pricePct,
+      sev: (pricePct >= 40 ? "critical" : pricePct >= 15 ? "warning" : "growth") as FrictionSev,
+      hint: "Justify value or test a clearer offer.",
+    },
+    {
+      key: "trust",
+      label: "Trust & social proof",
+      pct: trustPct,
+      sev: (trustPct >= 40 ? "critical" : trustPct >= 15 ? "warning" : "growth") as FrictionSev,
+      hint: "Add proof buyers can see before they commit.",
+    },
+    {
+      key: "logistics",
+      label: "Logistics & returns",
+      pct: logisticsPct,
+      sev: (logisticsPct >= 40 ? "critical" : logisticsPct >= 15 ? "warning" : "growth") as FrictionSev,
+      hint: "Spell out delivery and what happens if it is not a fit.",
+    },
+  ];
+  return [...rows].sort((a, b) => b.pct - a.pct).slice(0, 3);
+}
+
+function topRejectSnippetsFromLogs(logs: AgentLogLite[], max = 3): string[] {
+  const out: string[] = [];
+  for (const log of logs) {
+    if (log.verdict !== "REJECT") continue;
+    const s = sanitizeAgentReasoning(log.reasoning).trim();
+    if (!s) continue;
+    out.push(s.length > 200 ? `${s.slice(0, 197)}…` : s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function FrictionMiniStrip({
+  pricePct,
+  logisticsPct,
+  trustPct,
+}: {
+  pricePct: number;
+  logisticsPct: number;
+  trustPct: number;
+}) {
+  const items: { key: "price" | "logistics" | "trust"; label: string; pct: number }[] = [
+    { key: "price", label: "Price", pct: pricePct },
+    { key: "logistics", label: "Ship", pct: logisticsPct },
+    { key: "trust", label: "Trust", pct: trustPct },
+  ];
+  return (
+    <div className={styles.frictionMiniStrip}>
+      {items.map(({ key, label, pct }) => (
+        <Tooltip key={key} content={FRICTION_TOOLTIPS[key]} preferredPosition="above">
+          <div className={styles.frictionMiniItem}>
+            <span className={styles.frictionMiniLabel}>{label}</span>
+            <div className={styles.frictionMiniBar}>
+              <div
+                className={styles.frictionMiniFill}
+                style={{ width: `${Math.min(100, Math.round(pct))}%` }}
+              />
+            </div>
+            <span className={styles.frictionMiniPct}>{Math.round(pct)}%</span>
+          </div>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
 // ── Price Optimizer helpers ─────────────────────────────────────────────────
 export function pickBestSweepRun(results: PriceBatchResult[]): PriceBatchResult | null {
   const ok = results.filter((r) => r.status === "COMPLETED" && r.score != null);
@@ -524,6 +623,7 @@ function PriceOptimizerSection({
   experimentCards,
   selectExperimentCard,
   onOptimizerNavHint,
+  onNavigateToExperiments,
   fetcher,
 }: {
   basePrice: number;
@@ -540,6 +640,7 @@ function PriceOptimizerSection({
   experimentCards: ExperimentCard[];
   selectExperimentCard: (id: string) => void;
   onOptimizerNavHint: (message: string) => void;
+  onNavigateToExperiments?: () => void;
   fetcher: FetcherWithComponents<SandboxActionData>;
 }) {
   const hasBatch = priceBatchResults.length > 0;
@@ -578,9 +679,12 @@ function PriceOptimizerSection({
   const showCompletionSummary = hasBatch && batchFullyComplete && !isBusy && bestSweep != null;
 
   function scrollToExperiments() {
-    document.getElementById("experiment-dashboard")?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
+    onNavigateToExperiments?.();
+    requestAnimationFrame(() => {
+      document.getElementById("experiment-dashboard")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
     });
   }
 
@@ -642,7 +746,7 @@ function PriceOptimizerSection({
             className={styles.priceOptRunBtn}
             disabled={isBusy}
           >
-            {isBusy ? "Running…" : hasBatch ? "↺ Re-run sweep" : "⚗️ Run Price Sweep"}
+            {isBusy ? "Running…" : hasBatch ? "↺ Re-run price scan" : "⚗️ Compare 3 price points"}
           </button>
         </fetcher.Form>
       </div>
@@ -773,7 +877,7 @@ function PriceOptimizerSection({
                     className={styles.poStepRunBtn}
                     onClick={() => runExperimentStep(step.terms)}
                   >
-                    Run this experiment →
+                    Open in Experiments →
                   </button>
                 </div>
               ))}
@@ -1077,6 +1181,7 @@ type Props = {
   allSetCompleted: boolean;
   priceBatchResults: PriceBatchResult[];
   batchRunning: boolean;
+  scenarioHistory: ScenarioHistoryRow[];
 };
 
 export function ComparisonLaboratory({
@@ -1117,10 +1222,13 @@ export function ComparisonLaboratory({
   allSetCompleted,
   priceBatchResults,
   batchRunning,
+  scenarioHistory,
 }: Props) {
   const [mobileTab, setMobileTab] = useState<"baseline" | "simulation">("baseline");
   const [selectedBatchSim, setSelectedBatchSim] = useState<PriceBatchResult | null>(null);
   const [optimizerNavHint, setOptimizerNavHint] = useState<string | null>(null);
+  const [mainLabTab, setMainLabTab] = useState(0);
+  const [debateFullOpen, setDebateFullOpen] = useState(false);
 
   const baselineMap = phase1ByArchetype(baselinePhase1);
   const labMap = phase1ByArchetype(labPhase1);
@@ -1155,6 +1263,9 @@ export function ComparisonLaboratory({
   const showMeterShift = hasLab && (activeLabScore !== baselineScore || floorMasking);
 
   const rec = getRecommendation(baselineScore);
+  const insightRows = topFrictionIssueRows(priceDropoutPct, logisticsDropoutPct, trustDropoutPct);
+  const debateSourceLogs = baselinePhase2.length ? baselinePhase2 : activeLabPhase2;
+  const topRejectSnippets = topRejectSnippetsFromLogs(debateSourceLogs, 3);
 
   const batchFullyCompleteForBanner =
     isPro &&
@@ -1179,13 +1290,11 @@ export function ComparisonLaboratory({
       <div className={`${styles.recommendationPill} ${rec.cls}`}>
         {rec.emoji} {rec.text}
       </div>
-      <Meter label="Purchase intent (panel)" value={baselineScore} />
-      <FrictionCards
-        pricePct={priceDropoutPct}
-        logisticsPct={logisticsDropoutPct}
-        trustPct={trustDropoutPct}
-        trustAudit={trustAudit}
-      />
+      <Tooltip content="Modeled purchase intent from the baseline panel (0–100). May include listing bonuses or a trust floor — see Simulation tab for raw votes when scores tie.">
+        <div>
+          <Meter label="Purchase intent (panel)" value={baselineScore} />
+        </div>
+      </Tooltip>
       <div style={{ marginTop: 16 }}>
         <p className={styles.panelSectionLabel}>First-scan panel votes — Phase 1</p>
         <PersonaRows baselineMap={baselineMap} labMap={new Map()} />
@@ -1282,10 +1391,236 @@ export function ComparisonLaboratory({
     </>
   );
 
+  const goExperimentsTab = () => {
+    setMainLabTab(2);
+    requestAnimationFrame(() => {
+      document.getElementById("experiment-dashboard")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  };
+
+  const mainLabTabs = [
+    { id: "overview", label: "Overview", hint: "Score & next step" },
+    { id: "insights", label: "Insights", hint: "Friction deep-dive" },
+    { id: "experiments", label: "Experiments", hint: "Run What-Ifs & price scan" },
+    { id: "simulation", label: "Simulation", hint: "Votes & debrief" },
+  ] as const;
+
+  let overviewPrimary: string;
+  if (activeInsight?.trim()) {
+    overviewPrimary = activeInsight.trim();
+  } else if (bestSweepForBanner && !activeBatchSim) {
+    overviewPrimary = bannerFloorMasking
+      ? `Price scan finished — best chip $${bestSweepForBanner.price.toFixed(2)}. Headline scores may sit on a trust floor; open Simulation to compare raw BUY votes.`
+      : `Price scan finished — best modeled score ${bestSweepForBanner.score}/100 at $${bestSweepForBanner.price.toFixed(2)}.`;
+  } else {
+    overviewPrimary = `${rec.emoji} ${rec.text}`;
+  }
+
+  const overviewSecondary =
+    hasLab && activeLabScore != null
+      ? `Baseline ${baselineScore}/100 · Latest scenario ${activeLabScore}/100${
+          activeLabScore !== baselineScore && !floorMasking
+            ? ` (${activeLabScore - baselineScore > 0 ? "+" : ""}${activeLabScore - baselineScore} pts)`
+            : floorMasking && activeLabRawPct != null && baselineRawPct != null
+              ? ` · Raw buy-votes ${baselineRawPct}% → ${activeLabRawPct}%`
+              : ""
+        }`
+      : `Baseline ${baselineScore}/100 — open Experiments to model a change vs this listing.`;
+
   return (
     <div className={styles.labRoot}>
+      <div className={styles.labTabBarWrap}>
+        <p className={styles.labTabBarHint} id="lab-tab-hint">
+          Switch section — each tab is a separate step in the lab
+        </p>
+        <nav
+          className={styles.labTabNav}
+          aria-labelledby="lab-tab-hint"
+          role="tablist"
+        >
+          {mainLabTabs.map((tab, i) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              id={`lab-tab-${tab.id}`}
+              aria-selected={mainLabTab === i}
+              aria-controls={`lab-panel-${tab.id}`}
+              tabIndex={mainLabTab === i ? 0 : -1}
+              className={styles.labTabSegment}
+              data-active={mainLabTab === i}
+              onClick={() => setMainLabTab(i)}
+            >
+              <span className={styles.labTabSegmentLabel}>{tab.label}</span>
+              <span className={styles.labTabSegmentSub}>{tab.hint}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {mainLabTab === 0 && (
+        <div
+          role="tabpanel"
+          id="lab-panel-overview"
+          aria-labelledby="lab-tab-overview"
+          className={styles.labTabPanel}
+        >
+          <BlockStack gap="400">
+            <div className={styles.labOverviewHero}>
+              <Text as="p" variant="headingSm" tone="subdued">
+                Main insight
+              </Text>
+              <Text as="p" variant="headingMd">
+                {overviewPrimary}
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                {overviewSecondary}
+              </Text>
+            </div>
+            <InlineStack gap="500" wrap blockAlign="start">
+              <BlockStack gap="100">
+                <Text as="span" variant="bodySm" fontWeight="semibold">
+                  Baseline
+                </Text>
+                <Tooltip content="Customer Confidence Score from your original panel (0–100).">
+                  <span style={{ display: "inline-block" }}>
+                    <ConfidenceGauge score={baselineScore} size={112} variant="light" />
+                  </span>
+                </Tooltip>
+              </BlockStack>
+              {hasLab && activeLabScore != null && (
+                <BlockStack gap="100">
+                  <Text as="span" variant="bodySm" fontWeight="semibold">
+                    Latest scenario
+                  </Text>
+                  <Tooltip content="Most recent What-If or selected price scenario.">
+                    <span style={{ display: "inline-block" }}>
+                      <ConfidenceGauge score={activeLabScore} size={112} />
+                    </span>
+                  </Tooltip>
+                </BlockStack>
+              )}
+            </InlineStack>
+            <div>
+              <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                Friction snapshot (baseline)
+              </Text>
+              <FrictionMiniStrip
+                pricePct={priceDropoutPct}
+                logisticsPct={logisticsDropoutPct}
+                trustPct={trustDropoutPct}
+              />
+            </div>
+            <InlineStack gap="200" wrap>
+              {isPro && latestCompletedId && hasLab && !latestRunning && !activeBatchSim ? (
+                <Button variant="primary" url={`/app/results/${latestCompletedId}`}>
+                  Open full What-If report
+                </Button>
+              ) : isPro && activeBatchSim ? (
+                <Button variant="primary" onClick={() => setMainLabTab(3)}>
+                  Review price scenarios & votes
+                </Button>
+              ) : isPro ? (
+                <Button variant="primary" onClick={goExperimentsTab}>
+                  Set up a What-If vs baseline
+                </Button>
+              ) : (
+                <Button variant="primary" url="/app/billing">
+                  Upgrade to run experiments
+                </Button>
+              )}
+              <Button variant="plain" onClick={() => setMainLabTab(1)}>
+                Listing friction details
+              </Button>
+              <Button
+                variant="plain"
+                onClick={() => setMainLabTab(3)}
+                disabled={!hasLab && !activeBatchSim}
+              >
+                Panel & debate
+              </Button>
+            </InlineStack>
+            {floorMasking && !activeBatchSim && (
+              <Banner tone="warning" title="Score floor may hide panel shifts">
+                <Text as="p" variant="bodySm">
+                  Open the Simulation tab to see raw BUY counts and the Phase 2 debrief.
+                </Text>
+              </Banner>
+            )}
+          </BlockStack>
+        </div>
+      )}
+
+      {mainLabTab === 1 && (
+        <div
+          role="tabpanel"
+          id="lab-panel-insights"
+          aria-labelledby="lab-tab-insights"
+          className={styles.labTabPanel}
+        >
+          <BlockStack gap="500">
+            <div>
+              <Text as="h2" variant="headingMd">
+                Listing friction
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Top dropout drivers from your baseline panel. Percentages are directional themes — not additive.
+              </Text>
+            </div>
+            <div className={styles.insightsPriorityList}>
+              <Text as="p" variant="bodySm" fontWeight="semibold">
+                Top priorities
+              </Text>
+              <ul className={styles.insightsPriorityUl}>
+                {insightRows.map((row) => (
+                  <li key={row.key} className={styles.insightsPriorityLi}>
+                    <div className={styles.insightsPriorityRow}>
+                      <span className={`${styles.sevBadge} ${SEV_BADGE_CLS[row.sev]}`}>
+                        {SEV_LABEL[row.sev]}
+                      </span>
+                      <span className={styles.insightsPriorityLabel}>{row.label}</span>
+                      <span className={styles.insightsPriorityPct}>{Math.round(row.pct)}% dropout</span>
+                      <span className={styles.insightsPriorityHint}>{row.hint}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <FrictionCards
+              pricePct={priceDropoutPct}
+              logisticsPct={logisticsDropoutPct}
+              trustPct={trustDropoutPct}
+              trustAudit={trustAudit}
+            />
+            <div className={styles.listingSignalsBox}>
+              <Text as="p" variant="bodySm" fontWeight="semibold">
+                Listing signals (quick scan)
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Shipping: {trustAudit?.hasShippingInfo ? "Detected on listing" : "Unclear or missing"} · Returns:{" "}
+                {trustAudit?.hasReturnPolicy ? "Present" : "Weak or missing"} · Contact:{" "}
+                {trustAudit?.hasContact ? "Present" : "Missing"}
+              </Text>
+            </div>
+            <Button variant="primary" onClick={goExperimentsTab}>
+              Go to Experiments
+            </Button>
+          </BlockStack>
+        </div>
+      )}
+
+      {mainLabTab === 2 && (
+        <div
+          role="tabpanel"
+          id="lab-panel-experiments"
+          aria-labelledby="lab-tab-experiments"
+          className={styles.labTabPanelExperiments}
+        >
       <div className={styles.labSticky} id="experiment-dashboard" tabIndex={-1}>
-        <p className={styles.labStickyTitle}>Experiment dashboard</p>
+        <p className={styles.labStickyTitle}>Experiments</p>
         {optimizerNavHint && (
           <div className={styles.optimizerNavHintWrap}>
             <Banner tone="info" onDismiss={() => setOptimizerNavHint(null)}>
@@ -1383,8 +1718,8 @@ export function ComparisonLaboratory({
               <div style={{ marginTop: 10 }}>
                 <fetcher.Form method="post">
                   <input type="hidden" name="intent" value="simulate_all" />
-                  <Button size="slim" submit loading={isSubmitting} disabled={!!latestRunning}>
-                    Simulate all cards
+                  <Button variant="plain" size="slim" submit loading={isSubmitting} disabled={!!latestRunning}>
+                    Run all experiment cards
                   </Button>
                 </fetcher.Form>
               </div>
@@ -1419,7 +1754,7 @@ export function ComparisonLaboratory({
             </fetcher.Form>
             {latestRunning && (
               <Text as="p" variant="bodySm" tone="subdued">
-                Panelists voting — results appear in the simulation pane on the right.
+                Panelists voting — open the Simulation tab to watch votes and the debrief.
               </Text>
             )}
           </div>
@@ -1456,10 +1791,59 @@ export function ComparisonLaboratory({
           experimentCards={experimentCards}
           selectExperimentCard={selectExperimentCard}
           onOptimizerNavHint={setOptimizerNavHint}
+          onNavigateToExperiments={goExperimentsTab}
           fetcher={fetcher}
         />
       )}
 
+      {allSetCompleted && experimentSetDeltas.length > 0 && (
+        <div className={`${styles.debateSection} ${styles.labExperimentsBatchInset}`}>
+          <Text as="h3" variant="headingSm">
+            Experiment batch results
+          </Text>
+          <BlockStack gap="200">
+            {[...experimentSetDeltas]
+              .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+              .map((d) => {
+                const dp = d.deltaParams as { experimentCardName?: string } | null;
+                const diff = d.score != null ? d.score - baselineScore : null;
+                return (
+                  <InlineStack key={d.id} align="space-between" blockAlign="center">
+                    <Text as="span" variant="bodySm">
+                      {dp?.experimentCardName ?? "Experiment"}
+                    </Text>
+                    <InlineStack gap="200">
+                      <Text as="span" variant="bodySm" fontWeight="semibold">
+                        {d.score ?? "—"}/100
+                        {diff != null && diff !== 0 && (
+                          <span style={{ color: diff > 0 ? "#16A34A" : "#DC2626", marginLeft: 6 }}>
+                            ({diff > 0 ? "+" : ""}
+                            {diff})
+                          </span>
+                        )}
+                      </Text>
+                      {d.status === "COMPLETED" && (
+                        <Button url={`/app/results/${d.id}`} size="slim" variant="plain">
+                          Open report
+                        </Button>
+                      )}
+                    </InlineStack>
+                  </InlineStack>
+                );
+              })}
+          </BlockStack>
+        </div>
+      )}
+        </div>
+      )}
+
+      {mainLabTab === 3 && (
+        <div
+          role="tabpanel"
+          id="lab-panel-simulation"
+          aria-labelledby="lab-tab-simulation"
+          className={styles.labTabPanel}
+        >
       <div className={styles.labMobileTabs}>
         <button
           type="button"
@@ -1505,112 +1889,181 @@ export function ComparisonLaboratory({
         {simulationPane}
       </div>
 
-      {activeInsight && (activeBatchSim ? activeBatchSim.id : latestCompletedId) && (
-        <div className={styles.insightBox} style={{ margin: "0 1.25rem 1rem" }}>
-          <strong>AI insight — </strong>
-          {activeInsight}
-          {!activeBatchSim && latestCompletedId && (
-            <div style={{ marginTop: 10 }}>
-              <Button url={`/app/results/${latestCompletedId}`} size="slim" variant="plain">
-                Open full What-If report →
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {allSetCompleted && experimentSetDeltas.length > 0 && (
-        <div className={styles.debateSection}>
-          <Text as="h3" variant="headingSm">
-            Experiment batch results
-          </Text>
-          <BlockStack gap="200">
-            {[...experimentSetDeltas]
-              .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-              .map((d) => {
-                const dp = d.deltaParams as { experimentCardName?: string } | null;
-                const diff = d.score != null ? d.score - baselineScore : null;
-                return (
-                  <InlineStack key={d.id} align="space-between" blockAlign="center">
-                    <Text as="span" variant="bodySm">
-                      {dp?.experimentCardName ?? "Experiment"}
-                    </Text>
-                    <InlineStack gap="200">
-                      <Text as="span" variant="bodySm" fontWeight="semibold">
-                        {d.score ?? "—"}/100
-                        {diff != null && diff !== 0 && (
-                          <span style={{ color: diff > 0 ? "#16A34A" : "#DC2626", marginLeft: 6 }}>
-                            ({diff > 0 ? "+" : ""}{diff})
-                          </span>
-                        )}
-                      </Text>
-                      {d.status === "COMPLETED" && (
-                        <Button url={`/app/results/${d.id}`} size="slim" variant="plain">
-                          View
-                        </Button>
-                      )}
-                    </InlineStack>
-                  </InlineStack>
-                );
-              })}
-          </BlockStack>
-        </div>
-      )}
+          {activeInsight?.trim() && (
+              <div className={styles.insightBox} style={{ margin: "0 0 1rem" }}>
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  Scenario insight
+                </Text>
+                <Text as="p" variant="bodySm">
+                  {activeInsight}
+                </Text>
+                {!activeBatchSim && latestCompletedId && (
+                  <div style={{ marginTop: 10 }}>
+                    <Button url={`/app/results/${latestCompletedId}`} size="slim" variant="primary">
+                      Open full What-If report
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
 
       <div className={styles.debateSection}>
         <h3 className={styles.debateTitle}>Panel debrief</h3>
         <p className={styles.debateSub}>
-          Each color is a different panelist — follow who challenged the listing and who defended it. From Phase 2
-          (refreshes when the engine completes a phase; not a live stream).
+          Phase 2 discussion for the scenario shown above. Full transcript is below — start with the top objections.
         </p>
-        <div className={styles.bubbleList}>
-          {debateItems.length === 0 ? (
-            <Text as="p" variant="bodySm" tone="subdued">
-              No debate transcript stored for this simulation yet.
-            </Text>
-          ) : (
-            debateItems.map((item, idx) =>
-              item.type === "challenge" ? (
-                <div key={`c-${idx}`} className={styles.challengePill}>
-                  VS — opposing votes
-                </div>
-              ) : (
-                <div key={`${item.log.agentId}-${idx}`} className={styles.bubbleRow}>
-                  <div
-                    className={`${styles.debateAvatar} ${
-                      AGENT_AVATAR[item.log.archetype] ?? styles.avatarDefault
-                    }`}
-                    aria-hidden
-                  >
-                    {initialsFromLog(item.log)}
-                  </div>
-                  <div
-                    className={`${styles.bubble} ${
-                      AGENT_BUBBLE[item.log.archetype] ?? styles.bubbleDefault
-                    }`}
-                  >
-                    <div className={styles.bubbleHeader}>
-                      <span>{item.log.personaName || item.log.archetypeName || item.log.archetype}</span>
-                      <span className={`${styles.verdict} ${verdictClass(item.log.verdict)}`}>
-                        {item.log.verdict}
-                      </span>
+        {debateItems.length === 0 ? (
+          <Text as="p" variant="bodySm" tone="subdued">
+            No debate transcript stored for this simulation yet.
+          </Text>
+        ) : (
+          <BlockStack gap="300">
+            {topRejectSnippets.length > 0 && (
+              <div className={styles.panelGlanceBox}>
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  Top objections (REJECT)
+                </Text>
+                <ul className={styles.panelGlanceUl}>
+                  {topRejectSnippets.map((s, i) => (
+                    <li key={i} className={styles.panelGlanceLi}>
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {s}
+                      </Text>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <Button
+              variant="plain"
+              disclosure={debateFullOpen ? "up" : "down"}
+              onClick={() => setDebateFullOpen((o) => !o)}
+            >
+              {debateFullOpen ? "Hide full transcript" : "Show full transcript"}
+            </Button>
+            <Collapsible
+              open={debateFullOpen}
+              id="lab-debate-collapsible"
+              transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+            >
+              <div className={styles.bubbleList}>
+                {debateItems.map((item, idx) =>
+                  item.type === "challenge" ? (
+                    <div key={`c-${idx}`} className={styles.challengePill}>
+                      VS — opposing votes
                     </div>
-                    <span className={styles.bubbleMeta}>
-                      {(item.log.archetypeEmoji ? `${item.log.archetypeEmoji} ` : "")}
-                      {ARCHETYPE_FALLBACK[item.log.archetype]?.name ?? item.log.archetype}
-                    </span>
-                    <p className={styles.bubbleQuote}>
-                      &ldquo;{sanitizeAgentReasoning(item.log.reasoning)}&rdquo;
-                    </p>
-                  </div>
-                </div>
-              ),
-            )
-          )}
-        </div>
+                  ) : (
+                    <div key={`${item.log.agentId}-${idx}`} className={styles.bubbleRow}>
+                      <div
+                        className={`${styles.debateAvatar} ${
+                          AGENT_AVATAR[item.log.archetype] ?? styles.avatarDefault
+                        }`}
+                        aria-hidden
+                      >
+                        {initialsFromLog(item.log)}
+                      </div>
+                      <div
+                        className={`${styles.bubble} ${
+                          AGENT_BUBBLE[item.log.archetype] ?? styles.bubbleDefault
+                        }`}
+                      >
+                        <div className={styles.bubbleHeader}>
+                          <span>{item.log.personaName || item.log.archetypeName || item.log.archetype}</span>
+                          <span className={`${styles.verdict} ${verdictClass(item.log.verdict)}`}>
+                            {item.log.verdict}
+                          </span>
+                        </div>
+                        <span className={styles.bubbleMeta}>
+                          {(item.log.archetypeEmoji ? `${item.log.archetypeEmoji} ` : "")}
+                          {ARCHETYPE_FALLBACK[item.log.archetype]?.name ?? item.log.archetype}
+                        </span>
+                        <p className={styles.bubbleQuote}>
+                          &ldquo;{sanitizeAgentReasoning(item.log.reasoning)}&rdquo;
+                        </p>
+                      </div>
+                    </div>
+                  ),
+                )}
+              </div>
+            </Collapsible>
+          </BlockStack>
+        )}
       </div>
 
-      <div style={{ padding: "0 1.25rem 1.25rem" }}>
+        </div>
+      )}
+
+      {scenarioHistory.length > 0 && (
+        <section className={styles.labScenarioHistory} aria-label="Scenario history">
+          <div className={styles.labScenarioHistoryHead}>
+            <h2 className={styles.labScenarioHistoryTitle}>Scenario history</h2>
+            <p className={styles.labScenarioHistorySub}>
+              What-If and single runs from this baseline (batch card sets are grouped in Experiments).
+            </p>
+          </div>
+          <ul className={styles.labScenarioHistoryList}>
+            {scenarioHistory.map((row) => {
+              const created = new Date(row.createdAt);
+              const when = new Intl.DateTimeFormat(undefined, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }).format(created);
+              const stalePending =
+                row.status === "PENDING" &&
+                Date.now() - created.getTime() > 25 * 60 * 1000;
+              const scoreCls =
+                row.score == null
+                  ? ""
+                  : row.score >= 70
+                    ? styles.shScoreStrong
+                    : row.score >= 45
+                      ? styles.shScoreMixed
+                      : styles.shScoreLow;
+              return (
+                <li key={row.id} className={styles.labScenarioHistoryRow}>
+                  <div className={styles.labScenarioHistoryMain}>
+                    <span className={styles.labScenarioHistoryLine}>
+                      {row.price != null ? `$${Number(row.price).toFixed(2)}` : "Original price"}
+                      {row.shippingDays != null ? ` · ${row.shippingDays}d shipping` : ""}
+                    </span>
+                    <span className={styles.labScenarioHistoryMeta}>
+                      {when}
+                      {stalePending
+                        ? " · Still pending — try refreshing or re-running from Experiments."
+                        : ""}
+                    </span>
+                  </div>
+                  <div className={styles.labScenarioHistoryActions}>
+                    <Badge
+                      tone={
+                        row.status === "COMPLETED"
+                          ? "success"
+                          : row.status === "FAILED"
+                            ? "critical"
+                            : "info"
+                      }
+                    >
+                      {row.status}
+                    </Badge>
+                    {row.score != null && (
+                      <span className={`${styles.labScenarioHistoryScore} ${scoreCls}`}>
+                        {row.score}/100
+                      </span>
+                    )}
+                    {row.status === "COMPLETED" && (
+                      <Button url={`/app/results/${row.id}`} size="slim" variant="plain">
+                        Open report
+                      </Button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      <div className={styles.labFooterBar}>
         <Button url={`/app/results/${simulationId}`} variant="plain" size="slim">
           ← Back to full PDP report
         </Button>

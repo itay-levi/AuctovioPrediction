@@ -1,7 +1,52 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { updateSimulationFromCallback } from "../services/simulation.server";
 import { incrementMtUsage } from "../services/store.server";
+import { evaluateRetake } from "../services/engine.server";
 import db from "../db.server";
+
+async function _triggerRetakeEvaluation(retakeSim: {
+  id: string;
+  originalSimulationId: string | null;
+  score: number | null;
+  reportJson: unknown;
+}) {
+  if (!retakeSim.originalSimulationId) return;
+
+  const originalSim = await db.simulation.findUnique({
+    where: { id: retakeSim.originalSimulationId },
+    select: {
+      score: true,
+      recommendations: true,
+      reportJson: true,
+      productJson: true,
+    },
+  });
+  if (!originalSim?.recommendations) return;
+
+  const newReport = retakeSim.reportJson as { friction?: Record<string, unknown>; votes?: unknown[] } | null;
+  const origReport = originalSim.reportJson as { friction?: Record<string, unknown> } | null;
+  const newVotes = (newReport?.votes ?? []) as Record<string, unknown>[];
+  const productTitle = (originalSim.productJson as { title?: string } | null)?.title ?? "Product";
+
+  try {
+    const evaluation = await evaluateRetake({
+      productTitle,
+      originalScore: originalSim.score ?? 0,
+      newScore: retakeSim.score ?? 0,
+      originalRecommendations: originalSim.recommendations as { lens: string; title: string; the_why?: string; impact?: string }[],
+      originalFriction: (origReport?.friction ?? {}) as Record<string, unknown>,
+      newFriction: (newReport?.friction ?? {}) as Record<string, unknown>,
+      newVotes,
+    });
+
+    await db.simulation.update({
+      where: { id: retakeSim.id },
+      data: { retakeEvaluation: evaluation } as Parameters<typeof db.simulation.update>[0]["data"],
+    });
+  } catch (err) {
+    console.error(`[Retake] Evaluation failed for ${retakeSim.id}:`, err);
+  }
+}
 
 // Called by Auctovio engine (Groq) when a simulation phase completes
 // Auth: Bearer token (ENGINE_API_KEY)
@@ -86,6 +131,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (sim?.store?.shopDomain) {
       await incrementMtUsage(sim.store.shopDomain, actualMtCost);
+    }
+
+    // Trigger retake evaluation when a RETAKE simulation finishes
+    if (sim?.simulationType === "RETAKE" && sim.originalSimulationId) {
+      _triggerRetakeEvaluation(sim).catch(() => {});
     }
   }
 

@@ -33,18 +33,34 @@ Product details:
 Generate exactly {count} distinct customer archetypes who would realistically consider buying THIS specific product.
 These must be real, specific people — not generic consumer types. Tailor them entirely to this product.
 
-For each archetype, think:
-- Who is this specific person? (age, life situation, WHY they are looking at this product right now)
-- What will they scrutinise most for THIS product?
-- What would make them immediately reject it?
-- How do they argue in a group — are they emotional, analytical, sceptical, enthusiastic?
-
 CRITICAL RULES:
 1. Make archetypes specific to this product — a snowboard gets snowboard buyers, dog food gets dog owners
-2. Include at least one sceptic/dissenter who will push back even if others are positive
-3. Include diversity in price sensitivity, tech-savviness, and buying motivation
-4. rejection_threshold must reference specific things that could be wrong about THIS listing
-5. Each persona must feel like a genuinely different person, not a variation of the same type
+2. Include at least one hard sceptic who challenges even when others are positive
+3. Include diversity in price sensitivity, tech-savviness, and emotional investment
+4. rejection_threshold must name specific, realistic failure modes for THIS product type
+5. Each persona must feel like a genuinely different person with a different life situation
+6. analytical_lens must be a UNIQUE professional/personal frame — no two agents can share the same lens
+7. human_flaw must be a real psychological quirk that colours how they speak and what they fixate on
+
+Analytical lens examples (pick different ones per agent):
+- "Clinical Risk & Liability" (vet, doctor, safety engineer)
+- "Daily Routine Impact" (busy parent, shift worker)
+- "ROI & Total Cost of Ownership" (accountant, small business owner)
+- "Brand Signal & Social Proof" (trend-conscious shopper, influencer)
+- "Ingredient / Material Sourcing" (nutritionist, sustainability advocate)
+- "Gifting Anxiety" (gift buyer worried about recipient reaction)
+- "First-Time Buyer Overwhelm" (inexperienced in this category)
+- "Expert Snob Standards" (hobbyist who knows too much)
+
+Human flaw examples:
+- "Fixates on one concern and can't let it go"
+- "Speaks in hesitant half-sentences, always second-guessing"
+- "Blunt to the point of being rude, no filter"
+- "Over-researches and paralysis-by-analysis"
+- "Easily swayed by social proof, fears missing out"
+- "Catastrophises worst-case scenarios"
+- "Very trusting, sometimes naively so"
+- "Highly price-anchored, always comparing to alternatives"
 
 Respond with ONLY valid JSON — no markdown, no explanation:
 {{
@@ -53,11 +69,14 @@ Respond with ONLY valid JSON — no markdown, no explanation:
       "id": "snake_case_id",
       "name": "Short Display Name (2-4 words)",
       "emoji": "single relevant emoji",
-      "persona": "2-3 sentences: who they are, their life context, why they're shopping for this product right now",
-      "focus_areas": ["what they scrutinise most — product-specific"],
-      "rejection_threshold": "Specific conditions that make them REJECT — reference realistic issues with this type of product",
-      "debate_style": "1 sentence: how they argue — emotional/analytical/sceptical/enthusiastic, what angle they take",
-      "temperature": 0.5
+      "persona": "2-3 sentences: who they are, their life situation, WHY they are looking at this product right now",
+      "analytical_lens": "Their unique professional/personal frame for evaluating this product (e.g. 'Daily Routine Impact: how this fits into Sarah\\'s chaotic morning with two kids')",
+      "human_flaw": "One psychological quirk that shapes how they argue (e.g. 'Fixates on ingredient sourcing and brings it up even when others have moved on')",
+      "focus_areas": ["what they scrutinise most — product-specific, not generic"],
+      "rejection_threshold": "Specific, realistic conditions that make them REJECT — name actual listing failure modes",
+      "opening_voice": "One short sentence showing how THIS persona naturally opens a product reaction. Reflects their specific life situation and lens — completely different from any other panelist. Keep under 20 words. No quotes inside this string.",
+      "debate_style": "1 sentence: their arguing style — blunt/hesitant/analytical/emotional and what angle they take",
+      "temperature": 0.7
     }}
   ]
 }}"""
@@ -72,6 +91,9 @@ class DynamicArchetype:
     base_persona: str          # maps from "persona" in LLM output
     rejection_threshold: str
     debate_style: str
+    analytical_lens: str = ""  # unique professional/personal frame for this agent
+    human_flaw: str = ""       # psychological quirk that shapes tone and fixation
+    opening_voice: str = ""    # example of how this persona opens a product reaction
     focus_areas: List[str] = field(default_factory=list)
     temperature: float = 0.7
     sub_personas: List[str] = field(default_factory=list)  # empty for dynamic — persona IS the sub-persona
@@ -140,15 +162,13 @@ def generate_archetypes(
     )
 
     try:
-        # Try up to 2 times — local LLMs (llama3:8b via Ollama) sometimes return
-        # empty content on the first attempt with long prompts.
-        # max_tokens=1000 is enough for 5 archetypes (each ~150 tokens of JSON).
+        # 2000 tokens: 5 archetypes × ~350 tokens each (opening_voice adds ~60 tokens/archetype).
         raw = ""
         for attempt in range(2):
             raw = llm.chat(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,   # lowered for panel consistency across re-runs
-                max_tokens=1000,
+                max_tokens=2000,
             )
             if raw and raw.strip():
                 break
@@ -179,9 +199,12 @@ def generate_archetypes(
                 base_persona=a.get("persona", "A typical customer evaluating this product."),
                 rejection_threshold=a.get("rejection_threshold", "REJECT if the listing is incomplete or misleading."),
                 debate_style=a.get("debate_style", "Raises concerns based on personal experience."),
+                analytical_lens=a.get("analytical_lens", ""),
+                human_flaw=a.get("human_flaw", ""),
+                opening_voice=a.get("opening_voice", ""),
                 focus_areas=a.get("focus_areas", []),
                 temperature=float(a.get("temperature", 0.7)),
-                sub_personas=[],  # dynamic archetypes are already specific — no sub-personas needed
+                sub_personas=[],
             )
             archetypes.append(archetype)
 

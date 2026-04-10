@@ -1,4 +1,4 @@
-import { Tooltip, Icon } from "@shopify/polaris";
+import { Tooltip, Icon, Banner, Button, BlockStack, Text } from "@shopify/polaris";
 import { QuestionCircleIcon } from "@shopify/polaris-icons";
 import styles from "./ScenarioLabPanel.module.css";
 
@@ -73,6 +73,7 @@ export type ScenarioLabPanelProps = {
   onConcernChange: (v: string) => void;
   labBrutality: number;
   onBrutalityChange: (v: number) => void;
+  suggestedPreset?: "soft_launch" | "skeptic_audit" | "holiday_rush" | null;
 };
 
 function brutalityTierClass(n: number) {
@@ -113,6 +114,7 @@ export function ScenarioLabPanel({
   onConcernChange,
   labBrutality,
   onBrutalityChange,
+  suggestedPreset,
 }: ScenarioLabPanelProps) {
   const selectedPreset = labPreset ? LAB_PRESETS.find((p) => p.id === labPreset) : null;
 
@@ -152,6 +154,22 @@ export function ScenarioLabPanel({
 
       {labEnabled && (
         <div className={styles.body}>
+          {suggestedPreset && labPreset !== suggestedPreset && (
+            <div style={{ marginBottom: 12 }}>
+              <Banner tone="info" title="Suggested preset for this product">
+                <BlockStack gap="200">
+                  <Text as="p" variant="bodyMd">
+                    Based on this product&apos;s top friction area, we recommend the{" "}
+                    <strong>{LAB_PRESETS.find(p => p.id === suggestedPreset)?.title}</strong> preset:{" "}
+                    {LAB_PRESETS.find(p => p.id === suggestedPreset)?.desc}
+                  </Text>
+                  <Button size="slim" onClick={() => onSelectPreset(suggestedPreset)}>
+                    Apply {LAB_PRESETS.find(p => p.id === suggestedPreset)?.title}
+                  </Button>
+                </BlockStack>
+              </Banner>
+            </div>
+          )}
           <p className={styles.sectionLabel}>Quick scenarios</p>
           <div className={styles.presets}>
             {LAB_PRESETS.map((p) => {

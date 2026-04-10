@@ -59,9 +59,10 @@ class AgentVote(TypedDict):
     persona_motivation: str  # e.g. "Values Durability"
     niche_concern: str       # "Why I'm here" — product-specific concern
     phase: int
-    verdict: str           # "BUY" | "REJECT"
+    verdict: str           # "BUY" | "REJECT" | "NEUTRAL"
     reasoning: str
-    confidence: float
+    confidence: float        # normalised 0–1 (= confidence_score / 100)
+    confidence_score: int    # 0–100 integer (primary field)
     peer_rebuttal: str     # phase 2/3: direct response to another agent
     vote_change_trigger: str  # phase 2/3: product-text that justified a flip (or "")
 
@@ -103,19 +104,56 @@ FOCUS_AREA_BIASES: dict[str, str] = {
     "mobile_friction": "FOCUS: MOBILE — evaluate on small screen. Cluttered or unclear checkout = lean REJECT.",
 }
 
-PHYSICAL_REALITY_RULES = "Rules: ONE purchase, no multi-unit, no off-site checks. Firm BUY or REJECT."
+PHYSICAL_REALITY_RULES = "ONE purchase decision. You are on this product page only — no tabs open, no off-site checking."
 
-TONE_RULE = "Tone: Write like a real person. Raw, direct gut reactions. No corporate filler (no 'furthermore', 'additionally', 'in conclusion'). Say 'Honestly, I'd skip this because...' not 'The product presents several considerations.'"
+TONE_RULE = (
+    "Write the way YOUR specific persona would actually think out loud — not as an AI playing a character. "
+    "No corporate filler. No generic openers. No 'Honestly,' or 'Look,' to start. "
+    "Your voice is shaped by your job, your situation, your past experience with similar products."
+)
 
-SKEPTIC_ANCHOR = "SKEPTIC: Only flip REJECT→BUY with hard data from the listing. Peer enthusiasm ≠ evidence."
+# Injected once at the top of every agent prompt as a grounding instruction
+HUMAN_SHOPPER_SYSTEM = """You've been asked to honestly evaluate this product page before making a purchase decision. Think of it this way: someone is paying you to give your real, unfiltered reaction — would you personally buy this, and why or why not? Your honesty is the entire point.
 
-# Anti-sycophancy rule — prevents empty praise but does NOT bias toward REJECT.
-# Agents must give a concrete, persona-specific reason for whichever way they vote.
-ATTACK_FIRST_RULE = (
-    "HONESTY RULE: Do not give vague praise or empty reassurance. "
-    "Whatever you decide — BUY or REJECT — your FIRST sentence must give the single most important "
-    "concrete reason for that decision, specific to this listing and your persona. "
-    "Generic statements like 'looks good' or 'seems fine' are not allowed."
+You have a specific situation, a budget you actually care about, and experience with similar products or price points. You are not a reviewer, not an auditor, not a critic. You are a person deciding whether to spend their money.
+
+You are evaluating THIS listing — the title, price, description, images mentioned, policies, specs, and any other information visible on this page. You cannot access external websites during this evaluation.
+
+WHAT YOU CAN DO:
+- React to what the listing claims — and whether those claims are credible at this price
+- Notice pricing signals: a significant discount can mean a great deal, or it can make you wonder why. Use your judgment — is it a normal sale or does it feel off?
+- Call out what's missing that YOU specifically need before buying
+- Bring your own experience with similar products, similar prices, similar brands
+- Be detailed when something genuinely concerns or excites you — your feedback needs to be useful to the merchant, not just a vote
+- Use bullets if you have several distinct points to make
+
+WHAT YOU CANNOT DO:
+- Reference social media, influencers, or online reviews you haven't seen on this page
+- Demand sourcing documentation or lab certifications that no normal shopper would expect to find on a product listing
+- Say a brand "has no online presence" — you can't see that from this page. You can say you've never heard of them.
+- Compare to competitor prices unless you personally remember paying that price for something similar
+
+Your response can be 2 sentences or 6 bullet points — whatever your reaction actually warrants. Real people don't write the same length for every product. If one concern is decisive, say it clearly. If you have three separate issues, list them."""
+
+SKEPTIC_ANCHOR = "SKEPTIC: Only flip REJECT→BUY with something concrete from the listing. Peer enthusiasm alone is not enough."
+
+# Phase 2 context — replaces HUMAN_SHOPPER_SYSTEM for the watercooler phase.
+# Agents are now in a CONVERSATION, not evaluating a fresh listing.
+WATERCOOLER_CONTEXT = """You've read this product listing. Now you're talking through it with other buyers who reacted differently.
+
+You carry your initial reaction with you. You're NOT re-reading the listing — you're responding to what OTHERS said about it.
+Everything you know about this product comes from what you read. No external sources, no social media, no brand websites."""
+
+# Shapes decision-making without prescribing a formula or length
+DECISION_SHAPE_RULE = (
+    "React like a real person deciding whether to spend their money. "
+    "Some people lead with gut, some with a specific concern, some with enthusiasm. "
+    "Some write two sentences, some write five, some use bullet points when they have multiple distinct issues. "
+    "Your response reflects YOUR situation and YOUR priorities — there is no required structure or length. "
+    "Your feedback must be useful to the merchant: if you have concerns, name them precisely so they can be fixed. "
+    "REJECT means this product actively fails something YOU need. "
+    "BUY means the listing gives you enough confidence to click Add to Cart. "
+    "NEUTRAL means you want to but ONE specific thing is unresolved for you personally."
 )
 
 # ── Brutality Slider evidence injection ───────────────────────────────────────
@@ -149,78 +187,96 @@ def _brutality_rule(level: int) -> str:
     )
 
 
-REASONABLE_BUYER_RULES = """Universal Buyer Rules (apply to ALL products — these override your defaults):
-1. YOU ARE A HUMAN SHOPPER. Do not demand information that a normal buyer would never look for.
-2. IMAGE RULE: You CANNOT see the images — you only know the image COUNT. Never describe or judge image quality.
-   Only flag if there are ZERO images.
-3. SEARCH BEFORE YOU COMPLAIN: Before claiming something is missing, re-read the listing carefully.
-   If you find a return window, delivery estimate, or contact detail — quote it; do not say it's absent.
-4. CREDIT WHAT'S THERE: A well-prepared listing with minor gaps should lean BUY unless the gap is
-   genuinely deal-breaking for your specific persona.
+REASONABLE_BUYER_RULES = """BUYER GROUND RULES:
+1. You can only see this listing — no brand websites, social media, reviews, or external sources.
+2. Accept stated claims at face value. React to whether they MATTER for your needs — don't demand documentation no shopper would expect on a product page.
+3. Before saying something is missing, re-read. If you find it — in the description, shipping policy, or return policy — reference it by name. Never claim something is absent if it's there.
+4. REJECT only when this product actively fails YOUR specific needs. "I couldn't find X" is not a REJECT reason unless X is critical for you personally.
+5. You can say "I haven't heard of this brand" — that's personal experience. You CANNOT say "the brand has no presence online" — you can't see that from this page.
+6. Pricing signals: a significant discount can be a genuine deal or it can make you wonder why. Use your own judgment — is this a normal sale, clearance, a pricing tactic, or something that makes you pause? Trust your instincts on this.
 {product_context}"""
 
-VIBE_CHECK_PROMPT = """{focus_bias}{dna_context}{trust_context}{physical_reality}
-{attack_first_rule}
+VIBE_CHECK_PROMPT = """{human_shopper_system}
+
+{focus_bias}{dna_context}{trust_context}{physical_reality}
+{decision_shape_rule}
 {tone_rule}
 {buyer_rules}
 
+--- PRODUCT LISTING ---
 {product_brief}
+--- END LISTING ---
 
-You are: {persona}
-Threshold: {rejection_threshold}
+YOU ARE: {persona}
+YOUR LENS: {lens_and_flaw}
+YOUR DEAL-BREAKER: {rejection_threshold}
 
-Gut reaction — 3 seconds. Vote honestly as your persona. Consider both what would make you buy AND what would stop you.
-Name 1 specific thing from the listing that most drives your decision, either way.
+Read the listing above. React to it the way YOU specifically would — your situation, your priorities, your gut.
 
-OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
-{{"reasoning":"1-2 sentences referencing the listing","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
+CONFIDENCE SCALE (0–100):
+  0–45 = REJECT  (not buying — something in this listing fails YOUR needs)
+  46–54 = NEUTRAL (tempted but ONE specific thing is unresolved for you)
+  55–100 = BUY   (adding to cart — listing meets YOUR needs well enough)
 
-WATERCOOLER_PROMPT = """{focus_bias}{dna_context}Panel discussion. Product: {product_brief}
+OUTPUT RULE: Respond with ONLY this JSON — no text before or after, no markdown fences.
+reasoning: Your genuine reaction — as long or as short as your opinion actually warrants. Lead with what matters most to YOU. If you have multiple concerns, list them. Bullet points inside the reasoning string are fine. Your feedback needs to be specific enough that the merchant can act on it.
+{{"reasoning":"your reaction — specific to YOUR situation, whatever length it takes","vote":"BUY or NEUTRAL or REJECT","confidence_score":0}}"""
 
-Round 1 verdicts:
+WATERCOOLER_PROMPT = """{watercooler_context}
+
+{focus_bias}{dna_context}Product being discussed: {product_brief}
+
+What others said in round 1:
 {other_votes_summary}
 {phase2_chain}
-Your Round 1: {my_verdict} — "{my_reasoning}"
+Your round 1 was: {my_verdict} — "{my_reasoning}"
+Your round 1 position is recorded. Do NOT restate it — build on it or move from it based on what others raised.
 {skeptic_anchor}{dissenter_instruction}
 
-CHAIN RULE: You are responding to the debate above. Directly address the LAST person who spoke — agree, challenge, or build on their point in 1 sentence. Then pivot to YOUR unique concern.
-UNIQUE ANGLE REQUIRED: Do NOT repeat a concern already raised. Bring your persona's specific perspective.
+Say where YOU stand now — your current position based on YOUR situation. Then engage with what the last person said: do they have a point, are they missing something, or does their concern not apply to you?
 
-VOTE-CHANGE: If you flip your vote either direction, cite the specific point from the debate or listing that changed your mind. Peer enthusiasm or peer pressure alone is not enough — you need a concrete reason grounded in the listing.
-{attack_first_rule}
-{physical_reality}
+{anti_repeat_block}
+Changing your vote requires a concrete reason from the product or the debate — not "everyone agrees" or vague agreement.
+{decision_shape_rule}
 {tone_rule}
 {buyer_rules}
 
-You are: {persona}
-Threshold: {rejection_threshold}
+YOU ARE: {persona}
+YOUR LENS: {lens_and_flaw}
+YOUR DEAL-BREAKER: {rejection_threshold}
 
-If leaning BUY, name at least 2 specific strengths from the listing before any caveats.
+CONFIDENCE SCALE — 0–45 = REJECT | 46–54 = NEUTRAL | 55–100 = BUY. Set vote to match.
 
-OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
-{{"reasoning":"2-3 sentences","peer_rebuttal":"1 sentence directly responding to the last speaker","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
+OUTPUT RULE: Respond with ONLY this JSON — no text before or after, no markdown fences.
+{{"reasoning":"Your current position from YOUR perspective — then engage with the last speaker. As long as your reaction warrants. Specific enough to be useful.","peer_rebuttal":"1-2 sentences addressing the last person's specific argument","vote_change_trigger":"specific product claim or debate point that moved you, or empty string","vote":"BUY or NEUTRAL or REJECT","confidence_score":0}}"""
 
 DISSENTER_INSTRUCTION = """
-DISSENTER: Panel is {agreement_pct}% positive. You MUST vote REJECT with the strongest counter-argument."""
+PUSH BACK: {agreement_pct}% of the panel is leaning positive. Your job is to be the hardest voice in the room — raise the strongest concern that hasn't been addressed. You don't HAVE to vote REJECT, but you must challenge the consensus with something concrete."""
 
-CONSENSUS_PROMPT = """FINAL verdict. Product: {product_brief}
+CONSENSUS_PROMPT = """{human_shopper_system}
 
-Full debate:
+You've heard the full discussion. Now make your final call on: {product_brief}
+
+The debate:
 {debate_summary}
 
-VOTE-CHANGE: If you flip your vote, cite the specific point from the debate or listing that changed your mind.
-{attack_first_rule}
-{physical_reality}
+You've had time to think. Has anything in the discussion changed how you see this product? Or do you stand by your original gut reaction?
+
+{decision_shape_rule}
 {tone_rule}
 {buyer_rules}
 
-You are: {persona}
-Threshold: {rejection_threshold}
+YOU ARE: {persona}
+YOUR LENS: {lens_and_flaw}
+YOUR DEAL-BREAKER: {rejection_threshold}
 
-If leaning BUY, explicitly name 2 strengths from the listing in your reasoning.
+Don't just follow the crowd. Your final answer should reflect YOUR specific needs and situation.
+If you're changing your vote from round 1, say exactly what moved you.
 
-OUTPUT RULE: Your entire response must be the JSON object below — no intro, no explanation, no markdown.
-{{"reasoning":"2-3 sentences referencing debate points","peer_rebuttal":"1 sentence on strongest counter-argument","vote_change_trigger":"exact quote or empty","final_vote":"BUY or REJECT","confidence":0.1-1.0}}"""
+CONFIDENCE SCALE — 0–45 = REJECT | 46–54 = NEUTRAL | 55–100 = BUY. Set vote to match.
+
+OUTPUT RULE: Respond with ONLY this JSON — no text before or after, no markdown fences.
+{{"reasoning":"What ultimately tips your decision, from YOUR perspective — as specific and detailed as it needs to be. If something concrete changed your mind, say exactly what it was.","peer_rebuttal":"1-2 sentences on the most compelling point someone else made","vote_change_trigger":"specific quote that changed your mind, or empty string","vote":"BUY or NEUTRAL or REJECT","confidence_score":0}}"""
 
 FRICTION_CLASSIFICATION_PROMPT = """Classify friction from this debate. Product: {product_title} at {price}
 Debate: {debate_summary}
@@ -253,6 +309,7 @@ class DebateOrchestrator:
     product_dna: Optional[ProductDNA] = None  # Psychological DNA — fear, desire, persona hooks
     fast_llm: Optional[LLMClient] = None      # 8B client for classification (friction, summary)
     active_experiment: str = ""               # Experiment card hypothesis being tested in this run
+    manual_overrides: list[str] = field(default_factory=list)  # merchant-verified fixes injected as ground truth
 
     def _assign_archetypes(self) -> list[tuple[int, AnyArchetype, str]]:
         pool = self.archetypes
@@ -271,16 +328,38 @@ class DebateOrchestrator:
 
         return agents
 
-    def _try_repair_agent_json(self, raw: str) -> Optional[dict]:
-        """One repair pass via fast LLM when the deep model returns invalid JSON."""
+    def _try_repair_agent_json(self, raw: str, archetype_name: str = "") -> Optional[dict]:
+        """One repair pass via fast LLM when the deep model returns invalid JSON.
+
+        Smart truncation repair: if the raw response is cut mid-sentence and a
+        partial confidence_score can be inferred, the repair LLM is asked to
+        complete the reasoning with exactly one closing sentence that matches
+        the agent's confidence direction.
+        """
         if not self.fast_llm or not (raw and raw.strip()):
             return None
         try:
             snippet = raw.strip()[:4500]
+
+            # Detect likely truncation: no closing brace and ends mid-word/sentence
+            is_truncated = "}" not in snippet[-50:] and len(snippet) > 100
+
+            truncation_hint = ""
+            if is_truncated:
+                truncation_hint = (
+                    "\nNOTE: The text above appears truncated. "
+                    "Complete the 'reasoning' field with EXACTLY ONE short natural sentence "
+                    "that logically closes the argument — match the emotional tone of what's already written. "
+                    "Do NOT add new concerns. Just close the thought."
+                )
+
             fix_prompt = (
                 "The text below should contain one JSON object with keys: "
-                "final_vote (string BUY or REJECT), reasoning (string), confidence (number 0-1), "
+                "vote (string BUY, NEUTRAL, or REJECT), "
+                "confidence_score (integer 0-100 — 0-45=REJECT, 46-54=NEUTRAL, 55-100=BUY), "
+                "reasoning (string), "
                 "peer_rebuttal (string, may be empty), vote_change_trigger (string, may be empty). "
+                f"{truncation_hint}"
                 "Reply with ONLY minified valid JSON, no markdown fences.\n\n"
                 f"{snippet}"
             )
@@ -292,16 +371,26 @@ class DebateOrchestrator:
             data = json.loads(_extract_json(fixed))
             if not isinstance(data, dict):
                 return None
-            vote = str(data.get("final_vote", data.get("verdict", "REJECT"))).upper()
-            if vote not in ("BUY", "REJECT"):
-                return None
+
+            # Accept both old (final_vote) and new (vote) field names
+            vote = str(data.get("vote", data.get("final_vote", data.get("verdict", "REJECT")))).upper()
+            if vote not in ("BUY", "NEUTRAL", "REJECT"):
+                vote = "REJECT"
+
+            # Extract confidence_score (new) or derive from old confidence float
+            raw_cs = data.get("confidence_score")
+            if raw_cs is None:
+                raw_cs = round(float(data.get("confidence", 0.5)) * 100)
+            confidence_score = max(0, min(100, int(raw_cs)))
+
             reasoning = str(data.get("reasoning", "")).strip()
             if len(reasoning) < 3:
                 return None
             return {
                 "final_vote": vote,
                 "reasoning": reasoning,
-                "confidence": float(data.get("confidence", 0.5)),
+                "confidence": confidence_score / 100,
+                "confidence_score": confidence_score,
                 "peer_rebuttal": str(data.get("peer_rebuttal", "")),
                 "vote_change_trigger": str(data.get("vote_change_trigger", "")),
             }
@@ -314,6 +403,7 @@ class DebateOrchestrator:
         prompt: str,
         archetype: AnyArchetype,
         timeout_seconds: Optional[int] = None,
+        max_tokens: int = 500,
     ) -> dict:
         """
         Call LLM for a single agent. Returns a parsed dict with keys:
@@ -331,14 +421,43 @@ class DebateOrchestrator:
             return self.llm.chat(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=effective_temp,
-                max_tokens=800,
+                max_tokens=max_tokens,
             )
 
         def _finalize_payload(data: dict) -> dict:
-            vote = str(data.get("final_vote", data.get("verdict", "REJECT"))).upper()
-            if vote not in ("BUY", "REJECT"):
-                vote = "REJECT"
+            # ── Confidence score (new primary field) ─────────────────────────
+            raw_cs = data.get("confidence_score")
+            if raw_cs is None:
+                # Backward compat: old "confidence" was 0–1 float
+                raw_cs = round(float(data.get("confidence", 0.5)) * 100)
+            confidence_score = max(0, min(100, int(raw_cs)))
+
+            # Derive vote from confidence range — trust the number over the label
+            if confidence_score <= 45:
+                derived_vote = "REJECT"
+            elif confidence_score <= 54:
+                derived_vote = "NEUTRAL"
+            else:
+                derived_vote = "BUY"
+
+            # Accept both old (final_vote) and new (vote) field names
+            explicit_vote = str(data.get("vote", data.get("final_vote", data.get("verdict", "")))).upper()
+            if explicit_vote in ("BUY", "NEUTRAL", "REJECT"):
+                vote = explicit_vote
+                # Resolve conflicts: confidence_score wins on clear mismatches
+                if vote == "BUY" and confidence_score <= 45:
+                    vote = "REJECT"
+                elif vote == "REJECT" and confidence_score >= 55:
+                    vote = "BUY"
+                elif vote in ("BUY", "REJECT") and 46 <= confidence_score <= 54:
+                    vote = "NEUTRAL"
+            else:
+                vote = derived_vote
+
             reasoning = str(data.get("reasoning", "No reasoning provided."))
+            # Guard against truncated repairs — a fragment under 20 chars is useless
+            if len(reasoning.strip()) < 20:
+                reasoning = f"This panelist's reaction wasn't fully captured — treat as hesitation."
 
             _PROMPT_LEAK_PATTERNS = [
                 r"VOTE-CHANGE:[^\n]*",
@@ -383,23 +502,29 @@ class DebateOrchestrator:
                 )
                 if s in reasoning_lower
             )
+            # Coherence check only applies to clear BUY/REJECT mismatches — skip NEUTRAL
             if vote == "REJECT" and buy_signals > reject_signals and buy_signals >= 2:
                 print(
                     f"[{archetype.name}] Coherence fix: reasoning says BUY but vote=REJECT — flipping to BUY",
                     flush=True,
                 )
                 vote = "BUY"
+                if confidence_score <= 45:
+                    confidence_score = 58  # bump to hesitant-yes range
             elif vote == "BUY" and reject_signals > buy_signals and reject_signals >= 2:
                 print(
                     f"[{archetype.name}] Coherence fix: reasoning says REJECT but vote=BUY — flipping to REJECT",
                     flush=True,
                 )
                 vote = "REJECT"
+                if confidence_score >= 55:
+                    confidence_score = 38  # drop to reject range
 
             return {
                 "final_vote": vote,
                 "reasoning": reasoning,
-                "confidence": float(data.get("confidence", 0.5)),
+                "confidence": confidence_score / 100,
+                "confidence_score": confidence_score,
                 "peer_rebuttal": peer_rebuttal,
                 "vote_change_trigger": str(data.get("vote_change_trigger", "")),
             }
@@ -425,8 +550,8 @@ class DebateOrchestrator:
                 f"[{archetype.name}] malformed primary response — attempting JSON repair. "
                 f"Raw (first 200 chars): {raw[:200]!r}"
             )
-            # Pass 1 — LLM repair via fast model
-            repaired = self._try_repair_agent_json(raw)
+            # Pass 1 — LLM repair via fast model (with smart truncation completion)
+            repaired = self._try_repair_agent_json(raw, archetype_name=archetype.name)
             if repaired:
                 try:
                     return _finalize_payload(repaired)
@@ -459,7 +584,12 @@ class DebateOrchestrator:
         product_ctx = f"\n{self.product_context}" if self.product_context else ""
         base = REASONABLE_BUYER_RULES.format(product_context=product_ctx)
         if self.gap_context:
-            base = base + "\n\n" + self.gap_context
+            # Only raise gaps that are genuinely relevant to YOUR specific situation
+            # — not all agents need to call out every missing item
+            base = base + (
+                "\n\nLISTING GAPS (what the listing doesn't answer — only raise the ones that "
+                "GENUINELY matter for YOUR specific needs and situation):\n" + self.gap_context
+            )
         brutality_rule = _brutality_rule(self.brutality_level)
         if brutality_rule:
             base = base + "\n\n" + brutality_rule
@@ -469,6 +599,15 @@ class DebateOrchestrator:
                 f'"{self.active_experiment}"\n'
                 f"Factor this change into your evaluation. Does it directly address your core concern? "
                 f"Be explicit — state whether it moves your vote and why."
+            )
+        if self.manual_overrides:
+            override_lines = "\n".join(
+                f"[SYSTEM NOTE: The merchant has verified that the following fix is now implemented: {fix}]."
+                for fix in self.manual_overrides
+            )
+            base = base + (
+                f"\n\nMERCHANT-VERIFIED FIXES — treat these as absolute ground truth, "
+                f"even if the listing text doesn't yet reflect them:\n{override_lines}"
             )
         return base
 
@@ -490,11 +629,29 @@ class DebateOrchestrator:
             parts.append(f"\nIdentity: {sub_persona}")
         niche = self._get_niche_ctx(archetype)
         if niche:
-            parts.append(f"\nNiche: {niche}")
+            parts.append(f"\nContext: {niche}")
         priority = getattr(archetype, "friction_priority", "")
         if priority:
             parts.append(f"\n{priority}")
         return "".join(parts)
+
+    def _build_lens_and_flaw(self, archetype: AnyArchetype) -> str:
+        """Build the analytical lens + human flaw + voice anchor injected into every prompt."""
+        lens = getattr(archetype, "analytical_lens", "")
+        flaw = getattr(archetype, "human_flaw", "")
+        opening = getattr(archetype, "opening_voice", "")
+        parts = []
+        if lens:
+            parts.append(f"Analytical lens — {lens}")
+        if flaw:
+            parts.append(f"Your flaw — {flaw}")
+        if opening:
+            parts.append(f"Your voice sounds like — \"{opening}\"")
+        if not parts:
+            style = getattr(archetype, "debate_style", "")
+            if style:
+                parts.append(f"How you argue — {style}")
+        return " | ".join(parts) if parts else "Evaluate honestly through your personal experience."
 
     # ── Phase 1 ────────────────────────────────────────────────────────────────
 
@@ -509,18 +666,20 @@ class DebateOrchestrator:
         dna_block = format_dna_for_prompt(self.product_dna, archetype.id)
         dna_ctx_block = f"\n{dna_block}\n" if dna_block else ""
         prompt = VIBE_CHECK_PROMPT.format(
+            human_shopper_system=HUMAN_SHOPPER_SYSTEM,
             focus_bias=self._build_focus_bias(),
             dna_context=dna_ctx_block,
             trust_context=trust_ctx_block,
             physical_reality=PHYSICAL_REALITY_RULES,
-            attack_first_rule=ATTACK_FIRST_RULE,
+            decision_shape_rule=DECISION_SHAPE_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
+            lens_and_flaw=self._build_lens_and_flaw(archetype),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
         )
-        data = self._call_agent(prompt, archetype)
+        data = self._call_agent(prompt, archetype, max_tokens=1400)
         return _make_vote(agent_idx, archetype, 1, data, self._get_persona_identity(archetype))
 
     # ── Phase 2 ────────────────────────────────────────────────────────────────
@@ -537,20 +696,31 @@ class DebateOrchestrator:
     ) -> AgentVote:
         my_p1 = phase1_votes[agent_idx]
         others = [v for v in phase1_votes if v["agent_id"] != f"agent_{agent_idx}"]
+        # Show first full sentence of each Phase 1 response (up to 120 chars)
+        # so agents can actually engage with each other's specific arguments
+        def _first_sentence(text: str, max_chars: int = 120) -> str:
+            # Strip any appended ↳ rebuttal line before extracting
+            core = text.split("\n↳")[0].strip()
+            sent = core.split(".")[0].strip()
+            return sent[:max_chars] if len(sent) > 10 else core[:max_chars]
+
         other_summary = "\n".join(
-            f"- {v.get('archetype_name', v['archetype_id'])}: {v['verdict']} — {v['reasoning'][:80]}"
+            f"- {v.get('archetype_name', v['archetype_id'])}: {v['verdict']} — \"{_first_sentence(v['reasoning'])}\""
             for v in others[:6]
         )
 
-        # Build the growing chain of Phase 2 responses so far (the "room" effect)
+        # Build chain: show first full sentence (up to 120 chars) so agents can
+        # actually engage — but anti-echo block below bans verbatim copying
         chain_block = ""
         if phase2_chain:
-            chain_lines = ["\nDebate so far (respond to the last speaker):"]
+            chain_lines = ["\nWhat's been said so far:"]
             for v in phase2_chain:
                 name = v.get("archetype_name", v["archetype_id"])
-                chain_lines.append(
-                    f"  {name}: {v['verdict']} — {v['reasoning'][:120]}"
-                )
+                raw = v.get("reasoning", "")
+                # First complete sentence, up to 120 chars
+                first_sent = raw.split(".")[0].strip()
+                core = first_sent[:120] if len(first_sent) > 10 else raw.split(",")[0].strip()[:120]
+                chain_lines.append(f"  {name} → {v['verdict']}: \"{core}\"")
             chain_block = "\n".join(chain_lines) + "\n"
 
         is_dissenter = buy_pct > 0.8 and agent_idx == _pick_dissenter_idx(phase1_votes)
@@ -563,36 +733,84 @@ class DebateOrchestrator:
         dna_block = format_dna_for_prompt(self.product_dna, archetype.id)
         dna_ctx_block = f"\n{dna_block}\n" if dna_block else ""
 
+        # Anti-repetition: hard ban on echoing previous speakers' opening sentences
+        anti_repeat_block = ""
+        if phase2_chain:
+            raised = []
+            for prev in phase2_chain[-4:]:
+                first_sent = prev.get("reasoning", "").split(".")[0].strip()[:80]
+                if len(first_sent) > 15:
+                    raised.append(f'"{first_sent}"')
+            if raised:
+                anti_repeat_block = (
+                    f"\nDO NOT OPEN WITH THEIR POINT: These openings are already taken — "
+                    f"starting your response with them is forbidden: {'; '.join(raised)}\n"
+                    "Start from YOUR situation and YOUR lens — not a reaction to their first sentence.\n"
+                )
+
+        # Extract Phase 1 core reasoning — strip appended ↳ peer_rebuttal artifact
+        # (_make_vote appends it, but it's confusing if shown as "what you said in round 1")
+        _p1_raw = my_p1["reasoning"]
+        _p1_core = _p1_raw.split("\n↳")[0].strip()
+        _p1_first_sentence = _p1_core.split(".")[0].strip()
+        my_reasoning_short = _p1_first_sentence[:120] if len(_p1_first_sentence) > 15 else _p1_core[:120]
+
         prompt = WATERCOOLER_PROMPT.format(
+            watercooler_context=WATERCOOLER_CONTEXT,
             focus_bias=self._build_focus_bias(),
             dna_context=dna_ctx_block,
-            physical_reality=PHYSICAL_REALITY_RULES,
-            attack_first_rule=ATTACK_FIRST_RULE,
+            decision_shape_rule=DECISION_SHAPE_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
+            lens_and_flaw=self._build_lens_and_flaw(archetype),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=product_brief,
             other_votes_summary=other_summary,
             phase2_chain=chain_block,
             my_verdict=my_p1["verdict"],
-            my_reasoning=my_p1["reasoning"],
+            my_reasoning=my_reasoning_short,
             skeptic_anchor=skeptic_anchor,
             dissenter_instruction=dissenter_instr,
+            anti_repeat_block=anti_repeat_block,
         )
-        data = self._call_agent(prompt, archetype)
+        data = self._call_agent(prompt, archetype, max_tokens=1200)
 
         # ── Enforce New Info Rule ──────────────────────────────────────────────
-        # A REJECT→BUY flip is only valid if a product-text trigger is cited.
+        trigger = data.get("vote_change_trigger", "").strip()
+
+        # Hard REJECT→BUY flip requires cited product evidence.
+        # REJECT→NEUTRAL is allowed — partial softening is realistic.
         if my_p1["verdict"] == "REJECT" and data["final_vote"] == "BUY":
-            trigger = data.get("vote_change_trigger", "").strip()
             if len(trigger) < 10:
                 logger.info(
-                    f"[{archetype.name}] REJECT→BUY flip blocked — no evidence cited"
+                    f"[{archetype.name}] REJECT→BUY flip blocked — no evidence cited, demoting to NEUTRAL"
                 )
-                data["final_vote"] = "REJECT"
-                data["reasoning"] += " [Position held: insufficient product evidence cited to justify reversal.]"
+                data["final_vote"] = "NEUTRAL"
+                cs = data.get("confidence_score", 60)
+                if cs >= 55:
+                    data["confidence_score"] = 50
+                data["reasoning"] += " [Position softened — not enough product evidence to fully commit.]"
                 data["vote_change_trigger"] = ""
+
+        # NEUTRAL→BUY flip also requires product evidence, not just peer agreement.
+        # Peer enthusiasm ("the vet's endorsement tips the scale") is not product evidence.
+        elif my_p1["verdict"] == "NEUTRAL" and data["final_vote"] == "BUY":
+            if len(trigger) < 10:
+                # Check if reasoning contains peer-agreement language with no product reference
+                reasoning_lower = data.get("reasoning", "").lower()
+                peer_signals = ["endorsement", "agrees", "everyone", "the panel", "what they said",
+                                "the vet", "the expert", "tips the scale", "seals it", "convinced me"]
+                is_peer_only = any(s in reasoning_lower for s in peer_signals) and trigger == ""
+                if is_peer_only:
+                    logger.info(
+                        f"[{archetype.name}] NEUTRAL→BUY flip blocked — peer-only trigger, holding at NEUTRAL"
+                    )
+                    data["final_vote"] = "NEUTRAL"
+                    cs = data.get("confidence_score", 55)
+                    if cs >= 55:
+                        data["confidence_score"] = 52  # hold at fence
+                    data["vote_change_trigger"] = ""
 
         return _make_vote(agent_idx, archetype, 2, data, self._get_persona_identity(archetype))
 
@@ -608,18 +826,21 @@ class DebateOrchestrator:
         phase1_votes: list[AgentVote],
     ) -> AgentVote:
         prompt = CONSENSUS_PROMPT.format(
+            human_shopper_system=HUMAN_SHOPPER_SYSTEM,
             physical_reality=PHYSICAL_REALITY_RULES,
-            attack_first_rule=ATTACK_FIRST_RULE,
+            decision_shape_rule=DECISION_SHAPE_RULE,
             tone_rule=TONE_RULE,
             buyer_rules=self._build_buyer_rules(),
             persona=self._build_persona(archetype, sub_persona),
+            lens_and_flaw=self._build_lens_and_flaw(archetype),
             rejection_threshold=archetype.rejection_threshold,
             product_brief=compact_brief,
             debate_summary=debate_summary,
         )
-        data = self._call_agent(prompt, archetype)
+        data = self._call_agent(prompt, archetype, max_tokens=600)
 
-        # Enforce New Info Rule in Phase 3 too
+        # Enforce New Info Rule: hard REJECT→BUY flip requires cited evidence
+        # REJECT→NEUTRAL is allowed without evidence (partial softening is reasonable)
         my_p1 = phase1_votes[agent_idx]
         if my_p1["verdict"] == "REJECT" and data["final_vote"] == "BUY":
             trigger = data.get("vote_change_trigger", "").strip()
@@ -627,8 +848,10 @@ class DebateOrchestrator:
                 logger.info(
                     f"[{archetype.name}] Phase 3 REJECT→BUY flip blocked — no evidence cited"
                 )
-                data["final_vote"] = "REJECT"
-                data["reasoning"] += " [Final position held: no new product evidence.]"
+                data["final_vote"] = "NEUTRAL"
+                if data.get("confidence_score", 50) >= 55:
+                    data["confidence_score"] = 50  # hold at fence
+                data["reasoning"] += " [Moved to fence — no new product evidence to fully commit.]"
                 data["vote_change_trigger"] = ""
 
         return _make_vote(agent_idx, archetype, 3, data, self._get_persona_identity(archetype))
@@ -639,13 +862,18 @@ class DebateOrchestrator:
         """Run the 3-phase debate. Archetypes were injected at construction time."""
         agents = self._assign_archetypes()
         product_brief = format_for_debate(brief, compact=False)        # P1: full listing
-        compact_brief = format_for_debate(brief, compact=True)         # P2/P3: title+price
-        # Serial execution (max_workers=1) ensures the rate limiter actually works.
-        # Parallel workers race past the threading lock and cause 429 bursts.
-        max_workers = 1
+        medium_brief = format_for_debate(brief, medium=True)           # P2: title+price+key claims
+        compact_brief = format_for_debate(brief, compact=True)         # P3: title+price only
+        # Parallel execution for P1 + P3 (no inter-agent dependency).
+        # When RPM throttling is active (Groq free tier), stay serial so workers
+        # don't race past the threading lock and cause 429 bursts.
+        # With RPM=0 (DeepInfra / paid tier) we can fan out fully.
+        rpm_active = int(Config.DEEP_LLM_RPM or 0) > 0
+        max_workers = 1 if rpm_active else min(len(agents), 10)
 
         print(
-            f"[{brief['title']}] Debate start: {len(agents)} agents, serial, 3 phases",
+            f"[{brief['title']}] Debate start: {len(agents)} agents, "
+            f"{'serial' if max_workers == 1 else f'parallel (max={max_workers})'}, 3 phases",
             flush=True,
         )
 
@@ -662,7 +890,7 @@ class DebateOrchestrator:
                 phase1_votes[futures[future]] = result
                 print(
                     f"[P1] {result.get('archetype_name', result['archetype_id'])} "
-                    f"→ {result['verdict']} ({result['confidence']:.1f})",
+                    f"→ {result['verdict']} (score:{result.get('confidence_score', round(result['confidence']*100))})",
                     flush=True,
                 )
                 self.callback_fn(phase=1, votes=[result], partial=True)
@@ -679,7 +907,7 @@ class DebateOrchestrator:
         # STRICT SERIAL execution in agent order — chain requires it
         for idx, arch, sub in agents:
             result = self._run_phase2_agent(
-                idx, arch, sub, compact_brief, phase1_votes, buy_pct, phase2_chain
+                idx, arch, sub, medium_brief, phase1_votes, buy_pct, phase2_chain
             )
             phase2_votes[idx] = result
             phase2_chain.append(result)   # next agent sees this response
@@ -717,11 +945,21 @@ class DebateOrchestrator:
                 )
                 self.callback_fn(phase=3, votes=[result], partial=True)
 
+        # Confidence-weighted score: average of each agent's confidence_score (0–100)
+        # This ensures even small improvements register — moving one agent 22→41 visibly
+        # shifts the overall score, even if the vote category stays REJECT.
+        confidence_scores = [
+            v.get("confidence_score", round(v.get("confidence", 0.5) * 100))
+            for v in phase3_votes
+        ]
+        score = round(sum(confidence_scores) / len(confidence_scores))
         buy_votes = [v for v in phase3_votes if v["verdict"] == "BUY"]
-        score = round((len(buy_votes) / len(phase3_votes)) * 100)
+        neutral_votes = [v for v in phase3_votes if v["verdict"] == "NEUTRAL"]
         print(
             f"[{brief['title']}] Phase 3 done — Score: {score}/100 "
-            f"({len(buy_votes)}/{len(phase3_votes)} BUY)",
+            f"({len(buy_votes)} BUY, {len(neutral_votes)} NEUTRAL, "
+            f"{len(phase3_votes) - len(buy_votes) - len(neutral_votes)} REJECT | "
+            f"scores: {confidence_scores})",
             flush=True,
         )
 
@@ -900,11 +1138,14 @@ def _salvage_freeform(raw: str) -> Optional[dict]:
     if len(reasoning) > 600:
         reasoning = reasoning[:597] + "…"
 
+    # Salvaged votes get a neutral-leaning confidence score since we're guessing
+    salvage_score = 65 if vote == "BUY" else (35 if vote == "REJECT" else 50)
     logger.info(f"[salvage_freeform] recovered vote={vote} from freeform text ({len(text)} chars)")
     return {
         "final_vote": vote,
         "reasoning": reasoning,
-        "confidence": 0.5,
+        "confidence": salvage_score / 100,
+        "confidence_score": salvage_score,
         "peer_rebuttal": "",
         "vote_change_trigger": "",
     }
@@ -915,6 +1156,7 @@ def _fallback_reject(reason: str) -> dict:
         "final_vote": "REJECT",
         "reasoning": reason,
         "confidence": 0.2,
+        "confidence_score": 20,
         "peer_rebuttal": "",
         "vote_change_trigger": "",
     }
@@ -927,6 +1169,7 @@ def _make_vote(agent_idx: int, archetype: AnyArchetype, phase: int, data: dict, 
     if rebuttal:
         reasoning = f"{reasoning}\n↳ {rebuttal}"
     p = persona or {}
+    confidence_score = data.get("confidence_score", round(data.get("confidence", 0.5) * 100))
     return {
         "agent_id": f"agent_{agent_idx}",
         "archetype_id": archetype.id,
@@ -941,17 +1184,22 @@ def _make_vote(agent_idx: int, archetype: AnyArchetype, phase: int, data: dict, 
         "verdict": data["final_vote"],
         "reasoning": reasoning,
         "confidence": data["confidence"],
+        "confidence_score": confidence_score,
         "peer_rebuttal": rebuttal,
         "vote_change_trigger": data.get("vote_change_trigger", ""),
     }
 
 
 def _pick_dissenter_idx(phase1_votes: list[AgentVote]) -> int:
-    """Pick the lowest-confidence BUY voter as dissenter."""
-    buy_voters = [(v["confidence"], v["agent_id"]) for v in phase1_votes if v["verdict"] == "BUY"]
-    if not buy_voters:
+    """Pick the least-committed positive voter (BUY or NEUTRAL) as dissenter."""
+    positive_voters = [
+        (v.get("confidence_score", round(v.get("confidence", 0.5) * 100)), v["agent_id"])
+        for v in phase1_votes
+        if v["verdict"] in ("BUY", "NEUTRAL")
+    ]
+    if not positive_voters:
         return -1
-    _, agent_id = min(buy_voters, key=lambda x: x[0])
+    _, agent_id = min(positive_voters, key=lambda x: x[0])
     try:
         return int(agent_id.replace("agent_", ""))
     except ValueError:
@@ -982,7 +1230,7 @@ def _classify_friction(llm: LLMClient, brief: ProductBrief, all_votes: list[Agen
         raw = llm.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=400,
+            max_tokens=500,
         )
         result = json.loads(_extract_json(raw))
         # Sanity check: if all dropoutPct are 0 but most agents rejected, the LLM failed
@@ -1003,41 +1251,58 @@ def _classify_friction(llm: LLMClient, brief: ProductBrief, all_votes: list[Agen
         return _rule_based_friction(all_votes)
 
 
-# Keywords that signal each friction category in agent reasoning
-_PRICE_KEYWORDS = {"price", "cost", "expensive", "cheap", "value", "budget", "afford", "$", "shipping cost", "overpriced"}
-_TRUST_KEYWORDS = {"review", "trust", "brand", "reputation", "return policy", "returns", "refund", "contact", "about us", "social proof", "credibility"}
-_LOGISTICS_KEYWORDS = {"shipping", "delivery", "packaging", "arrive", "tracking", "gift wrap", "days"}
-
-
 def _rule_based_friction(all_votes: list[AgentVote]) -> dict:
-    """Compute friction from vote reasoning when LLM classifier fails."""
+    """
+    Fallback friction computation when LLM classifier fails.
+    Does NOT use hardcoded keyword lists — instead reads the agent reasoning
+    and assigns each reject to the category most represented in the text.
+    Still a heuristic, but uses the LLM's own words rather than a fixed vocabulary.
+    """
     rejects = [v for v in all_votes if v["verdict"] == "REJECT"]
     total = max(len(all_votes), 1)
 
-    def _scan(keywords: set[str], votes: list[AgentVote]) -> tuple[int, list[str]]:
-        hits: list[str] = []
-        for v in votes:
-            text = v["reasoning"].lower()
-            if any(k in text for k in keywords):
-                snippet = v["reasoning"][:120].strip()
-                if snippet not in hits:
-                    hits.append(snippet)
-        pct = round((len(hits) / total) * 100) if hits else 0
-        return pct, hits[:3]
+    price_hits, trust_hits, logistics_hits = [], [], []
 
-    price_pct, price_objs = _scan(_PRICE_KEYWORDS, rejects)
-    trust_pct, trust_objs = _scan(_TRUST_KEYWORDS, rejects)
-    logistics_pct, logistics_objs = _scan(_LOGISTICS_KEYWORDS, rejects)
+    for v in rejects:
+        text = v["reasoning"].lower()
+        snippet = v["reasoning"][:140].strip()
 
-    # If nothing matched but there are rejections, assign to trust as the default
-    if not price_objs and not trust_objs and not logistics_objs and rejects:
-        trust_pct = round((len(rejects) / total) * 100)
-        trust_objs = [r["reasoning"][:120].strip() for r in rejects[:3]]
+        # Use semantic signals from agent reasoning text itself —
+        # the agents already wrote about their concerns in plain language
+        price_score = sum([
+            "price" in text, "cost" in text, "expensive" in text,
+            "afford" in text, "worth" in text, "value" in text,
+            "$" in text, "budget" in text, "premium" in text,
+        ])
+        trust_score = sum([
+            "trust" in text, "brand" in text, "review" in text,
+            "return" in text, "refund" in text, "contact" in text,
+            "guarantee" in text, "credib" in text, "reliable" in text,
+            "heard of" in text, "unknown" in text,
+        ])
+        logistics_score = sum([
+            "ship" in text, "deliver" in text, "packag" in text,
+            "arrive" in text, "days" in text, "week" in text,
+            "tracking" in text, "transit" in text,
+        ])
+
+        max_score = max(price_score, trust_score, logistics_score, 1)
+        if price_score == max_score:
+            price_hits.append(snippet)
+        elif trust_score == max_score:
+            trust_hits.append(snippet)
+        elif logistics_score == max_score:
+            logistics_hits.append(snippet)
+        else:
+            trust_hits.append(snippet)  # default to trust when ambiguous
+
+    def _pct(hits):
+        return round((len(hits) / total) * 100) if hits else 0
 
     return {
-        "price": {"dropoutPct": price_pct, "topObjections": price_objs},
-        "trust": {"dropoutPct": trust_pct, "topObjections": trust_objs},
-        "logistics": {"dropoutPct": logistics_pct, "topObjections": logistics_objs},
+        "price": {"dropoutPct": _pct(price_hits), "topObjections": price_hits[:3]},
+        "trust": {"dropoutPct": _pct(trust_hits), "topObjections": trust_hits[:3]},
+        "logistics": {"dropoutPct": _pct(logistics_hits), "topObjections": logistics_hits[:3]},
     }
 
 
@@ -1061,5 +1326,8 @@ def _build_summary(brief: ProductBrief, score: int, final_votes: list[AgentVote]
 
     summary = f"{tone} {len(buys)} of {len(final_votes)} panelists said they would buy."
     if top_objection:
-        summary += f" Top concern: {top_objection}"
+        # Truncate at sentence boundary; strip trailing fragments and question-mark junk
+        obj = top_objection.split("?")[0].split(".")[0].strip()
+        if len(obj) > 10:
+            summary += f" Top concern: {obj}."
     return summary

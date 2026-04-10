@@ -124,6 +124,7 @@ class ProductDNA:
 def extract_product_dna(
     llm,
     product_json: dict,
+    manual_fixes: Optional[List[str]] = None,
 ) -> Optional[ProductDNA]:
     """
     Run a single fast LLM call to extract the product's psychological DNA.
@@ -160,11 +161,24 @@ def extract_product_dna(
         axis_definitions=_AXIS_DEFINITIONS,
     )
 
+    # Inject merchant-verified fixes as ground truth before the analysis prompt
+    if manual_fixes:
+        system_notes = "\n".join(
+            f"[SYSTEM NOTE: The merchant has verified that the following fix is now implemented: {fix}]."
+            for fix in manual_fixes
+        )
+        prompt = (
+            f"{system_notes}\n\n"
+            "The above fixes are already live. Factor them into your psychological profile — "
+            "they may resolve listed objections or reduce buyer friction.\n\n"
+            f"{prompt}"
+        )
+
     try:
         raw = llm.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=700,   # more tokens needed for experiment cards
+            max_tokens=1000,
         )
         if not raw or not raw.strip():
             raise ValueError("Empty response")
@@ -239,10 +253,7 @@ def format_dna_for_prompt(dna: Optional[ProductDNA], archetype_id: str) -> str:
                 break
 
     if hook:
-        parts.append(
-            f"YOUR ATTACK ANGLE for this product: {hook} "
-            f"Open your first response by addressing this directly."
-        )
+        parts.append(f"YOUR ANGLE on this product: {hook}")
 
     return "\n".join(parts)
 

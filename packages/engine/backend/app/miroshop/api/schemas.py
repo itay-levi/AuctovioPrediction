@@ -24,6 +24,7 @@ class SimulateRequest(BaseModel):
     focusAreas: list[str] = []  # e.g. ["trust_credibility", "price_value"]
     labConfig: Optional[LabConfig] = None
     isPro: bool = False      # unlocks vision analysis
+    storeContext: Optional[dict] = None  # store-level pages: { returnPolicy, shippingPolicy, contactEmail }
 
 
 class DeltaRequest(BaseModel):
@@ -36,6 +37,7 @@ class DeltaRequest(BaseModel):
     callbackUrl: str
     deltaParams: dict        # {"price": 29.99, "shippingDays": 3}
     focusAreas: list[str] = []
+    storeContext: Optional[dict] = None  # store-level pages: { returnPolicy, shippingPolicy, contactEmail }
     priority: int = 1                           # 0=initial scan, 1=what-if (lower priority)
     # Original simulation context for comparison insight generation
     originalScore: Optional[int] = None
@@ -75,3 +77,21 @@ class SynthesizeRequest(BaseModel):
     product_title: str
     niche: str
     agent_logs: list[SynthesizeAgentLog]
+
+
+class AuditRecommendationItem(BaseModel):
+    lens: str
+    title: str
+    the_why: str = ""
+    impact: str = ""
+    priority: str = "High"
+
+
+class AuditEvaluateRequest(BaseModel):
+    productTitle: str
+    originalScore: int
+    newScore: int
+    originalRecommendations: list[AuditRecommendationItem]
+    originalFriction: dict = {}   # {"price": {"dropoutPct": N}, "trust": {...}, ...}
+    newFriction: dict = {}
+    newVotes: list[dict] = []     # phase-3 agent votes from the retake panel

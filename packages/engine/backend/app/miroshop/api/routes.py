@@ -23,7 +23,7 @@ from ..services.listing_gap_analyzer import analyze_listing_gaps, format_gap_con
 from ..services.recommendation_engine import generate_recommendations
 from ..services.comparison_engine import generate_comparison_insight
 from ..services.dna_extractor import extract_product_dna, dna_to_dict, dna_from_dict
-from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest
+from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest, AuditEvaluateRequest
 
 logger = logging.getLogger("miroshop.routes")
 bp = Blueprint("miroshop", __name__, url_prefix="/miroshop")
@@ -198,7 +198,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             if intelligence and intelligence.checklist:
                 from ..services.shopify_ingestion import ingest_product as _ingest_for_gaps
                 try:
-                    _brief_for_gaps = _ingest_for_gaps(req.productJson, req.shopDomain)
+                    _brief_for_gaps = _ingest_for_gaps(req.productJson, req.shopDomain, store_context=getattr(req, "storeContext", None) or {})
                     _listing_text = _brief_for_gaps.get("description_text", "")
                     _title = req.productJson.get("title", "")
                     _product_type = req.productJson.get("productType") or req.productJson.get("product_type", "")
@@ -285,16 +285,18 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             # Brutality level — passed to orchestrator for evidence injection
             lab_brutality_level = max(1, min(10, lab.brutalityLevel))
 
-        # ── Trust audit (rule-based, no LLM call) ────────────────────────────
+        # ── Trust audit — LLM-based, reads what's actually in the listing ──────
         trust_audit: dict = {}
         trust_context = ""
         try:
             from ..services.shopify_ingestion import ingest_product as _ingest
-            _brief_for_audit = _ingest(req.productJson, req.shopDomain)
+            _store_ctx = getattr(req, "storeContext", None) or {}
+            _brief_for_audit = _ingest(req.productJson, req.shopDomain, store_context=_store_ctx)
             trust_audit = audit_trust_signals(
                 req.productJson,
                 _brief_for_audit,
                 no_return_override=no_return_from_intelligence,
+                llm=fast_llm,   # LLM reads and interprets the listing — no hardcoded keywords
             )
             killers = trust_audit.get("trustKillers", [])
 
@@ -393,14 +395,10 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             comparison_insight_str: str | None = None
 
             # ── Score calibration ─────────────────────────────────────────────
-            # Applied only at final phase.
+            # Score is now the average of agents' confidence_scores (0–100).
+            # Small quality bonus still applies for merchant-controllable listing signals.
+            # The old score floor is removed — continuous scoring makes it unnecessary.
             if phase == 3 and not partial and score is not None:
-                killer_signals = {k["signal"] for k in trust_audit.get("trustKillers", [])}
-                critical_signals = {"return_policy", "no_shipping_info", "no_contact_info"}
-                all_critical_resolved = not critical_signals.intersection(killer_signals)
-
-                # Quality bonus: small reward for merchant-controllable listing signals.
-                # Capped at 10pts so it nudges but never drowns out the panel vote.
                 _raw_score = score  # preserve pre-bonus score for breakdown display
                 _brief_for_bonus = _brief_store.get("brief") or {}
                 quality_bonus = 0
@@ -417,24 +415,12 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     )
                     score = new_score
 
-                # Score floor: only apply when the listing clearly has solid trust signals
-                # AND the raw panel score was already close (≥40) — avoids masking genuinely
-                # poor listings that happen to have a return policy.
-                _floor_applied = False
-                if all_critical_resolved and _raw_score >= 40 and score < 60:
-                    logger.info(
-                        f"[score_floor] {req.simulationId}: trust killers resolved and "
-                        f"raw score {_raw_score}≥40 — lifting {score} → 60"
-                    )
-                    score = 60
-                    _floor_applied = True
-
                 # Breakdown for frontend score transparency card
                 _score_breakdown = {
                     "panelScore": _raw_score,
                     "qualityBonus": quality_bonus,
-                    "floorApplied": _floor_applied,
-                    "floorValue": 60 if _floor_applied else None,
+                    "floorApplied": False,
+                    "floorValue": None,
                 }
 
             if phase == 3 and not partial and friction is not None:
@@ -498,6 +484,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     "phase": v["phase"],
                     "verdict": v["verdict"],
                     "reasoning": v["reasoning"],
+                    "confidenceScore": v.get("confidence_score", round(v.get("confidence", 0.5) * 100)),
                 }
                 for v in votes
             ]
@@ -522,7 +509,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             )
 
         try:
-            brief = ingest_product(req.productJson, req.shopDomain)
+            brief = ingest_product(req.productJson, req.shopDomain, store_context=getattr(req, "storeContext", None) or {})
             _brief_store["brief"] = brief
 
             # What-if / price-batch: separate live storefront price from simulated price in prompts
@@ -781,23 +768,26 @@ _PRESET_LABELS = {
 
 _FIX_PROMPTS: dict[str, str] = {
     "return_policy": (
-        "Write a clear, professional 30-day return policy for a Shopify store selling '{product_type}'. "
-        "Include: eligibility window (30 days), condition requirements (unused, original packaging), "
-        "refund method (original payment method within 5-7 business days), how to initiate (email or form), "
-        "and exceptions (digital products, final sale items). "
+        "Write a clear, professional return policy for a Shopify store selling '{product_type}'. "
+        "Use industry-standard terms that are appropriate for this specific product type — "
+        "the eligibility window, condition requirements, refund method, and exceptions should all "
+        "reflect what real buyers of '{product_type}' reasonably expect. "
+        "Include: how to initiate a return (email or form). "
         "Write in plain English, 150-200 words. No legalese. Friendly tone."
     ),
     "no_shipping_info": (
         "Write a concise shipping policy for a Shopify store selling '{product_type}'. "
-        "Include: standard processing time (1-2 business days), domestic shipping options with estimated "
-        "transit times (3-5 days standard, 1-2 days express), free shipping threshold ($50+), "
-        "international shipping note (7-14 business days, duties may apply), and order tracking info. "
+        "Use shipping timelines and options that are realistic and industry-standard for this product type — "
+        "consider production time if handmade or custom, perishable handling if food/plants, "
+        "or standard retail timelines if a manufactured product. "
+        "Include: processing time, domestic shipping options with estimated transit times, "
+        "and a note on order tracking. "
         "Write in plain English, 120-150 words. Merchant-friendly, no jargon."
     ),
     "no_contact_info": (
         "Write a brief, friendly About Us + Contact section for a Shopify store selling '{product_type}'. "
-        "Include: a 2-sentence brand story (passionate team, quality focus), a contact email placeholder, "
-        "response time commitment (within 24 hours on business days), and a closing trust statement. "
+        "Include: a 2-sentence brand story that feels genuine for this product category, "
+        "a contact email placeholder, response time commitment, and a closing trust statement. "
         "Write in plain English, 80-100 words. Warm, real-sounding tone — not generic."
     ),
 }
@@ -900,9 +890,14 @@ Write a comparison analysis. Rules:
 2. "divergence_topics" must be 3 friction categories where the two audiences disagreed most (e.g. "Price sensitivity", "Social proof requirements", "Shipping expectations")
 3. "target_persona_card" must be 2-3 sentences describing the target audience as real people — their age range, shopping habits, what makes them buy or reject.
 4. Use ONLY decision language. Never use "will convert", "predict", "guarantee".
+5. "audience_actions" rules:
+   - Exactly 2-3 actions
+   - Each action must name a SPECIFIC listing element to change (e.g. "Move your ROI breakdown above the fold" not "improve specs")
+   - Each "why" must reference the target audience by name and explain WHY they specifically need this
+   - Do NOT repeat the 3 Golden Actions from the baseline panel — these are AUDIENCE-specific changes only
 
 Respond with valid JSON only:
-{{"why_gap":"one sentence max 20 words","divergence_topics":["topic1","topic2","topic3"],"target_persona_card":"2-3 sentences","baseline_label":"General Public","target_label":"{scenario_label}"}}"""
+{{"why_gap":"one sentence max 20 words","divergence_topics":["topic1","topic2","topic3"],"target_persona_card":"2-3 sentences","baseline_label":"General Public","target_label":"{scenario_label}","audienceActions":[{{"action":"exact copy or element change","why":"why this matters for THIS specific audience"}}]}}"""
 
     try:
         llm = _make_deep_llm()
@@ -914,10 +909,42 @@ Respond with valid JSON only:
             "targetPersonaCard": result.get("target_persona_card", ""),
             "baselineLabel": result.get("baseline_label", "General Public"),
             "targetLabel": result.get("target_label", scenario_label),
+            "audienceActions": result.get("audienceActions", []),
         })
     except Exception as e:
         logger.exception(f"Lab compare failed: {e}")
         return jsonify({"error": f"Comparison generation failed: {str(e)}"}), 500
+
+
+@bp.post("/audit/evaluate")
+@_require_auth
+def audit_evaluate():
+    """
+    Grade merchant changes against original Golden Actions.
+    Called by the Shopify app after a RETAKE simulation completes.
+    """
+    try:
+        req = AuditEvaluateRequest(**request.get_json(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    try:
+        from ..services.audit_evaluator import evaluate_retake
+        fast_llm = _make_fast_llm()
+        result = evaluate_retake(
+            llm=fast_llm,
+            product_title=req.productTitle,
+            original_recommendations=[r.model_dump() for r in req.originalRecommendations],
+            original_score=req.originalScore,
+            new_score=req.newScore,
+            original_friction=req.originalFriction,
+            new_friction=req.newFriction,
+            new_votes=req.newVotes,
+        )
+        return jsonify(result)
+    except Exception as e:
+        logger.exception(f"Audit evaluate failed: {e}")
+        return jsonify({"error": f"Evaluation failed: {str(e)}"}), 500
 
 
 @bp.get("/health")
