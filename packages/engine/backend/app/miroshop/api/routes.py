@@ -156,6 +156,8 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         from concurrent.futures import ThreadPoolExecutor as _PreTPE
         from ..archetypes.niche_contexts import generate_niche_profiles as _gen_niche
 
+        intelligence = None  # set when we run full extraction (not intel-cache hit)
+
         if _panel_key and _panel_key in _intelligence_cache:
             cached_intel = _intelligence_cache[_panel_key]
             product_context = cached_intel["product_context"]
@@ -194,33 +196,61 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             product_context = format_product_context(intelligence)
             no_return_from_intelligence = intelligence.no_return_acceptable if intelligence else None
 
-            # Gap analysis — must run after intelligence (needs intelligence.checklist)
-            if intelligence and intelligence.checklist:
-                from ..services.shopify_ingestion import ingest_product as _ingest_for_gaps
-                try:
-                    _brief_for_gaps = _ingest_for_gaps(req.productJson, req.shopDomain, store_context=getattr(req, "storeContext", None) or {})
-                    _listing_text = _brief_for_gaps.get("description_text", "")
-                    _title = req.productJson.get("title", "")
-                    _product_type = req.productJson.get("productType") or req.productJson.get("product_type", "")
-                    _listing_full = f"Title: {_title}\nType: {_product_type}\n\n{_listing_text}"
-                    gap_analysis = analyze_listing_gaps(llm, intelligence.checklist, _listing_full)
-                    gap_context = format_gap_context(gap_analysis)
-                    gap_items_for_recs = [
-                        {"question": item.question, "status": item.status, "evidence": item.evidence}
-                        for item in gap_analysis.items
-                    ] if gap_analysis else []
-                except Exception as _gap_err:
-                    logger.warning(f"Gap analysis failed for {req.simulationId}: {_gap_err}")
-                    gap_analysis = None
+            # Gap analysis + trust audit run below (parallel when both LLM calls are needed).
 
-            if _panel_key:
-                _intelligence_cache[_panel_key] = {
-                    "product_context": product_context,
-                    "no_return_acceptable": no_return_from_intelligence,
-                    "gap_context": gap_context,
-                    "gap_items": gap_items_for_recs,
-                    "product_dna": dna_to_dict(product_dna),
-                }
+        # ── Gap analysis + trust audit LLMs ─────────────────────────────────────
+        # Independent: gap uses intelligence.checklist + listing text; trust uses listing + no_return.
+        # Same prompts/models as the old sequential path — only wall-clock may shrink when both run.
+        trust_audit: dict = {}
+        _store_ctx = getattr(req, "storeContext", None) or {}
+        _brief_for_listing = ingest_product(req.productJson, req.shopDomain, store_context=_store_ctx)
+
+        def _run_trust_audit_llm() -> dict:
+            try:
+                return audit_trust_signals(
+                    req.productJson,
+                    _brief_for_listing,
+                    no_return_override=no_return_from_intelligence,
+                    llm=fast_llm,
+                )
+            except Exception as e:
+                logger.warning(f"Trust audit failed for {req.simulationId}: {e}")
+                return {}
+
+        def _run_gap_llm() -> tuple[str, list]:
+            try:
+                _listing_text = _brief_for_listing.get("description_text", "")
+                _title = req.productJson.get("title", "")
+                _product_type = req.productJson.get("productType") or req.productJson.get("product_type", "")
+                _listing_full = f"Title: {_title}\nType: {_product_type}\n\n{_listing_text}"
+                gap_analysis = analyze_listing_gaps(llm, intelligence.checklist, _listing_full)
+                gc = format_gap_context(gap_analysis)
+                items = [
+                    {"question": item.question, "status": item.status, "evidence": item.evidence}
+                    for item in gap_analysis.items
+                ] if gap_analysis else []
+                return gc, items
+            except Exception as _gap_err:
+                logger.warning(f"Gap analysis failed for {req.simulationId}: {_gap_err}")
+                return "", []
+
+        if intelligence is not None and intelligence.checklist:
+            with _PreTPE(max_workers=2) as _gap_trust_pool:
+                _gap_fut = _gap_trust_pool.submit(_run_gap_llm)
+                _trust_fut = _gap_trust_pool.submit(_run_trust_audit_llm)
+                gap_context, gap_items_for_recs = _gap_fut.result()
+                trust_audit = _trust_fut.result()
+        else:
+            trust_audit = _run_trust_audit_llm()
+
+        if _panel_key and intelligence is not None:
+            _intelligence_cache[_panel_key] = {
+                "product_context": product_context,
+                "no_return_acceptable": no_return_from_intelligence,
+                "gap_context": gap_context,
+                "gap_items": gap_items_for_recs,
+                "product_dna": dna_to_dict(product_dna),
+            }
 
         # ── Customer Lab configuration ────────────────────────────────────────
         # Resolved first so lab_audience_context is available for trust_context assembly.
@@ -285,19 +315,9 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             # Brutality level — passed to orchestrator for evidence injection
             lab_brutality_level = max(1, min(10, lab.brutalityLevel))
 
-        # ── Trust audit — LLM-based, reads what's actually in the listing ──────
-        trust_audit: dict = {}
+        # ── Trust context string (audit LLM already ran above) ──────────────────
         trust_context = ""
         try:
-            from ..services.shopify_ingestion import ingest_product as _ingest
-            _store_ctx = getattr(req, "storeContext", None) or {}
-            _brief_for_audit = _ingest(req.productJson, req.shopDomain, store_context=_store_ctx)
-            trust_audit = audit_trust_signals(
-                req.productJson,
-                _brief_for_audit,
-                no_return_override=no_return_from_intelligence,
-                llm=fast_llm,   # LLM reads and interprets the listing — no hardcoded keywords
-            )
             killers = trust_audit.get("trustKillers", [])
 
             confirmed_parts = []
@@ -339,7 +359,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             if lab_audience_context:
                 trust_context = (trust_context + "\n\n" + lab_audience_context).strip()
         except Exception as e:
-            logger.warning(f"Trust audit failed for {req.simulationId}: {e}")
+            logger.warning(f"Trust context assembly failed for {req.simulationId}: {e}")
 
         # ── Vision analysis (PRO only) ────────────────────────────────────────
         # Extracts image quality, trust signals, and visual gaps from product images.

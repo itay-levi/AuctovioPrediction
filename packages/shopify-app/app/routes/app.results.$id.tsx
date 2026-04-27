@@ -979,6 +979,54 @@ export default function ResultsPage() {
             <Box paddingBlockStart="400">
               <BlockStack gap="500">
 
+                {/* What-If Lab — premium spotlight (above the fold) */}
+                {isDone && (
+                  <div className={analysingStyles.whatIfPremium}>
+                    <div className={analysingStyles.whatIfTopRow}>
+                      <BlockStack gap="300">
+                        <p className={analysingStyles.whatIfEyebrow}>Private simulation workspace</p>
+                        <div className={analysingStyles.whatIfTitleRow}>
+                          <h2 className={analysingStyles.whatIfTitle}>What-If Lab</h2>
+                          <Badge tone="magic">{isPro ? "Included in your plan" : "Pro & Enterprise"}</Badge>
+                        </div>
+                        <p className={analysingStyles.whatIfSubtitle}>
+                          Model pricing, shipping, offers, and copy changes before you commit — the same AI
+                          customer panel, in an isolated workspace that never touches your live PDP.
+                        </p>
+                        <div className={analysingStyles.whatIfFeatures}>
+                          <div className={analysingStyles.whatIfFeature}>
+                            <span className={analysingStyles.whatIfFeatureLabel}>Zero storefront risk</span>
+                            Scenarios stay in the lab until you decide what to ship.
+                          </div>
+                          <div className={analysingStyles.whatIfFeature}>
+                            <span className={analysingStyles.whatIfFeatureLabel}>Apples-to-apples</span>
+                            Compare side by side with this run&apos;s baseline and score deltas.
+                          </div>
+                          <div className={analysingStyles.whatIfFeature}>
+                            <span className={analysingStyles.whatIfFeatureLabel}>Built for decisions</span>
+                            Turn “what if we…” into numbers your team can act on.
+                          </div>
+                        </div>
+                      </BlockStack>
+                      <div className={analysingStyles.whatIfCtaCol}>
+                        <Button
+                          url={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
+                          variant="primary"
+                          size="large"
+                          tone={isPro ? undefined : "critical"}
+                        >
+                          {isPro ? "Launch What-If Lab" : "Upgrade to unlock"}
+                        </Button>
+                        <p className={analysingStyles.whatIfFootnote}>
+                          {isPro
+                            ? "Sandbox only · your live listing stays unchanged"
+                            : "Unlock the full lab on Pro or Enterprise"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Score (left 1/3) + Friction 3-columns (right 2/3) */}
                 <Layout>
                   <Layout.Section variant="oneThird">
@@ -1373,22 +1421,13 @@ export default function ResultsPage() {
 
                 {isDone && (
                   <BlockStack gap="300">
-                    <InlineStack gap="300">
-                      <Button url="/app/simulate" variant="primary">Run Another Panel Check</Button>
-                      <Button
-                        url={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
-                        variant={isPro ? "secondary" : "plain"}
-                        tone={isPro ? undefined : "critical"}
-                      >
-                        {isPro ? "Open What-If Sandbox" : "Unlock What-If Sandbox →"}
-                      </Button>
-                      <Button url="/app/history" variant="plain">View History</Button>
+                    <InlineStack gap="300" wrap>
+                      <Button url="/app/simulate" variant="secondary">Run another panel check</Button>
+                      <Button url="/app/history" variant="plain">View history</Button>
                     </InlineStack>
-                    {!isPro && (
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        What-If Sandbox lets you simulate price changes, shipping updates, and copy rewrites against your customer panel — available on Pro and Enterprise plans.
-                      </Text>
-                    )}
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Next step: <strong>Launch What-If Lab</strong> above to stress-test pricing and copy before your next full panel run.
+                    </Text>
                   </BlockStack>
                 )}
 

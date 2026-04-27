@@ -1,13 +1,14 @@
 import type { FetcherWithComponents } from "@remix-run/react";
 
 type SandboxActionData = { error?: string } | undefined;
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Button,
   Banner,
   Text,
   BlockStack,
   InlineStack,
+  Box,
   RangeSlider,
   CalloutCard,
   SkeletonBodyText,
@@ -16,10 +17,90 @@ import {
   Tooltip,
   Collapsible,
   Badge,
+  TextField,
 } from "@shopify/polaris";
 import { ConfidenceGauge } from "../ConfidenceGauge";
 import { sanitizeAgentReasoning } from "../../utils/sanitizeAgentReasoning";
 import styles from "./ComparisonLaboratory.module.css";
+
+/** Default shipping used when no override — keep in sync with sandbox initial state. */
+const DEFAULT_BASELINE_SHIPPING_DAYS = 7;
+
+const TRUST_LAB_DEFAULT_HYPOTHESIS =
+  "Trust test: Surface reviews, guarantees, and lifestyle or in-use photos above the fold so hesitant buyers feel confident sooner.";
+
+type LabPdpPreviewProps = {
+  productTitle: string;
+  productImageUrl?: string | null;
+  basePrice: number;
+  displayPrice: number;
+  shippingDays: number;
+  baselineShippingDays: number;
+  descriptionSnippet: string;
+};
+
+function LabPdpPreview({
+  productTitle,
+  productImageUrl: _productImageUrl,
+  basePrice,
+  displayPrice,
+  shippingDays,
+  baselineShippingDays,
+  descriptionSnippet,
+  compact = false,
+}: LabPdpPreviewProps & { compact?: boolean }) {
+  void _productImageUrl;
+  const showStrike = displayPrice < basePrice - 0.009;
+  const pctOff = showStrike && basePrice > 0 ? Math.round(((basePrice - displayPrice) / basePrice) * 100) : 0;
+  const letter = (productTitle || "P").trim().charAt(0).toUpperCase() || "P";
+  return (
+    <div className={compact ? `${styles.labPdpShell} ${styles.labPdpShellCompact}` : styles.labPdpShell}>
+      <div className={styles.labPdpChrome}>
+        <span className={styles.labPdpDot} />
+        <span className={styles.labPdpDot} />
+        <span className={styles.labPdpDot} />
+        <span className={styles.labPdpUrl}>Preview · not published</span>
+      </div>
+      <div className={styles.labPdpBody}>
+        <div className={styles.labPdpAbstract} aria-hidden>
+          <span className={styles.labPdpAbstractLetter}>{letter}</span>
+        </div>
+        <h3 className={styles.labPdpTitle}>{productTitle || "Your product"}</h3>
+        <div className={styles.labPdpPriceRow}>
+          {showStrike ? <span className={styles.labPdpPriceOld}>${basePrice.toFixed(2)}</span> : null}
+          <span className={styles.labPdpPrice}>${displayPrice.toFixed(2)}</span>
+          {pctOff > 0 ? <span className={styles.labPdpSaveBadge}>−{pctOff}%</span> : null}
+        </div>
+        <p className={styles.labPdpShip}>
+          Arrives in <strong>{shippingDays} days</strong>
+          {shippingDays !== baselineShippingDays ? <span className={styles.labPdpShipHint}> · test</span> : null}
+        </p>
+        {descriptionSnippet.trim() ? (
+          <p className={styles.labPdpDesc}>{descriptionSnippet.trim()}</p>
+        ) : (
+          <p className={styles.labPdpDescMuted}>
+            Abstract preview — no store photos used. Your live PDP is unchanged.
+          </p>
+        )}
+      </div>
+      <p className={styles.labPdpDisclaimer}>Safe lab preview only.</p>
+    </div>
+  );
+}
+
+function composeActiveExperiment(
+  selectedHypothesis: string | undefined,
+  descriptionDraft: string,
+  trustAddon: string,
+): string {
+  const parts: string[] = [];
+  if (selectedHypothesis?.trim()) parts.push(selectedHypothesis.trim());
+  if (descriptionDraft.trim()) {
+    parts.push(`Additional PDP copy shoppers would see: ${descriptionDraft.trim()}`);
+  }
+  if (trustAddon.trim()) parts.push(trustAddon.trim());
+  return parts.join("\n\n");
+}
 
 const ROSTER_ORDER = [
   "budget_optimizer",
@@ -456,40 +537,6 @@ function topRejectSnippetsFromLogs(logs: AgentLogLite[], max = 3): string[] {
   return out;
 }
 
-function FrictionMiniStrip({
-  pricePct,
-  logisticsPct,
-  trustPct,
-}: {
-  pricePct: number;
-  logisticsPct: number;
-  trustPct: number;
-}) {
-  const items: { key: "price" | "logistics" | "trust"; label: string; pct: number }[] = [
-    { key: "price", label: "Price", pct: pricePct },
-    { key: "logistics", label: "Ship", pct: logisticsPct },
-    { key: "trust", label: "Trust", pct: trustPct },
-  ];
-  return (
-    <div className={styles.frictionMiniStrip}>
-      {items.map(({ key, label, pct }) => (
-        <Tooltip key={key} content={FRICTION_TOOLTIPS[key]} preferredPosition="above">
-          <div className={styles.frictionMiniItem}>
-            <span className={styles.frictionMiniLabel}>{label}</span>
-            <div className={styles.frictionMiniBar}>
-              <div
-                className={styles.frictionMiniFill}
-                style={{ width: `${Math.min(100, Math.round(pct))}%` }}
-              />
-            </div>
-            <span className={styles.frictionMiniPct}>{Math.round(pct)}%</span>
-          </div>
-        </Tooltip>
-      ))}
-    </div>
-  );
-}
-
 // ── Price Optimizer helpers ─────────────────────────────────────────────────
 export function pickBestSweepRun(results: PriceBatchResult[]): PriceBatchResult | null {
   const ok = results.filter((r) => r.status === "COMPLETED" && r.score != null);
@@ -877,7 +924,7 @@ function PriceOptimizerSection({
                     className={styles.poStepRunBtn}
                     onClick={() => runExperimentStep(step.terms)}
                   >
-                    Open in Experiments →
+                    Open in Pick a change →
                   </button>
                 </div>
               ))}
@@ -1146,6 +1193,10 @@ function WhatIfRunningPane({
 type Props = {
   simulationId: string;
   productUrl: string;
+  productTitle: string;
+  productImageUrl?: string | null;
+  /** Baseline shipping days (matches live listing assumption). Defaults to 7. */
+  baselineShippingDays?: number;
   baselineScore: number;
   baselinePhase1: AgentLogLite[];
   labPhase1: AgentLogLite[];
@@ -1166,6 +1217,8 @@ type Props = {
   toggleCard: (id: string) => void;
   selectExperimentCard: (id: string) => void;
   runLabel: string;
+  /** Clear selected experiment card (e.g. when switching test type). */
+  clearExperimentSelection: () => void;
   isSubmitting: boolean;
   latestRunning: boolean;
   deltaElapsed?: number;
@@ -1187,6 +1240,9 @@ type Props = {
 export function ComparisonLaboratory({
   simulationId,
   productUrl,
+  productTitle,
+  productImageUrl = null,
+  baselineShippingDays = DEFAULT_BASELINE_SHIPPING_DAYS,
   baselineScore,
   baselinePhase1,
   labPhase1,
@@ -1207,6 +1263,7 @@ export function ComparisonLaboratory({
   toggleCard,
   selectExperimentCard,
   runLabel,
+  clearExperimentSelection,
   isSubmitting,
   latestRunning,
   deltaElapsed = 0,
@@ -1227,8 +1284,31 @@ export function ComparisonLaboratory({
   const [mobileTab, setMobileTab] = useState<"baseline" | "simulation">("baseline");
   const [selectedBatchSim, setSelectedBatchSim] = useState<PriceBatchResult | null>(null);
   const [optimizerNavHint, setOptimizerNavHint] = useState<string | null>(null);
-  const [mainLabTab, setMainLabTab] = useState(0);
+  const [wizardStep, setWizardStep] = useState<0 | 1 | 2>(() =>
+    labScore != null || latestRunning ? 2 : 0,
+  );
   const [debateFullOpen, setDebateFullOpen] = useState(false);
+  const [priceOptimizerOpen, setPriceOptimizerOpen] = useState(false);
+  const [frictionDetailOpen, setFrictionDetailOpen] = useState(false);
+  const [scenarioHistoryOpen, setScenarioHistoryOpen] = useState(
+    () => scenarioHistory.length === 1,
+  );
+  type BuildFocus = "price" | "shipping" | "discount" | "description" | "trust" | "suggestion" | null;
+  const [buildFocus, setBuildFocus] = useState<BuildFocus>("price");
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [trustAddon, setTrustAddon] = useState("");
+  const [customDiscountPct, setCustomDiscountPct] = useState("");
+  const prevHadLabScore = useRef(labScore != null);
+
+  useEffect(() => {
+    if (latestRunning) setWizardStep(2);
+  }, [latestRunning]);
+
+  useEffect(() => {
+    const now = labScore != null;
+    if (!prevHadLabScore.current && now) setWizardStep(2);
+    prevHadLabScore.current = now;
+  }, [labScore]);
 
   const baselineMap = phase1ByArchetype(baselinePhase1);
   const labMap = phase1ByArchetype(labPhase1);
@@ -1247,6 +1327,32 @@ export function ComparisonLaboratory({
   const debateItems = buildDebateItems(baselinePhase2.length ? baselinePhase2 : activeLabPhase2);
 
   const priceMax = Math.max(500, basePrice * 3);
+
+  const selectedExperimentCard = experimentCards.find((c) => c.id === selectedCardId) ?? null;
+
+  const applyDiscountPct = (pct: number) => {
+    const next = Math.round(basePrice * (1 - pct / 100) * 100) / 100;
+    setPrice(Math.max(0.01, next));
+  };
+
+  const applyCustomDiscountFromInput = () => {
+    const n = parseFloat(customDiscountPct.replace(/%/g, "").trim());
+    if (Number.isFinite(n) && n > 0 && n < 95) applyDiscountPct(n);
+  };
+
+  const hasBuildChange =
+    isPro &&
+    (Math.abs(price - basePrice) > 0.009 ||
+      shippingDays !== baselineShippingDays ||
+      descriptionDraft.trim().length > 0 ||
+      selectedExperimentCard != null ||
+      (buildFocus === "trust" && trustAddon.trim().length > 0));
+
+  const activeExperimentPayload = composeActiveExperiment(
+    selectedExperimentCard?.hypothesis,
+    descriptionDraft,
+    buildFocus === "trust" ? trustAddon : "",
+  );
 
   // Floor-bypass: detect when engine's min-60 floor masks real panel signal
   const baselineRawPct = rawVotePct(baselinePhase1);
@@ -1341,6 +1447,36 @@ export function ComparisonLaboratory({
               : "Idle"}
         </span>
       </div>
+      {hasLab && activeLabScore != null && !activeBatchSim && (
+        <div className={styles.arenaLiftStrip}>
+          <div className={styles.arenaLiftStripInner}>
+            <span className={styles.arenaLiftStripLabel}>Modeled lift vs. live PDP</span>
+            <span
+              className={styles.arenaLiftStripValue}
+              data-up={activeLabScore > baselineScore ? "true" : undefined}
+              data-down={activeLabScore < baselineScore ? "true" : undefined}
+            >
+              {activeLabScore > baselineScore ? "+" : ""}
+              {activeLabScore - baselineScore} pts
+            </span>
+            <span className={styles.arenaLiftStripHint}>
+              {floorMasking ? "Scores may be floored — check raw votes below." : "Confidence index (0–100) on the same shopper panel."}
+            </span>
+          </div>
+        </div>
+      )}
+      {hasLab && topRejectSnippets.length > 0 && !latestRunning && (
+        <div className={styles.arenaObjectionsTeaser}>
+          <p className={styles.arenaObjectionsTitle}>Top shopper objections</p>
+          <ul className={styles.arenaObjectionsUl}>
+            {topRejectSnippets.map((s, i) => (
+              <li key={i} className={styles.arenaObjectionsLi}>
+                {s}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {latestRunning && !activeBatchSim ? (
         <WhatIfRunningPane
           labPhase1={labPhase1}
@@ -1382,17 +1518,18 @@ export function ComparisonLaboratory({
       ) : (
         <div className={styles.simIdleState}>
           <span className={styles.simIdleIcon}>🧪</span>
-          <p className={styles.simIdleTitle}>No simulation yet</p>
+          <p className={styles.simIdleTitle}>Nothing to compare yet</p>
           <p className={styles.simIdleText}>
-            Run a What-If or use Price Optimizer to see results here with animated deltas vs. your baseline.
+            Go to <strong>Build Test</strong>, make one change, then tap <strong>Run simulation in lab</strong> — results
+            land here next to your live PDP readout.
           </p>
         </div>
       )}
     </>
   );
 
-  const goExperimentsTab = () => {
-    setMainLabTab(2);
+  const goPickChangeStep = () => {
+    setWizardStep(1);
     requestAnimationFrame(() => {
       document.getElementById("experiment-dashboard")?.scrollIntoView({
         behavior: "smooth",
@@ -1401,11 +1538,10 @@ export function ComparisonLaboratory({
     });
   };
 
-  const mainLabTabs = [
-    { id: "overview", label: "Overview", hint: "Score & next step" },
-    { id: "insights", label: "Insights", hint: "Friction deep-dive" },
-    { id: "experiments", label: "Experiments", hint: "Run What-Ifs & price scan" },
-    { id: "simulation", label: "Simulation", hint: "Votes & debrief" },
+  const WIZARD_STEPS = [
+    { id: "understand", title: "Discover", sub: "Friction on your PDP", stepNum: "1" },
+    { id: "change", title: "Build test", sub: "Pick one change", stepNum: "2" },
+    { id: "compare", title: "Run sim", sub: "Compare results", stepNum: "3" },
   ] as const;
 
   let overviewPrimary: string;
@@ -1428,372 +1564,630 @@ export function ComparisonLaboratory({
               ? ` · Raw buy-votes ${baselineRawPct}% → ${activeLabRawPct}%`
               : ""
         }`
-      : `Baseline ${baselineScore}/100 — open Experiments to model a change vs this listing.`;
+      : `Baseline ${baselineScore}/100. Next: model one change and compare.`;
 
   return (
     <div className={styles.labRoot}>
-      <div className={styles.labTabBarWrap}>
-        <p className={styles.labTabBarHint} id="lab-tab-hint">
-          Switch section — each tab is a separate step in the lab
-        </p>
-        <nav
-          className={styles.labTabNav}
-          aria-labelledby="lab-tab-hint"
-          role="tablist"
-        >
-          {mainLabTabs.map((tab, i) => (
+      <div className={styles.novaFrame}>
+        <nav className={styles.novaRail} aria-label="What-If workspace">
+          <div className={styles.novaRailBrand}>
+            <div className={styles.novaRailMark} aria-hidden />
+            <div className={styles.novaRailTitles}>
+              <p className={styles.novaRailTitle}>What-If</p>
+              <p className={styles.novaRailSubtitle}>Lab</p>
+            </div>
+          </div>
+          {WIZARD_STEPS.map((step, i) => (
             <button
-              key={tab.id}
+              key={step.id}
               type="button"
-              role="tab"
-              id={`lab-tab-${tab.id}`}
-              aria-selected={mainLabTab === i}
-              aria-controls={`lab-panel-${tab.id}`}
-              tabIndex={mainLabTab === i ? 0 : -1}
-              className={styles.labTabSegment}
-              data-active={mainLabTab === i}
-              onClick={() => setMainLabTab(i)}
+              className={styles.novaNavBtn}
+              aria-current={wizardStep === i ? "step" : undefined}
+              data-state={wizardStep === i ? "current" : wizardStep > i ? "done" : "todo"}
+              onClick={() => setWizardStep(i as 0 | 1 | 2)}
             >
-              <span className={styles.labTabSegmentLabel}>{tab.label}</span>
-              <span className={styles.labTabSegmentSub}>{tab.hint}</span>
+              <span className={styles.novaNavGlyph} aria-hidden>
+                {wizardStep > i ? "✓" : step.stepNum}
+              </span>
+              <span className={styles.novaNavText}>
+                <span className={styles.novaNavLabel}>{step.title}</span>
+                <span className={styles.novaNavHint}>{step.sub}</span>
+              </span>
             </button>
           ))}
+          <div className={styles.novaRailFoot}>
+            <p>One lever per run keeps the story honest — same panel, cleaner deltas.</p>
+          </div>
         </nav>
-      </div>
 
-      {mainLabTab === 0 && (
-        <div
-          role="tabpanel"
-          id="lab-panel-overview"
-          aria-labelledby="lab-tab-overview"
-          className={styles.labTabPanel}
-        >
-          <BlockStack gap="400">
-            <div className={styles.labOverviewHero}>
-              <Text as="p" variant="headingSm" tone="subdued">
-                Main insight
-              </Text>
-              <Text as="p" variant="headingMd">
-                {overviewPrimary}
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                {overviewSecondary}
-              </Text>
+        <main className={styles.novaMain}>
+      {wizardStep === 0 && (
+        <section className={styles.dashDiscover} aria-labelledby="dash-signals-title">
+          <div className={styles.dashPageHead}>
+            <div>
+              <p className={styles.dashEyebrow}>Listing analytics snapshot</p>
+              <h1 id="dash-signals-title" className={styles.dashPageTitle}>
+                How shoppers read this PDP right now
+              </h1>
             </div>
-            <InlineStack gap="500" wrap blockAlign="start">
-              <BlockStack gap="100">
-                <Text as="span" variant="bodySm" fontWeight="semibold">
-                  Baseline
-                </Text>
-                <Tooltip content="Customer Confidence Score from your original panel (0–100).">
-                  <span style={{ display: "inline-block" }}>
-                    <ConfidenceGauge score={baselineScore} size={112} variant="light" />
+            <p className={styles.dashPageSub}>
+              Same synthetic panel for every simulation — when metrics move, it reflects your test, not a new audience.
+            </p>
+          </div>
+
+          <div className={styles.dashKpiBoard} role="list">
+            <Tooltip content="Customer confidence from your baseline scan (0–100).">
+              <div className={styles.dashKpiCard} role="listitem">
+                <span className={`${styles.dashKpiIcon} ${styles.dashKpiIconBlue}`} aria-hidden>
+                  ◎
+                </span>
+                <span className={styles.dashKpiLabel}>Confidence index</span>
+                <span className={styles.dashKpiValue}>{baselineScore}</span>
+                <span className={styles.dashKpiTrend}>Baseline scan</span>
+              </div>
+            </Tooltip>
+            {(
+              [
+                {
+                  key: "price" as const,
+                  label: "Price pressure",
+                  pct: priceDropoutPct,
+                  icon: "◇",
+                  iconMod: styles.dashKpiIconAmber,
+                },
+                {
+                  key: "logistics" as const,
+                  label: "Shipping / returns",
+                  pct: logisticsDropoutPct,
+                  icon: "◇",
+                  iconMod: styles.dashKpiIconViolet,
+                },
+                {
+                  key: "trust" as const,
+                  label: "Trust gap",
+                  pct: trustDropoutPct,
+                  icon: "◇",
+                  iconMod: styles.dashKpiIconRose,
+                },
+              ] as const
+            ).map(({ key, label, pct, icon, iconMod }) => (
+              <Tooltip key={key} content={FRICTION_TOOLTIPS[key]}>
+                <div className={styles.dashKpiCard} role="listitem">
+                  <span className={`${styles.dashKpiIcon} ${iconMod}`} aria-hidden>
+                    {icon}
                   </span>
-                </Tooltip>
-              </BlockStack>
-              {hasLab && activeLabScore != null && (
-                <BlockStack gap="100">
-                  <Text as="span" variant="bodySm" fontWeight="semibold">
-                    Latest scenario
-                  </Text>
-                  <Tooltip content="Most recent What-If or selected price scenario.">
-                    <span style={{ display: "inline-block" }}>
-                      <ConfidenceGauge score={activeLabScore} size={112} />
-                    </span>
-                  </Tooltip>
-                </BlockStack>
-              )}
-            </InlineStack>
-            <div>
-              <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
-                Friction snapshot (baseline)
-              </Text>
-              <FrictionMiniStrip
-                pricePct={priceDropoutPct}
-                logisticsPct={logisticsDropoutPct}
-                trustPct={trustDropoutPct}
-              />
-            </div>
-            <InlineStack gap="200" wrap>
-              {isPro && latestCompletedId && hasLab && !latestRunning && !activeBatchSim ? (
-                <Button variant="primary" url={`/app/results/${latestCompletedId}`}>
-                  Open full What-If report
-                </Button>
-              ) : isPro && activeBatchSim ? (
-                <Button variant="primary" onClick={() => setMainLabTab(3)}>
-                  Review price scenarios & votes
-                </Button>
-              ) : isPro ? (
-                <Button variant="primary" onClick={goExperimentsTab}>
-                  Set up a What-If vs baseline
-                </Button>
-              ) : (
-                <Button variant="primary" url="/app/billing">
-                  Upgrade to run experiments
-                </Button>
-              )}
-              <Button variant="plain" onClick={() => setMainLabTab(1)}>
-                Listing friction details
-              </Button>
-              <Button
-                variant="plain"
-                onClick={() => setMainLabTab(3)}
-                disabled={!hasLab && !activeBatchSim}
-              >
-                Panel & debate
-              </Button>
-            </InlineStack>
-            {floorMasking && !activeBatchSim && (
-              <Banner tone="warning" title="Score floor may hide panel shifts">
-                <Text as="p" variant="bodySm">
-                  Open the Simulation tab to see raw BUY counts and the Phase 2 debrief.
-                </Text>
-              </Banner>
-            )}
-          </BlockStack>
-        </div>
-      )}
-
-      {mainLabTab === 1 && (
-        <div
-          role="tabpanel"
-          id="lab-panel-insights"
-          aria-labelledby="lab-tab-insights"
-          className={styles.labTabPanel}
-        >
-          <BlockStack gap="500">
-            <div>
-              <Text as="h2" variant="headingMd">
-                Listing friction
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Top dropout drivers from your baseline panel. Percentages are directional themes — not additive.
-              </Text>
-            </div>
-            <div className={styles.insightsPriorityList}>
-              <Text as="p" variant="bodySm" fontWeight="semibold">
-                Top priorities
-              </Text>
-              <ul className={styles.insightsPriorityUl}>
-                {insightRows.map((row) => (
-                  <li key={row.key} className={styles.insightsPriorityLi}>
-                    <div className={styles.insightsPriorityRow}>
-                      <span className={`${styles.sevBadge} ${SEV_BADGE_CLS[row.sev]}`}>
-                        {SEV_LABEL[row.sev]}
-                      </span>
-                      <span className={styles.insightsPriorityLabel}>{row.label}</span>
-                      <span className={styles.insightsPriorityPct}>{Math.round(row.pct)}% dropout</span>
-                      <span className={styles.insightsPriorityHint}>{row.hint}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <FrictionCards
-              pricePct={priceDropoutPct}
-              logisticsPct={logisticsDropoutPct}
-              trustPct={trustDropoutPct}
-              trustAudit={trustAudit}
-            />
-            <div className={styles.listingSignalsBox}>
-              <Text as="p" variant="bodySm" fontWeight="semibold">
-                Listing signals (quick scan)
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Shipping: {trustAudit?.hasShippingInfo ? "Detected on listing" : "Unclear or missing"} · Returns:{" "}
-                {trustAudit?.hasReturnPolicy ? "Present" : "Weak or missing"} · Contact:{" "}
-                {trustAudit?.hasContact ? "Present" : "Missing"}
-              </Text>
-            </div>
-            <Button variant="primary" onClick={goExperimentsTab}>
-              Go to Experiments
-            </Button>
-          </BlockStack>
-        </div>
-      )}
-
-      {mainLabTab === 2 && (
-        <div
-          role="tabpanel"
-          id="lab-panel-experiments"
-          aria-labelledby="lab-tab-experiments"
-          className={styles.labTabPanelExperiments}
-        >
-      <div className={styles.labSticky} id="experiment-dashboard" tabIndex={-1}>
-        <p className={styles.labStickyTitle}>Experiments</p>
-        {optimizerNavHint && (
-          <div className={styles.optimizerNavHintWrap}>
-            <Banner tone="info" onDismiss={() => setOptimizerNavHint(null)}>
-              <Text as="p" variant="bodySm">
-                {optimizerNavHint}
-              </Text>
-            </Banner>
-          </div>
-        )}
-        {!isPro && (
-          <Text as="p" variant="bodySm" tone="subdued">
-            Upgrade to Pro to adjust price, shipping, and run simulations.
-          </Text>
-        )}
-
-        {isPro && (
-          <div className={styles.controlsRow} style={{ marginTop: 12 }}>
-            <BlockStack gap="300">
-              <div>
-                <Text as="p" variant="bodySm" fontWeight="semibold">
-                  Price: ${price.toFixed(2)}
-                </Text>
-                <RangeSlider
-                  label="Price"
-                  labelHidden
-                  min={1}
-                  max={priceMax}
-                  step={1}
-                  value={price}
-                  onChange={(v) => setPrice(v as number)}
-                  output
-                />
-              </div>
-              <div>
-                <Text as="p" variant="bodySm" fontWeight="semibold">
-                  Shipping: {shippingDays} days
-                </Text>
-                <RangeSlider
-                  label="Shipping"
-                  labelHidden
-                  min={1}
-                  max={21}
-                  step={1}
-                  value={shippingDays}
-                  onChange={(v) => setShippingDays(v as number)}
-                  output
-                />
-              </div>
-            </BlockStack>
-          </div>
-        )}
-
-        {experimentCards.length > 0 && (
-          <div style={{ marginTop: "1rem" }}>
-            <Text as="p" variant="bodySm" fontWeight="semibold">
-              Experiment cards
-            </Text>
-            <div className={styles.cardsGrid}>
-              {experimentCards.map((card) => {
-                const selected = selectedCardId === card.id;
-                return (
-                  <div key={card.id} className={styles.expCard} data-selected={selected}>
-                    <h4 className={styles.expCardTitle}>{card.name}</h4>
-                    <p className={styles.expCardHyp}>{card.hypothesis}</p>
-                    {!isPro && (
-                      <div className={styles.expCardLock}>
-                        <span className={styles.expCardLockBadge}>Upgrade to unlock</span>
-                      </div>
-                    )}
-                    {isPro && (
-                      <div style={{ marginTop: 10 }}>
-                        <button
-                          type="button"
-                          onClick={() => toggleCard(card.id)}
-                          style={{
-                            padding: "6px 12px",
-                            fontSize: "0.72rem",
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            borderRadius: 8,
-                            border: "1px solid var(--lab-border)",
-                            background: selected ? "var(--lab-accent-light)" : "var(--lab-elevated)",
-                            color: selected ? "var(--lab-accent)" : "var(--lab-text)",
-                          }}
-                        >
-                          {selected ? "Selected ✓" : "Test this"}
-                        </button>
-                      </div>
-                    )}
+                  <span className={styles.dashKpiLabel}>{label}</span>
+                  <span className={styles.dashKpiValue}>{Math.round(pct)}%</span>
+                  <span
+                    className={styles.dashKpiTrend}
+                    data-negative={pct >= 35 ? "true" : undefined}
+                    data-positive={pct < 15 ? "true" : undefined}
+                  >
+                    {pct >= 35 ? "High friction" : pct >= 15 ? "Worth watching" : "Lower pressure"}
+                  </span>
+                  <div className={styles.dashKpiBar} aria-hidden>
+                    <div className={styles.dashKpiBarFill} style={{ width: `${Math.min(100, Math.round(pct))}%` }} />
                   </div>
-                );
-              })}
-            </div>
-            {isPro && experimentCards.length >= 2 && (
-              <div style={{ marginTop: 10 }}>
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="simulate_all" />
-                  <Button variant="plain" size="slim" submit loading={isSubmitting} disabled={!!latestRunning}>
-                    Run all experiment cards
-                  </Button>
-                </fetcher.Form>
-              </div>
-            )}
+                </div>
+              </Tooltip>
+            ))}
           </div>
-        )}
 
-        {fetcherError && (
-          <div style={{ marginTop: 12 }}>
-            <Banner tone="critical">
-              <Text as="p" variant="bodyMd">
-                {fetcherError}
-              </Text>
-            </Banner>
+          <div className={styles.dashInsightCard}>
+            <p className={styles.dashInsightTitle}>Summary</p>
+            <p className={styles.dashInsightLead}>{overviewPrimary}</p>
+            <p className={styles.dashInsightMeta}>{overviewSecondary}</p>
           </div>
-        )}
 
-        {isPro ? (
-          <div className={styles.runBtnWrap}>
-            <fetcher.Form method="post">
-              <input type="hidden" name="intent" value="run_whatif" />
-              <input
-                type="hidden"
-                name="activeExperiment"
-                value={experimentCards.find((c) => c.id === selectedCardId)?.hypothesis ?? ""}
-              />
-              <input type="hidden" name="price" value={price} />
-              <input type="hidden" name="shippingDays" value={shippingDays} />
-              <Button variant="primary" submit loading={isSubmitting} disabled={!!latestRunning}>
-                {runLabel}
-              </Button>
-            </fetcher.Form>
-            {latestRunning && (
-              <Text as="p" variant="bodySm" tone="subdued">
-                Panelists voting — open the Simulation tab to watch votes and the debrief.
-              </Text>
-            )}
-          </div>
-        ) : (
-          <div style={{ marginTop: 16 }}>
-            <CalloutCard
-              title="Unlock the comparison lab"
-              illustration="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be2a489e0be08b4f9d7a4e5ad25de5b84974268e8cbbd17af_small.png"
-              primaryAction={{ content: "Upgrade to Pro", url: "/app/billing" }}
+          <p className={styles.dashSectionLabel}>Priority queue · fix highest first</p>
+          <ol className={styles.novaQueue}>
+            {insightRows.map((row, idx) => (
+              <li key={row.key} className={styles.novaQueueItem}>
+                <div className={styles.novaQueueStripe} data-sev={row.sev} aria-hidden />
+                <div className={styles.novaQueueBody}>
+                  <span className={styles.novaQueueRank}>{idx + 1}</span>
+                  <div className={styles.novaQueueMid}>
+                    <span className={`${styles.sevBadge} ${SEV_BADGE_CLS[row.sev]}`}>{SEV_LABEL[row.sev]}</span>
+                    <span className={styles.insightsPriorityLabel}>{row.label}</span>
+                  </div>
+                  <span className={styles.novaQueuePct}>{Math.round(row.pct)}%</span>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <div className={styles.novaDeepDive}>
+            <Button
+              disclosure={frictionDetailOpen ? "up" : "down"}
+              variant="plain"
+              onClick={() => setFrictionDetailOpen((o) => !o)}
+              aria-expanded={frictionDetailOpen}
+              aria-controls="lab-friction-full"
             >
-              <Text as="p" variant="bodyMd">
-                Pro runs What-If simulations, experiment cards, and full delta reports against this
-                baseline.
-              </Text>
-            </CalloutCard>
+              {frictionDetailOpen ? "Hide analyst notes" : "Analyst notes · friction deep-dive"}
+            </Button>
+            <Collapsible
+              open={frictionDetailOpen}
+              id="lab-friction-full"
+              transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+            >
+              <Box paddingBlockStart="400">
+                <BlockStack gap="400">
+                  <FrictionCards
+                    pricePct={priceDropoutPct}
+                    logisticsPct={logisticsDropoutPct}
+                    trustPct={trustDropoutPct}
+                    trustAudit={trustAudit}
+                  />
+                  <div className={styles.listingSignalsBox}>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      Listing signals
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Shipping: {trustAudit?.hasShippingInfo ? "Detected" : "Unclear"} · Returns:{" "}
+                      {trustAudit?.hasReturnPolicy ? "Present" : "Weak"} · Contact:{" "}
+                      {trustAudit?.hasContact ? "Present" : "Missing"}
+                    </Text>
+                  </div>
+                </BlockStack>
+              </Box>
+            </Collapsible>
           </div>
-        )}
-      </div>
 
-      {/* ── Price Optimizer band ── */}
+          <div className={styles.novaActions}>
+            {isPro ? (
+              <Button variant="primary" size="large" fullWidth onClick={() => setWizardStep(1)}>
+                Continue to Build test
+              </Button>
+            ) : (
+              <Button variant="primary" size="large" fullWidth url="/app/billing">
+                Unlock Build test
+              </Button>
+            )}
+            <div className={styles.novaActionsRow}>
+              {isPro && (hasLab || activeBatchSim) && (
+                <Button variant="plain" onClick={() => setWizardStep(2)}>
+                  Skip to arena
+                </Button>
+              )}
+              {isPro && latestCompletedId && hasLab && !latestRunning && !activeBatchSim && (
+                <Button variant="plain" url={`/app/results/${latestCompletedId}`}>
+                  Export report
+                </Button>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {wizardStep === 1 && (
+        <div className={`${styles.labTabPanelExperiments} ${styles.novaStudio}`}>
+          <div className={styles.labBuildShell} id="experiment-dashboard" tabIndex={-1}>
+            <div className={styles.refineSplit}>
+              <div className={styles.refineContext}>
+                <p className={styles.refineKicker}>What-If Lab</p>
+                <h2 className={styles.refineHeadline}>Test one PDP change — safely.</h2>
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  Tune a single variable in the workspace. We forecast shopper response; your storefront stays untouched
+                  until you publish.
+                </Text>
+                <div className={styles.refineProductRow}>
+                  <div className={styles.refineProductBadge} aria-hidden>
+                    {(productTitle || "P").trim().charAt(0).toUpperCase() || "P"}
+                  </div>
+                  <div className={styles.refineProductCopy}>
+                    <span className={styles.refineProductName}>{productTitle}</span>
+                    <span className={styles.refineProductMeta}>
+                      List ${basePrice.toFixed(2)} · Today ~{baselineShippingDays}d delivery
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className={styles.refineSimulatorCol}>
+                <div className={styles.refineSimCard}>
+                  {!isPro ? (
+                    <CalloutCard
+                      title="Unlock the simulator"
+                      illustration="https://cdn.shopify.com/s/assets/admin/checkout/settings-customizecart-705f57c725ac05be2a489e0be08b4f9d7a4e5ad25de5b84974268e8cbbd17af_small.png"
+                      primaryAction={{ content: "Upgrade to Pro", url: "/app/billing" }}
+                    >
+                      <Text as="p" variant="bodyMd">
+                        Pro runs price, shipping, copy, and trust scenarios with side-by-side results.
+                      </Text>
+                    </CalloutCard>
+                  ) : (
+                    <>
+                      <p className={styles.refineSimKicker}>Simulation workspace</p>
+                      <h3 className={styles.refineSimTitle}>Adjust your test</h3>
+                      <p className={styles.refineSimSub}>
+                        One lever at a time — the preview below updates as you go. No listing photos required.
+                      </p>
+                      {optimizerNavHint && (
+                        <div className={styles.optimizerNavHintWrap}>
+                          <Banner tone="info" onDismiss={() => setOptimizerNavHint(null)}>
+                            <Text as="p" variant="bodySm">
+                              {optimizerNavHint}
+                            </Text>
+                          </Banner>
+                        </div>
+                      )}
+
+                      <div className={styles.refineMetricStrip}>
+                        <div className={styles.refineMetricCell}>
+                          <span className={styles.refineMetricLabel}>List price</span>
+                          <span className={styles.refineMetricVal}>${basePrice.toFixed(2)}</span>
+                        </div>
+                        <div className={`${styles.refineMetricCell} ${styles.refineMetricCellHero}`}>
+                          <span className={styles.refineMetricLabel}>Test price</span>
+                          <span className={styles.refineMetricHero}>${price.toFixed(2)}</span>
+                        </div>
+                        <div className={styles.refineMetricCell}>
+                          <span className={styles.refineMetricLabel}>Ship (test)</span>
+                          <span className={styles.refineMetricVal}>{shippingDays}d</span>
+                        </div>
+                      </div>
+
+                      <div className={styles.refineSegWrap} role="tablist" aria-label="Test type">
+                        {(
+                          [
+                            { id: "price" as const, label: "Price" },
+                            { id: "shipping" as const, label: "Shipping" },
+                            { id: "discount" as const, label: "% Off" },
+                            { id: "description" as const, label: "Copy" },
+                            { id: "trust" as const, label: "Trust" },
+                            ...(experimentCards.length ? [{ id: "suggestion" as const, label: "Ideas" }] : []),
+                          ] as const
+                        ).map((seg) => (
+                          <button
+                            key={seg.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={buildFocus === seg.id}
+                            className={styles.refineSegBtn}
+                            data-active={buildFocus === seg.id ? "true" : undefined}
+                            onClick={() => {
+                              setBuildFocus(seg.id);
+                              if (seg.id !== "suggestion") {
+                                clearExperimentSelection();
+                              }
+                              if (seg.id === "trust") {
+                                setTrustAddon((t) => t || TRUST_LAB_DEFAULT_HYPOTHESIS);
+                              }
+                            }}
+                          >
+                            {seg.label}
+                          </button>
+                        ))}
+                      </div>
+
+                    {buildFocus === "price" && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Price</h3>
+                        <p className={styles.labControlHint}>
+                          Lower prices often lift purchases but squeeze margin — pair with trust tests before you commit.
+                        </p>
+                        <div className={styles.labPresetRow}>
+                          {([5, 10, 15, 20] as const).map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              className={styles.labPresetChip}
+                              onClick={() => applyDiscountPct(pct)}
+                            >
+                              −{pct}%
+                            </button>
+                          ))}
+                          <button type="button" className={styles.labPresetChip} onClick={() => setPrice(basePrice)}>
+                            List price
+                          </button>
+                        </div>
+                        <div className={styles.labSliderBlock}>
+                          <Text as="p" variant="bodySm" fontWeight="semibold">
+                            ${price.toFixed(2)} <span className={styles.labLiveTag}>live preview updates →</span>
+                          </Text>
+                          <div className={styles.refineSliderWrap}>
+                            <RangeSlider
+                              label="Price"
+                              labelHidden
+                              min={1}
+                              max={priceMax}
+                              step={1}
+                              value={price}
+                              onChange={(v) => setPrice(v as number)}
+                              output
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {buildFocus === "shipping" && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Shipping time</h3>
+                        <p className={styles.labControlHint}>
+                          Shoppers weigh speed against trust — if you can&apos;t ship this fast, don&apos;t over-promise in
+                          real life.
+                        </p>
+                        <div className={styles.labPresetRow}>
+                          {(
+                            [
+                              { d: 2, label: "2d express" },
+                              { d: 5, label: "5d standard" },
+                              { d: 7, label: "7d" },
+                              { d: 10, label: "10d" },
+                              { d: 14, label: "14d" },
+                            ] as const
+                          ).map(({ d, label }) => (
+                            <button
+                              key={d}
+                              type="button"
+                              className={styles.labPresetChip}
+                              data-active={shippingDays === d ? "true" : undefined}
+                              onClick={() => setShippingDays(d)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className={styles.labSliderBlock}>
+                          <Text as="p" variant="bodySm" fontWeight="semibold">
+                            {shippingDays} days to door
+                          </Text>
+                          <div className={styles.refineSliderWrap}>
+                            <RangeSlider
+                              label="Shipping"
+                              labelHidden
+                              min={1}
+                              max={21}
+                              step={1}
+                              value={shippingDays}
+                              onChange={(v) => setShippingDays(v as number)}
+                              output
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {buildFocus === "discount" && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Discount %</h3>
+                        <p className={styles.labControlHint}>
+                          We translate this into a test price from your list price (${basePrice.toFixed(2)}).
+                        </p>
+                        <div className={styles.labPresetRowLarge}>
+                          {([5, 10, 15, 20] as const).map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              className={styles.labPresetTile}
+                              onClick={() => applyDiscountPct(pct)}
+                            >
+                              {pct}%
+                              <span>off</span>
+                            </button>
+                          ))}
+                        </div>
+                        <div className={styles.labCustomRow}>
+                          <InlineStack gap="200" blockAlign="end" wrap={false}>
+                            <div style={{ flex: "1 1 12rem", minWidth: 0 }}>
+                              <TextField
+                                label="Custom % off"
+                                type="text"
+                                value={customDiscountPct}
+                                onChange={(v) => setCustomDiscountPct(v)}
+                                autoComplete="off"
+                                placeholder="e.g. 12"
+                              />
+                            </div>
+                            <Button onClick={applyCustomDiscountFromInput} variant="primary">
+                              Apply
+                            </Button>
+                          </InlineStack>
+                        </div>
+                        <p className={styles.labControlMeta}>Test price right now: ${price.toFixed(2)}</p>
+                      </div>
+                    )}
+
+                    {buildFocus === "description" && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Description text</h3>
+                        <p className={styles.labControlHint}>
+                          This is sent to the panel as copy they would see — it does not edit your real product body in
+                          Shopify.
+                        </p>
+                        <TextField
+                          label="Copy to test"
+                          multiline={4}
+                          value={descriptionDraft}
+                          onChange={(v) => setDescriptionDraft(v)}
+                          autoComplete="off"
+                          placeholder="e.g. Free returns within 30 days · 2-year warranty · Ships carbon-neutral"
+                          helpText="Try short bullets shoppers can scan in a few seconds."
+                        />
+                        <div className={styles.labChipSuggestions}>
+                          {[
+                            "Free returns within 30 days",
+                            "2-year warranty included",
+                            "Made with recycled materials",
+                          ].map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              className={styles.labTinyChip}
+                              onClick={() =>
+                                setDescriptionDraft((prev) => (prev ? `${prev} · ${s}` : s))
+                              }
+                            >
+                              + {s}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {buildFocus === "trust" && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Trust & proof</h3>
+                        <p className={styles.labControlHint}>
+                          Describe what stronger proof would look like on the page — we stress-test that story with the
+                          same shopper panel.
+                        </p>
+                        <TextField
+                          label="Trust hypothesis"
+                          multiline={5}
+                          value={trustAddon}
+                          onChange={(v) => setTrustAddon(v)}
+                          autoComplete="off"
+                          helpText="Edit freely — this is only used for the simulation."
+                        />
+                      </div>
+                    )}
+
+                    {buildFocus === "suggestion" && experimentCards.length > 0 && (
+                      <div className={styles.labControlSurface}>
+                        <h3 className={styles.labControlHeading}>Team suggestions</h3>
+                        <p className={styles.labControlHint}>Pick one card — we&apos;ll attach its hypothesis to your run.</p>
+                        <div className={styles.cardsGrid}>
+                          {experimentCards.map((card) => {
+                            const selected = selectedCardId === card.id;
+                            return (
+                              <div key={card.id} className={styles.expCard} data-selected={selected}>
+                                <h4 className={styles.expCardTitle}>{card.name}</h4>
+                                <p className={styles.expCardHyp}>{card.hypothesis}</p>
+                                <div style={{ marginTop: 10 }}>
+                                  <button
+                                    type="button"
+                                    className={styles.labCardSelectBtn}
+                                    data-selected={selected ? "true" : undefined}
+                                    onClick={() => toggleCard(card.id)}
+                                  >
+                                    {selected ? "Selected" : "Use this test"}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {experimentCards.length >= 2 && (
+                          <div style={{ marginTop: 12 }}>
+                            <fetcher.Form method="post">
+                              <input type="hidden" name="intent" value="simulate_all" />
+                              <Button variant="plain" size="slim" submit loading={isSubmitting} disabled={!!latestRunning}>
+                                Run all suggestion cards (batch)
+                              </Button>
+                            </fetcher.Form>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {fetcherError && (
+                      <div style={{ marginTop: 12 }}>
+                        <Banner tone="critical">
+                          <Text as="p" variant="bodyMd">
+                            {fetcherError}
+                          </Text>
+                        </Banner>
+                      </div>
+                    )}
+
+                      <div className={styles.refinePreviewBlock}>
+                        <p className={styles.refinePreviewLabel}>Outcome preview</p>
+                        <LabPdpPreview
+                          compact
+                          productTitle={productTitle}
+                          productImageUrl={productImageUrl}
+                          basePrice={basePrice}
+                          displayPrice={price}
+                          shippingDays={shippingDays}
+                          baselineShippingDays={baselineShippingDays}
+                          descriptionSnippet={descriptionDraft}
+                        />
+                      </div>
+
+                      <div className={styles.refineCardDock}>
+                        <InlineStack gap="300" blockAlign="center" wrap>
+                          <Button variant="secondary" onClick={() => setWizardStep(2)}>
+                            Open comparison view
+                          </Button>
+                          <fetcher.Form method="post">
+                            <input type="hidden" name="intent" value="run_whatif" />
+                            <input type="hidden" name="activeExperiment" value={activeExperimentPayload} />
+                            <input type="hidden" name="price" value={price} />
+                            <input type="hidden" name="shippingDays" value={shippingDays} />
+                            <Button
+                              variant="primary"
+                              submit
+                              size="large"
+                              loading={isSubmitting}
+                              disabled={!hasBuildChange || !!latestRunning}
+                            >
+                              Run simulation
+                            </Button>
+                          </fetcher.Form>
+                          {latestRunning && (
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Running — open <strong>Run sim</strong> for live votes.
+                            </Text>
+                          )}
+                        </InlineStack>
+                      </div>
+                    </>
+                  )}
+
+                  <Box paddingBlockStart="300">
+                    <Button variant="plain" onClick={() => setWizardStep(0)}>
+                      ← Back to Discover
+                    </Button>
+                  </Box>
+                </div>
+              </div>
+            </div>
+          </div>
+
+      {/* Price optimizer: advanced path — hidden until opened to reduce noise */}
       {isPro && (
-        <PriceOptimizerSection
-          basePrice={basePrice}
-          baselineScore={baselineScore}
-          baselinePhase1={baselinePhase1}
-          priceDropoutPct={priceDropoutPct}
-          logisticsDropoutPct={logisticsDropoutPct}
-          trustDropoutPct={trustDropoutPct}
-          priceBatchResults={priceBatchResults}
-          batchRunning={batchRunning}
-          isSubmitting={isSubmitting}
-          selectedChipId={selectedBatchSim?.id ?? null}
-          onChipClick={setSelectedBatchSim}
-          experimentCards={experimentCards}
-          selectExperimentCard={selectExperimentCard}
-          onOptimizerNavHint={setOptimizerNavHint}
-          onNavigateToExperiments={goExperimentsTab}
-          fetcher={fetcher}
-        />
+        <div className={styles.optimizerDisclosureWrap}>
+          <Button
+            disclosure={priceOptimizerOpen ? "up" : "down"}
+            variant="plain"
+            onClick={() => setPriceOptimizerOpen((o) => !o)}
+            aria-expanded={priceOptimizerOpen}
+            aria-controls="lab-price-optimizer-panel"
+          >
+            {priceOptimizerOpen
+              ? "Hide price optimizer"
+              : "Optional: scan three price points at once"}
+          </Button>
+          <Collapsible
+            open={priceOptimizerOpen}
+            id="lab-price-optimizer-panel"
+            transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+          >
+            <Box paddingBlockStart="300">
+              <PriceOptimizerSection
+                basePrice={basePrice}
+                baselineScore={baselineScore}
+                baselinePhase1={baselinePhase1}
+                priceDropoutPct={priceDropoutPct}
+                logisticsDropoutPct={logisticsDropoutPct}
+                trustDropoutPct={trustDropoutPct}
+                priceBatchResults={priceBatchResults}
+                batchRunning={batchRunning}
+                isSubmitting={isSubmitting}
+                selectedChipId={selectedBatchSim?.id ?? null}
+                onChipClick={setSelectedBatchSim}
+                experimentCards={experimentCards}
+                selectExperimentCard={selectExperimentCard}
+                onOptimizerNavHint={setOptimizerNavHint}
+                onNavigateToExperiments={goPickChangeStep}
+                fetcher={fetcher}
+              />
+            </Box>
+          </Collapsible>
+        </div>
       )}
 
       {allSetCompleted && experimentSetDeltas.length > 0 && (
@@ -1837,13 +2231,28 @@ export function ComparisonLaboratory({
         </div>
       )}
 
-      {mainLabTab === 3 && (
-        <div
-          role="tabpanel"
-          id="lab-panel-simulation"
-          aria-labelledby="lab-tab-simulation"
-          className={styles.labTabPanel}
-        >
+      {wizardStep === 2 && (
+        <div className={styles.novaArena}>
+          <div className={styles.novaArenaTop}>
+            <div className={styles.novaArenaTitles}>
+              <h2 className={styles.novaArenaTitle}>Run simulation</h2>
+              <p className={styles.novaArenaLead}>
+                Live PDP on the left, your simulated version on the right. Check the lift strip, then skim objections
+                before opening the full panel debrief.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => setWizardStep(1)}>
+              Tweak scenario
+            </Button>
+          </div>
+          <div className={styles.novaAbLegend}>
+            <span className={styles.novaAbPill} data-lane="a">
+              <strong>A</strong> Control · live PDP
+            </span>
+            <span className={styles.novaAbPill} data-lane="b">
+              <strong>B</strong> Variant · your What-If
+            </span>
+          </div>
       <div className={styles.labMobileTabs}>
         <button
           type="button"
@@ -1910,7 +2319,7 @@ export function ComparisonLaboratory({
       <div className={styles.debateSection}>
         <h3 className={styles.debateTitle}>Panel debrief</h3>
         <p className={styles.debateSub}>
-          Phase 2 discussion for the scenario shown above. Full transcript is below — start with the top objections.
+          Phase 2 — how the panel argued. Skim top objections first; open the transcript when you need detail.
         </p>
         {debateItems.length === 0 ? (
           <Text as="p" variant="bodySm" tone="subdued">
@@ -1990,18 +2399,32 @@ export function ComparisonLaboratory({
         )}
       </div>
 
-        </div>
-      )}
-
       {scenarioHistory.length > 0 && (
-        <section className={styles.labScenarioHistory} aria-label="Scenario history">
-          <div className={styles.labScenarioHistoryHead}>
-            <h2 className={styles.labScenarioHistoryTitle}>Scenario history</h2>
-            <p className={styles.labScenarioHistorySub}>
-              What-If and single runs from this baseline (batch card sets are grouped in Experiments).
-            </p>
-          </div>
-          <ul className={styles.labScenarioHistoryList}>
+        <div className={styles.scenarioHistoryDisclosure}>
+          <Button
+            disclosure={scenarioHistoryOpen ? "up" : "down"}
+            variant="plain"
+            onClick={() => setScenarioHistoryOpen((o) => !o)}
+            aria-expanded={scenarioHistoryOpen}
+            aria-controls="lab-scenario-history-panel"
+          >
+            {scenarioHistoryOpen
+              ? "Hide past What-If runs"
+              : `Past What-If runs (${scenarioHistory.length})`}
+          </Button>
+          <Collapsible
+            open={scenarioHistoryOpen}
+            id="lab-scenario-history-panel"
+            transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+          >
+            <section className={styles.labScenarioHistory} aria-label="Scenario history">
+              <div className={styles.labScenarioHistoryHead}>
+                <h2 className={styles.labScenarioHistoryTitle}>History</h2>
+                <p className={styles.labScenarioHistorySub}>
+                  Single runs from this baseline. Batch card sets stay in Studio.
+                </p>
+              </div>
+              <ul className={styles.labScenarioHistoryList}>
             {scenarioHistory.map((row) => {
               const created = new Date(row.createdAt);
               const when = new Intl.DateTimeFormat(undefined, {
@@ -2029,7 +2452,7 @@ export function ComparisonLaboratory({
                     <span className={styles.labScenarioHistoryMeta}>
                       {when}
                       {stalePending
-                        ? " · Still pending — try refreshing or re-running from Experiments."
+                        ? " · Still pending — refresh or re-run from Studio."
                         : ""}
                     </span>
                   </div>
@@ -2059,13 +2482,21 @@ export function ComparisonLaboratory({
                 </li>
               );
             })}
-          </ul>
-        </section>
+              </ul>
+            </section>
+          </Collapsible>
+        </div>
       )}
+
+        </div>
+      )}
+
+        </main>
+      </div>
 
       <div className={styles.labFooterBar}>
         <Button url={`/app/results/${simulationId}`} variant="plain" size="slim">
-          ← Back to full PDP report
+          ← Back to main results for this product
         </Button>
       </div>
     </div>

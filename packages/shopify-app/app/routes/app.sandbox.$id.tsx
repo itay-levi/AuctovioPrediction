@@ -1,7 +1,18 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { useLoaderData, useFetcher, useRevalidator } from "@remix-run/react";
-import { Page, Text, BlockStack, Button, Banner, Card, Badge, InlineStack } from "@shopify/polaris";
+import {
+  Page,
+  Text,
+  BlockStack,
+  Button,
+  Banner,
+  Card,
+  Badge,
+  InlineStack,
+  Collapsible,
+  Box,
+} from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useEffect, useRef } from "react";
 import { authenticate } from "../shopify.server";
@@ -522,6 +533,7 @@ export default function SandboxPage() {
   const hasInProgress = deltas.some((d) => d.status === "PENDING" || d.status === "RUNNING");
   const [deltaElapsed, setDeltaElapsed] = useState(0);
   const [deltaStale, setDeltaStale] = useState(false);
+  const [retakeSectionOpen, setRetakeSectionOpen] = useState(false);
   const prevHasInProgress = useRef(hasInProgress);
 
   // Reset stale state when a new run starts
@@ -572,9 +584,18 @@ export default function SandboxPage() {
 
   const productJson = simulation.productJson as { variants?: { price?: string }[] } | null;
   const basePrice = parseFloat(productJson?.variants?.[0]?.price ?? "0");
+  const BASELINE_SHIPPING_DAYS = 7;
   const [price, setPrice] = useState(basePrice > 0 ? basePrice : 50);
-  const [shippingDays, setShippingDays] = useState(7);
+  const [shippingDays, setShippingDays] = useState(BASELINE_SHIPPING_DAYS);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+
+  const productJsonFull = simulation.productJson as {
+    title?: string;
+    images?: { url?: string; src?: string }[];
+  } | null;
+  const productTitle = productJsonFull?.title?.trim() || "Your product";
+  const img0 = productJsonFull?.images?.[0];
+  const productImageUrl = img0?.url ?? img0?.src ?? null;
 
   const priceDropoutPct = report?.friction?.price?.dropoutPct ?? 0;
   const logisticsDropoutPct = report?.friction?.logistics?.dropoutPct ?? 0;
@@ -623,7 +644,7 @@ export default function SandboxPage() {
   return (
     <Page fullWidth>
       <TitleBar
-        title="Comparison laboratory"
+        title="PDP Simulator"
         breadcrumbs={[
           { content: "Dashboard", url: "/app" },
           { content: "History", url: "/app/history" },
@@ -631,6 +652,12 @@ export default function SandboxPage() {
         ]}
       />
       <BlockStack gap="500">
+        <Box maxWidth="40rem">
+          <Text as="p" variant="bodyMd" tone="subdued">
+            Discover friction on your PDP, build one test in the simulator (nothing goes live), then run the sim to see
+            side-by-side results — optional batch tools stay tucked away.
+          </Text>
+        </Box>
         {fetcher.data?.error && (
           <Banner tone="critical" title="Could not start analysis">
             <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
@@ -651,6 +678,9 @@ export default function SandboxPage() {
         <ComparisonLaboratory
           simulationId={simulation.id}
           productUrl={simulation.productUrl}
+          productTitle={productTitle}
+          productImageUrl={productImageUrl}
+          baselineShippingDays={BASELINE_SHIPPING_DAYS}
           baselineScore={baselineScore}
           baselinePhase1={baselinePhase1}
           labPhase1={labPhase1}
@@ -671,6 +701,7 @@ export default function SandboxPage() {
           toggleCard={toggleCard}
           selectExperimentCard={selectExperimentCard}
           runLabel={runLabel}
+          clearExperimentSelection={() => setSelectedCardId(null)}
           isSubmitting={isSubmitting}
           latestRunning={!!latestRunning}
           deltaElapsed={deltaElapsed}
@@ -689,19 +720,38 @@ export default function SandboxPage() {
           scenarioHistory={scenarioHistory}
         />
 
-        {/* ── Retake Test (PRO) ─────────────────────────────────────────── */}
+        {/* Retake: separate from What-If flow — tucked away until needed */}
         {isPro && hasRecs && (
-          <Card>
-            <BlockStack gap="400">
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">Retake Test</Text>
-                <Text as="p" variant="bodyMd" tone="subdued">
-                  Made changes to your listing based on the Golden Actions? Run a retake to see
-                  your new score and get a Pass / Improving / Fail verdict on each fix.
-                </Text>
-              </BlockStack>
+          <BlockStack gap="200">
+            <Button
+              disclosure={retakeSectionOpen ? "up" : "down"}
+              variant="plain"
+              onClick={() => setRetakeSectionOpen((o) => !o)}
+              aria-expanded={retakeSectionOpen}
+              aria-controls="sandbox-retake-panel"
+            >
+              {retakeSectionOpen
+                ? "Hide “after you edit the listing” re-scan"
+                : "After you edit the listing: re-scan with the same panel"}
+            </Button>
+            <Collapsible
+              open={retakeSectionOpen}
+              id="sandbox-retake-panel"
+              transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+            >
+              <Card>
+                <BlockStack gap="400">
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingMd">
+                      Re-scan (retake)
+                    </Text>
+                    <Text as="p" variant="bodyMd" tone="subdued">
+                      Use this after you publish PDP changes. You get a fresh score and Pass / Improving / Fail on each
+                      recommendation — different from a What-If, which only simulates a scenario.
+                    </Text>
+                  </BlockStack>
 
-              {retakeRunning && (
+                  {retakeRunning && (
                 <Banner tone="info" title="Retake panel is running…">
                   <Text as="p" variant="bodyMd">
                     The full panel is re-evaluating your updated listing. This takes 2–4 minutes.
@@ -784,8 +834,10 @@ export default function SandboxPage() {
                   </Button>
                 </fetcher.Form>
               )}
-            </BlockStack>
-          </Card>
+                </BlockStack>
+              </Card>
+            </Collapsible>
+          </BlockStack>
         )}
       </BlockStack>
     </Page>

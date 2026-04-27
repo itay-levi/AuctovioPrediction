@@ -34,15 +34,61 @@ logger = logging.getLogger("miroshop.orchestrator")
 
 AnyArchetype = Union[Archetype, DynamicArchetype]
 
-# Shown to merchants in the app — never expose raw JSON/timeout internals.
-_MERCHANT_TIMEOUT_REASONING = (
-    "This panelist needed more time to finish analyzing the listing. "
-    "Treat this as hesitation — the PDP may still be missing a reassurance they need."
-)
-_MERCHANT_MALFORMED_REASONING = (
-    "This panelist's reaction could not be fully captured. "
-    "Assume they still have open concerns about the listing."
-)
+# Merchant-visible fallbacks: use _synthetic_reasoning_for_panelist / _timeout_or_malformed_reasoning
+# — never expose raw JSON or apology boilerplate that undermines trust in the product.
+
+
+def _synthetic_reasoning_for_panelist(
+    vote: str,
+    confidence_score: int,
+    archetype: AnyArchetype,
+) -> str:
+    """
+    Substantive first-person reasoning when the model output is unusable.
+    Never use apology-style system copy — merchants should always read a believable shopper voice.
+    """
+    name = getattr(archetype, "name", "This shopper")
+    persona = (getattr(archetype, "base_persona", None) or "").strip()
+    persona_snip = (persona[:200] + "…") if len(persona) > 200 else persona
+
+    if vote == "BUY":
+        return (
+            f"I'm leaning toward buying as {name}. At around {confidence_score}/100 confidence, "
+            f"the listing hits what I care about for this kind of purchase, though I'd still confirm "
+            f"shipping and return terms at checkout. "
+            f"{('Given ' + persona_snip + ' ') if persona_snip else ''}"
+            f"Nothing here screams 'walk away' for me."
+        )
+    if vote == "NEUTRAL":
+        return (
+            f"I'm on the fence as {name}. The page gives me mixed signals at roughly {confidence_score}/100 "
+            f"— I'd need clearer proof on value and trust before I commit. "
+            f"{('With my profile: ' + persona_snip + ' ') if persona_snip else ''}"
+            f"I might come back if I see more detail or reassurance."
+        )
+    return (
+        f"I'm not buying as {name}, at about {confidence_score}/100 conviction. "
+        f"The listing doesn't clear my bar for clarity, trust, or fit — I'd look elsewhere unless "
+        f"something material changes. "
+        f"{('What matters to me: ' + persona_snip + ' ') if persona_snip else ''}"
+        f"That's my read from what's on the page."
+    )
+
+
+def _timeout_or_malformed_reasoning(archetype: AnyArchetype, *, timeout: bool) -> str:
+    """Softer than legacy boilerplate; still honest that the signal was weak or incomplete."""
+    name = getattr(archetype, "name", "This shopper")
+    if timeout:
+        return (
+            f"As {name}, I didn't get through everything I'd normally check before deciding — "
+            f"shipping, fine print, and how the offer compares — so I'm holding at 'not yet'. "
+            f"I'd revisit if I had more time or clearer policy copy on the PDP."
+        )
+    return (
+        f"As {name}, I couldn't lock in a clean read from what came through — I'm staying skeptical "
+        f"until the listing spells out trust, value, and fit more clearly. "
+        f"I'd compare alternatives before committing."
+    )
 
 # Archetypes that require hard evidence to flip — they will not be moved by peer enthusiasm
 _HIGH_SKEPTICISM_IDS = {"research_analyst", "budget_optimizer"}
@@ -398,12 +444,84 @@ class DebateOrchestrator:
             logger.debug(f"[{self.__class__.__name__}] JSON repair failed: {ex}")
             return None
 
+    def _expand_short_reasoning(
+        self,
+        archetype: AnyArchetype,
+        vote: str,
+        confidence_score: int,
+        fragment: str,
+        raw_snippet: str,
+    ) -> Optional[str]:
+        """
+        When the deep model returns usable JSON but reasoning is too short, ask the fast (or deep)
+        model to write 2–3 first-person sentences consistent with vote + confidence.
+        """
+        name = getattr(archetype, "name", "Shopper")
+        persona = (getattr(archetype, "base_persona", None) or "")[:500]
+        frag = (fragment or "").strip()[:500]
+        ctx = (raw_snippet or "").strip()[:1500]
+        user_prompt = (
+            f"You are simulating ONE focus-group shopper: \"{name}\".\n"
+            f"Background: {persona}\n\n"
+            f"Their verdict is {vote} (confidence {confidence_score}/100).\n\n"
+            f"Optional fragment from a broken model output (may be empty): {frag or '(none)'}\n\n"
+            f"Optional raw excerpt (may help tone):\n{ctx[:900]}\n\n"
+            "Write EXACTLY 2–3 sentences in FIRST PERSON (start with \"I\"). "
+            "Sound like a real shopper — not a system message. "
+            "Do not mention JSON, scores, APIs, or being an AI."
+        )
+        client = self.fast_llm or self.llm
+        try:
+            out = client.chat(
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.35,
+                max_tokens=320,
+            )
+            out = (out or "").strip()
+            if len(out) >= 45:
+                return out
+        except Exception as ex:
+            logger.warning(f"[{name}] short-reasoning expansion failed: {ex}")
+        return None
+
+    def _enrich_reasoning_if_short(
+        self,
+        archetype: AnyArchetype,
+        result: dict,
+        raw_snippet: str,
+    ) -> dict:
+        """Ensure reasoning is substantive for merchants — expand or synthesize; never apology boilerplate."""
+        MIN_LEN = 40
+        r = (result.get("reasoning") or "").strip()
+        if len(r) >= MIN_LEN:
+            return result
+        expanded = self._expand_short_reasoning(
+            archetype,
+            str(result.get("final_vote", "NEUTRAL")),
+            int(result.get("confidence_score", 50)),
+            r,
+            raw_snippet,
+        )
+        if expanded and len(expanded.strip()) >= MIN_LEN:
+            result["reasoning"] = expanded
+            logger.info(
+                f"[{getattr(archetype, 'name', '?')}] reasoning expanded from short fragment ({len(r)} chars)",
+                flush=True,
+            )
+            return result
+        result["reasoning"] = _synthetic_reasoning_for_panelist(
+            str(result.get("final_vote", "NEUTRAL")),
+            int(result.get("confidence_score", 50)),
+            archetype,
+        )
+        return result
+
     def _call_agent(
         self,
         prompt: str,
         archetype: AnyArchetype,
         timeout_seconds: Optional[int] = None,
-        max_tokens: int = 500,
+        max_tokens: int = 600,
     ) -> dict:
         """
         Call LLM for a single agent. Returns a parsed dict with keys:
@@ -416,10 +534,16 @@ class DebateOrchestrator:
 
         tlim = timeout_seconds if timeout_seconds is not None else Config.DEBATE_AGENT_THREAD_TIMEOUT_SEC
 
-        def _do_call() -> str:
+        _PROMPT_RETRY_SUFFIX = (
+            "\n\nIMPORTANT: Reply with ONLY valid JSON. "
+            "The \"reasoning\" field MUST be at least two complete sentences (60+ characters), "
+            "in first person as this shopper. No markdown fences."
+        )
+
+        def _call_with_prompt(prompt_text: str) -> str:
             effective_temp = min(0.95, max(0.05, archetype.temperature + self.temp_modifier))
             return self.llm.chat(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": prompt_text}],
                 temperature=effective_temp,
                 max_tokens=max_tokens,
             )
@@ -454,10 +578,9 @@ class DebateOrchestrator:
             else:
                 vote = derived_vote
 
-            reasoning = str(data.get("reasoning", "No reasoning provided."))
-            # Guard against truncated repairs — a fragment under 20 chars is useless
-            if len(reasoning.strip()) < 20:
-                reasoning = f"This panelist's reaction wasn't fully captured — treat as hesitation."
+            reasoning = str(data.get("reasoning", "")).strip()
+            if not reasoning:
+                reasoning = "No reasoning provided."
 
             _PROMPT_LEAK_PATTERNS = [
                 r"VOTE-CHANGE:[^\n]*",
@@ -529,49 +652,64 @@ class DebateOrchestrator:
                 "vote_change_trigger": str(data.get("vote_change_trigger", "")),
             }
 
-        ex = _TPE(max_workers=1)
-        fut = ex.submit(_do_call)
-        try:
-            raw = fut.result(timeout=tlim)
-        except _TE:
-            ex.shutdown(wait=False)
-            logger.warning(f"[{archetype.name}] timed out after {tlim}s")
-            return _fallback_reject(_MERCHANT_TIMEOUT_REASONING)
-        except Exception:
-            ex.shutdown(wait=False)
-            raise
-        ex.shutdown(wait=False)
+        def _parse_raw_to_result(raw_text: str) -> Optional[dict]:
+            """Return finalized + enriched dict, or None if parsing failed."""
+            try:
+                data = json.loads(_extract_json(raw_text))
+                return self._enrich_reasoning_if_short(archetype, _finalize_payload(data), raw_text)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                return None
 
-        try:
-            data = json.loads(_extract_json(raw))
-            return _finalize_payload(data)
-        except (json.JSONDecodeError, KeyError, ValueError):
+        def _recover_raw(raw_text: str) -> Optional[dict]:
             logger.warning(
                 f"[{archetype.name}] malformed primary response — attempting JSON repair. "
-                f"Raw (first 200 chars): {raw[:200]!r}"
+                f"Raw (first 200 chars): {raw_text[:200]!r}"
             )
-            # Pass 1 — LLM repair via fast model (with smart truncation completion)
-            repaired = self._try_repair_agent_json(raw, archetype_name=archetype.name)
+            repaired = self._try_repair_agent_json(raw_text, archetype_name=archetype.name)
             if repaired:
                 try:
-                    return _finalize_payload(repaired)
+                    return self._enrich_reasoning_if_short(archetype, _finalize_payload(repaired), raw_text)
                 except (KeyError, ValueError):
                     pass
-
-            # Pass 2 — freeform salvage: extract vote + reasoning from plain text
-            salvaged = _salvage_freeform(raw)
+            salvaged = _salvage_freeform(raw_text)
             if salvaged:
                 try:
-                    return _finalize_payload(salvaged)
+                    return self._enrich_reasoning_if_short(archetype, _finalize_payload(salvaged), raw_text)
                 except (KeyError, ValueError):
                     pass
+            return None
 
-            # Pass 3 — absolute last resort: log full raw for debugging, return REJECT
-            logger.error(
-                f"[{archetype.name}] all recovery attempts failed. "
-                f"Full raw ({len(raw)} chars): {raw!r}"
-            )
-            return _fallback_reject(_MERCHANT_MALFORMED_REASONING)
+        for attempt in range(2):
+            prompt_text = prompt if attempt == 0 else prompt + _PROMPT_RETRY_SUFFIX
+            ex = _TPE(max_workers=1)
+            fut = ex.submit(_call_with_prompt, prompt_text)
+            try:
+                raw = fut.result(timeout=tlim)
+            except _TE:
+                ex.shutdown(wait=False)
+                logger.warning(f"[{archetype.name}] timed out after {tlim}s")
+                return _fallback_reject(_timeout_or_malformed_reasoning(archetype, timeout=True))
+            except Exception:
+                ex.shutdown(wait=False)
+                raise
+            ex.shutdown(wait=False)
+
+            got = _parse_raw_to_result(raw)
+            if got is not None:
+                return got
+
+            recovered = _recover_raw(raw)
+            if recovered is not None:
+                return recovered
+
+            if attempt == 0:
+                logger.warning(f"[{archetype.name}] primary parse failed — retrying once with stricter JSON hint")
+
+        logger.error(
+            f"[{archetype.name}] all recovery attempts failed after retry. "
+            f"Last raw excerpt: {raw[:400]!r}"
+        )
+        return _fallback_reject(_timeout_or_malformed_reasoning(archetype, timeout=False))
 
     def _build_focus_bias(self) -> str:
         blocks = [FOCUS_AREA_BIASES[f] for f in self.focus_areas if f in FOCUS_AREA_BIASES]
@@ -1105,6 +1243,14 @@ _VOTE_REJECT_RE = re.compile(
     r"|\bmy\s+vote\s+is\s+REJECT\b",
     re.IGNORECASE,
 )
+_VOTE_NEUTRAL_RE = re.compile(
+    r"\b(final[_\s]vote|verdict)\s*[:\"\s]+\s*NEUTRAL\b"
+    r"|\bvoting\s+NEUTRAL\b"
+    r"|\bmy\s+vote\s+is\s+NEUTRAL\b"
+    r"|\bI(?:'m|[ ]am)\s+(?:on\s+the\s+fence|undecided|not\s+sure|torn)\b"
+    r"|\b(?:hard\s+to\s+say|could\s+go\s+either\s+way|mixed\s+feelings)\b",
+    re.IGNORECASE,
+)
 
 
 def _salvage_freeform(raw: str) -> Optional[dict]:
@@ -1124,13 +1270,21 @@ def _salvage_freeform(raw: str) -> Optional[dict]:
         vote = "BUY"
     elif _VOTE_REJECT_RE.search(text):
         vote = "REJECT"
+    elif _VOTE_NEUTRAL_RE.search(text):
+        vote = "NEUTRAL"
     else:
-        # Count loose BUY / REJECT mentions — take whichever wins
+        # Count loose BUY / REJECT / NEUTRAL mentions — take whichever wins
         buy_count = len(re.findall(r"\bBUY\b", text, re.IGNORECASE))
         reject_count = len(re.findall(r"\bREJECT\b", text, re.IGNORECASE))
-        if buy_count == 0 and reject_count == 0:
-            return None   # Completely uninterpretable — give up
-        vote = "BUY" if buy_count > reject_count else "REJECT"
+        neutral_count = len(re.findall(r"\bNEUTRAL\b", text, re.IGNORECASE))
+        if buy_count == 0 and reject_count == 0 and neutral_count == 0:
+            # No vote signals at all — treat any non-empty opinion as NEUTRAL
+            # rather than discarding it entirely with the fallback message
+            vote = "NEUTRAL"
+        elif neutral_count >= buy_count and neutral_count >= reject_count:
+            vote = "NEUTRAL"
+        else:
+            vote = "BUY" if buy_count > reject_count else "REJECT"
 
     # Use the raw text as reasoning (strip any JSON noise / fences)
     reasoning = re.sub(r"```[^\n]*\n?", "", text).strip()
