@@ -99,7 +99,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-type Sim = Awaited<ReturnType<typeof loader>>["simulations"][number];
+// Sim represents the JSON-serialized loader output (createdAt becomes string)
+// We use a structural type that matches `useLoaderData<typeof loader>().simulations[number]`.
+type Sim = ReturnType<typeof useLoaderData<typeof loader>>["simulations"][number];
 
 function productLabel(url: string, productJson: unknown) {
   const title = (productJson as { title?: string } | null)?.title;
@@ -226,11 +228,7 @@ export default function HistoryPage() {
 
   return (
     <Page fullWidth>
-      <TitleBar
-        title="Analysis History"
-        breadcrumbs={[{ content: "Dashboard", url: "/app" }]}
-        primaryAction={{ content: "Run New Analysis", url: "/app/simulate" }}
-      />
+      <TitleBar title="Analysis History" />
 
       <div className={styles.page}>
         <header className={styles.header}>
@@ -284,6 +282,33 @@ export default function HistoryPage() {
           </div>
         ) : (
           <>
+            {/* Status filter chips */}
+            <div className={styles.statusChips} role="group" aria-label="Filter by status">
+              {(["all", "COMPLETED", "RUNNING", "PENDING", "FAILED"] as const).map((s) => {
+                const isActive = statusFilter === s;
+                const label = s === "all" ? "All" : s.charAt(0) + s.slice(1).toLowerCase();
+                const chipClass = [
+                  styles.chip,
+                  isActive ? styles.chipActive : "",
+                  s === "COMPLETED" ? styles.chipCompleted : "",
+                  s === "RUNNING" ? styles.chipRunning : "",
+                  s === "FAILED" ? styles.chipFailed : "",
+                  s === "PENDING" ? styles.chipPending : "",
+                ].filter(Boolean).join(" ");
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    className={chipClass}
+                    onClick={() => setStatusFilter(s)}
+                    aria-pressed={isActive}
+                  >
+                    {s === "COMPLETED" && "✓ "}{s === "RUNNING" && "● "}{s === "FAILED" && "✕ "}{label}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className={styles.toolbar}>
               <div className={styles.filters}>
                 <div className={`${styles.field} ${styles.fieldGrow}`}>
@@ -316,23 +341,6 @@ export default function HistoryPage() {
                         {p.length > 42 ? `${p.slice(0, 40)}…` : p}
                       </option>
                     ))}
-                  </select>
-                </div>
-                <div className={styles.field}>
-                  <label className={styles.label} htmlFor="hist-status">
-                    Status
-                  </label>
-                  <select
-                    id="hist-status"
-                    className={styles.select}
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                  >
-                    <option value="all">All statuses</option>
-                    <option value="COMPLETED">Completed</option>
-                    <option value="RUNNING">Running</option>
-                    <option value="PENDING">Pending</option>
-                    <option value="FAILED">Failed</option>
                   </select>
                 </div>
                 <div className={styles.field}>
@@ -383,92 +391,104 @@ export default function HistoryPage() {
                     <span className={styles.groupCount}>{group.items.length}</span>
                   </div>
                   <div className={styles.grid}>
-                    {group.items.map((sim) => (
-                      <article
-                        key={sim.id}
-                        className={`${styles.card} ${sim.status === "COMPLETED" ? styles.cardCompleted : ""}`}
-                      >
-                        <div className={styles.cardTop}>
-                          <div className={styles.thumb}>
-                            {productImageUrl(sim.productJson) ? (
+                    {group.items.map((sim) => {
+                      const imgUrl = productImageUrl(sim.productJson);
+                      const label = productLabel(sim.productUrl, sim.productJson);
+                      const initial = label.charAt(0).toUpperCase();
+                      const delta = scoreDeltaMap[sim.id];
+                      const chipClass =
+                        sim.status === "COMPLETED" ? styles.chipDone :
+                        sim.status === "RUNNING" ? styles.chipLive :
+                        sim.status === "PENDING" ? styles.chipQueued :
+                        styles.chipFailed;
+                      const chipLabel =
+                        sim.status === "COMPLETED" ? "✓ Done" :
+                        sim.status === "RUNNING" ? "● Live" :
+                        sim.status === "PENDING" ? "● Queued" :
+                        "✕ Failed";
+                      return (
+                        <article
+                          key={sim.id}
+                          className={`${styles.card} ${sim.status === "COMPLETED" ? styles.cardCompleted : ""}`}
+                        >
+                          {/* Dark gradient card top — Brand Studio product card style */}
+                          <div className={styles.cardDarkTop}>
+                            {imgUrl ? (
                               <img
-                                src={productImageUrl(sim.productJson)!}
+                                src={imgUrl}
                                 alt=""
                                 loading="lazy"
+                                className={styles.cardDarkTopBg}
                               />
                             ) : (
-                              <span className={styles.thumbPlaceholder} aria-hidden>
-                                ◆
-                              </span>
+                              <div className={styles.cardDarkTopInitial} aria-hidden>
+                                {initial}
+                              </div>
                             )}
-                          </div>
-                          <div className={styles.cardMeta}>
-                            <h3 className={styles.productName}>
-                              {productLabel(sim.productUrl, sim.productJson)}
-                            </h3>
-                            <div className={styles.badgeRow}>
-                              <span className={statusBadgeClass(sim.status)}>{sim.status}</span>
+
+                            {/* Status chip — top right */}
+                            <span className={`${styles.cardChip} ${chipClass}`}>
+                              {chipLabel}
+                            </span>
+
+                            {/* Score overlay — bottom left */}
+                            <div className={styles.cardScoreOverlay}>
+                              {sim.score != null ? (
+                                <>
+                                  <span className={styles.cardScoreNum}>{sim.score}</span>
+                                  <span className={styles.cardScoreSub}>
+                                    /100{" "}{scoreTierLabel(sim.score)}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className={styles.cardScoreDash}>—</span>
+                              )}
                             </div>
-                            {sim.status === "FAILED" && sim.failureReason && (
-                              <p className={styles.failureReason}>
-                                {sim.failureReason}
-                              </p>
-                            )}
                           </div>
-                        </div>
-                        <div className={styles.scoreBlock}>
-                          {sim.score != null ? (
-                            <>
-                              <span className={`${styles.scoreBig} ${scoreClass(sim.score)}`}>
-                                {sim.score}
-                                <span className={styles.scoreMuted} style={{ fontSize: "0.45em", fontWeight: 700 }}>
-                                  /100
-                                </span>
-                              </span>
-                              <span className={styles.scoreLabel}>{scoreTierLabel(sim.score)}</span>
-                              {scoreDeltaMap[sim.id] != null && scoreDeltaMap[sim.id] !== 0 && (
+
+                          {/* Card bottom — name, meta, actions */}
+                          <div className={styles.cardBottom}>
+                            <h3 className={styles.cardProductName}>{label}</h3>
+                            <div className={styles.cardMeta}>
+                              <span>{formatWhen(new Date(sim.createdAt))}</span>
+                              <span>{sim.mtCost} MT</span>
+                              {delta != null && delta !== 0 && (
                                 <span
-                                  className={`${styles.trend} ${
-                                    (scoreDeltaMap[sim.id] ?? 0) > 0 ? styles.trendUp : styles.trendDown
-                                  }`}
+                                  className={`${styles.cardTrend} ${delta > 0 ? styles.trendUp : styles.trendDown}`}
                                 >
-                                  {(scoreDeltaMap[sim.id] ?? 0) > 0 ? "↑" : "↓"}{" "}
-                                  {Math.abs(scoreDeltaMap[sim.id] ?? 0)} vs last
+                                  {delta > 0 ? "↑" : "↓"} {Math.abs(delta)} vs prev
                                 </span>
                               )}
-                            </>
-                          ) : (
-                            <span className={`${styles.scoreBig} ${styles.scoreMuted}`}>—</span>
-                          )}
-                        </div>
-                        <div className={styles.metaRow}>
-                          <span>{formatWhen(new Date(sim.createdAt))}</span>
-                          <span>{sim.mtCost} MT</span>
-                        </div>
-                        <div className={styles.actions}>
-                          {(sim.status === "COMPLETED" ||
-                            sim.status === "RUNNING" ||
-                            sim.status === "PENDING") && (
-                            <Link
-                              to={`/app/results/${sim.id}`}
-                              className={styles.btnSecondary}
-                            >
-                              {sim.status === "COMPLETED" ? "View report" : "Watch live"}
-                            </Link>
-                          )}
-                          {sim.status === "FAILED" && (
-                            <Link to="/app/simulate" className={styles.btnSecondary}>
-                              Try again
-                            </Link>
-                          )}
-                          {sim.status === "COMPLETED" && (
-                            <Link to={`/app/sandbox/${sim.id}`} className={`${styles.btnSecondary} ${styles.btnGhost}`}>
-                              What-If
-                            </Link>
-                          )}
-                        </div>
-                      </article>
-                    ))}
+                            </div>
+                            {sim.status === "FAILED" && sim.failureReason && (
+                              <p className={styles.failureReason}>{sim.failureReason}</p>
+                            )}
+                            <div className={styles.actions}>
+                              {(sim.status === "COMPLETED" ||
+                                sim.status === "RUNNING" ||
+                                sim.status === "PENDING") && (
+                                <Link to={`/app/results/${sim.id}`} className={styles.btnSecondary}>
+                                  {sim.status === "COMPLETED" ? "View report" : "Watch live"}
+                                </Link>
+                              )}
+                              {sim.status === "FAILED" && (
+                                <Link to="/app/simulate" className={styles.btnSecondary}>
+                                  Try again
+                                </Link>
+                              )}
+                              {sim.status === "COMPLETED" && (
+                                <Link
+                                  to={`/app/sandbox/${sim.id}`}
+                                  className={`${styles.btnSecondary} ${styles.btnGhost}`}
+                                >
+                                  What-If
+                                </Link>
+                              )}
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 </section>
               ))

@@ -7,6 +7,22 @@ vi.mock("@shopify/polaris-icons", () => ({
   QuestionCircleIcon: () => <span data-icon-question />,
 }));
 
+// jsdom does not implement Blob URL APIs; stub for tests that download files.
+if (typeof URL.createObjectURL !== "function") {
+  Object.defineProperty(URL, "createObjectURL", {
+    value: () => "blob:stub",
+    writable: true,
+    configurable: true,
+  });
+}
+if (typeof URL.revokeObjectURL !== "function") {
+  Object.defineProperty(URL, "revokeObjectURL", {
+    value: () => {},
+    writable: true,
+    configurable: true,
+  });
+}
+
 vi.mock("@shopify/app-bridge-react", () => ({
   NavMenu: ({ children }: PropsWithChildren) => <nav data-nav-menu>{children}</nav>,
   TitleBar: () => <div data-title-bar />,
@@ -22,13 +38,23 @@ vi.mock("@shopify/polaris", () => {
   const wrap =
     (Tag: keyof JSX.IntrinsicElements = "div") =>
     ({ children, ...rest }: PropsWithChildren<Record<string, unknown>>) => {
-      const El = Tag;
+      const El = Tag as "div";
       return <El {...(rest as object)}>{children}</El>;
     };
   return {
     AppProvider: ({ children }: PropsWithChildren) => <div data-polaris-app>{children}</div>,
     Badge: wrap("span"),
-    Banner: wrap("div"),
+    Banner: ({
+      children,
+      title,
+      tone,
+      ...rest
+    }: PropsWithChildren<{ title?: ReactNode; tone?: string } & Record<string, unknown>>) => (
+      <div data-banner data-tone={tone} {...(rest as object)}>
+        {title ? <div data-banner-title>{title}</div> : null}
+        {children}
+      </div>
+    ),
     BlockStack: wrap("div"),
     Box: wrap("div"),
     Button: ({

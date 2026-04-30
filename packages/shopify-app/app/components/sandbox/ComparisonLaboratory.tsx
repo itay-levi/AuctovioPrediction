@@ -1288,7 +1288,8 @@ export function ComparisonLaboratory({
     labScore != null || latestRunning ? 2 : 0,
   );
   const [debateFullOpen, setDebateFullOpen] = useState(false);
-  const [priceOptimizerOpen, setPriceOptimizerOpen] = useState(false);
+  // Price Optimizer is a primary selling point — start expanded so users see it immediately.
+  const [priceOptimizerOpen, setPriceOptimizerOpen] = useState(true);
   const [frictionDetailOpen, setFrictionDetailOpen] = useState(false);
   const [scenarioHistoryOpen, setScenarioHistoryOpen] = useState(
     () => scenarioHistory.length === 1,
@@ -2147,20 +2148,33 @@ export function ComparisonLaboratory({
             </div>
           </div>
 
-      {/* Price optimizer: advanced path — hidden until opened to reduce noise */}
+      {/* Price Optimizer — primary feature, surfaced prominently with a
+          Brand Studio dark feature header so it's never missed. */}
       {isPro && (
         <div className={styles.optimizerDisclosureWrap}>
-          <Button
-            disclosure={priceOptimizerOpen ? "up" : "down"}
-            variant="plain"
-            onClick={() => setPriceOptimizerOpen((o) => !o)}
-            aria-expanded={priceOptimizerOpen}
-            aria-controls="lab-price-optimizer-panel"
-          >
-            {priceOptimizerOpen
-              ? "Hide price optimizer"
-              : "Optional: scan three price points at once"}
-          </Button>
+          <div className={styles.priceOptHeroBanner}>
+            <div className={styles.priceOptHeroBannerLeft}>
+              <span className={styles.priceOptHeroEyebrow}>
+                💰 Price Optimizer · Pro feature
+              </span>
+              <h3 className={styles.priceOptHeroTitle}>
+                Find the price your panel actually buys at
+              </h3>
+              <p className={styles.priceOptHeroDesc}>
+                Run three price points at once (-5%, -10%, -15%) and see which beats your baseline
+                score. Each scenario uses your live PDP — nothing goes to your storefront.
+              </p>
+            </div>
+            <button
+              type="button"
+              className={styles.priceOptHeroToggle}
+              onClick={() => setPriceOptimizerOpen((o) => !o)}
+              aria-expanded={priceOptimizerOpen}
+              aria-controls="lab-price-optimizer-panel"
+            >
+              {priceOptimizerOpen ? "▴ Collapse" : "▾ Expand"}
+            </button>
+          </div>
           <Collapsible
             open={priceOptimizerOpen}
             id="lab-price-optimizer-panel"

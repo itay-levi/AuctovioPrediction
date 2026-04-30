@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockFindUnique = vi.fn();
-const mockUpdate = vi.fn();
+const { mockFindUnique, mockUpdate } = vi.hoisted(() => ({
+  mockFindUnique: vi.fn(),
+  mockUpdate: vi.fn(),
+}));
 
 vi.mock("../db.server", () => ({
   default: {
@@ -66,14 +68,16 @@ describe("api.simulation.$id.synthesize", () => {
       agentLogs: [],
       productJson: { title: "P" },
     } as never);
-    const fd = new FormData();
-    fd.set("regenerate", "1");
     const res = await action({
-      request: new Request("https://x", { method: "POST", body: fd }),
+      request: new Request("https://x", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ regenerate: "1" }),
+      }),
       params: { id: "sim1" },
     } as never);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { synthesis?: string };
     expect(body.synthesis).toBe("from-engine");
   });
 
@@ -81,7 +85,11 @@ describe("api.simulation.$id.synthesize", () => {
     vi.mocked(getStore).mockResolvedValue({ id: "st", planTier: "PRO" } as never);
     mockFindUnique.mockResolvedValue(null);
     const res = await action({
-      request: new Request("https://x", { method: "POST", body: new FormData() }),
+      request: new Request("https://x", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(),
+      }),
       params: { id: "sim1" },
     } as never);
     expect(res.status).toBe(404);
@@ -97,10 +105,14 @@ describe("api.simulation.$id.synthesize", () => {
       productJson: { title: "P" },
     } as never);
     const res = await action({
-      request: new Request("https://x", { method: "POST", body: new FormData() }),
+      request: new Request("https://x", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(),
+      }),
       params: { id: "sim1" },
     } as never);
-    const body = await res.json();
+    const body = (await res.json()) as { synthesis?: string };
     expect(body.synthesis).toBe("cached");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -118,10 +130,12 @@ describe("api.simulation.$id.synthesize", () => {
       status: 502,
       text: async () => "bad",
     } as Response);
-    const fd = new FormData();
-    fd.set("regenerate", "1");
     const res = await action({
-      request: new Request("https://x", { method: "POST", body: fd }),
+      request: new Request("https://x", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ regenerate: "1" }),
+      }),
       params: { id: "sim1" },
     } as never);
     expect(res.status).toBe(500);

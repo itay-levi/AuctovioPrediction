@@ -185,6 +185,7 @@ export async function triggerDeltaSimulation(
       method: "POST",
       headers: headers(),
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000), // engine must accept within 10s
     });
 
     if (!res.ok) {

@@ -1,7 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher } from "@remix-run/react";
+import { useLoaderData, Form, useNavigation, useActionData } from "@remix-run/react";
 import db from "../db.server";
+import { Prisma } from "@prisma/client";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
   Page,
@@ -65,7 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       storeId: store.id,
       status: "COMPLETED",
       originalSimulationId: null,
-      reportJson: { not: null },
+      reportJson: { not: Prisma.JsonNull },
     },
     orderBy: { createdAt: "desc" },
     take: 50,
@@ -119,11 +120,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Product not found." };
   }
 
-  const { allowed, reason } = await canRunSimulation(shopDomain, store.id);
-  if (!allowed) {
-    return { error: reason };
-  }
-
   const appUrl = process.env.SHOPIFY_APP_URL ?? "";
   const productUrl = product.onlineStoreUrl ?? `https://${shopDomain}/products/${product.handle}`;
 
@@ -142,6 +138,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     labConfig = rawLab ? JSON.parse(rawLab) : undefined;
   } catch {
     labConfig = undefined;
+  }
+
+  // Lab runs create 2 simulations (baseline + target). Validate quota for the
+  // actual number of sims that will be created so users can't bypass MT/slot
+  // limits by enabling Lab.
+  const sims = labConfig ? 2 : 1;
+  const { allowed, reason } = await canRunSimulation(shopDomain, store.id, sims);
+  if (!allowed) {
+    return { error: reason };
   }
 
   // Fetch store-level policies — visible to buyers on every product page.
@@ -167,16 +172,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function SimulatePage() {
   const { products, analysesQuota, mtSufficient, agentCount, planTier, isDev, productFrictionMap } =
     useLoaderData<typeof loader>();
-  const fetcher = useFetcher<typeof action>();
+  // Use a real Form (not fetcher) so the action's `throw redirect(...)` actually
+  // navigates the page to /app/results/:id. With useFetcher, redirects are
+  // followed in the background and the URL never changes — the launch button
+  // would spin forever from the user's perspective.
+  const navigation = useNavigation();
+  const actionData = useActionData<typeof action>();
   const [selectedProduct, setSelectedProduct] = useState<string>("");
 
-  const isSubmitting = fetcher.state !== "idle";
-  const error = fetcher.data?.error;
+  const isSubmitting = navigation.state === "submitting" || navigation.state === "loading";
+  const error = actionData?.error;
   /** Single optional emphasis; empty = balanced general review (same as legacy `[]`). */
   const [focusEmphasis, setFocusEmphasis] = useState<string>("");
   const focusAreas = focusEmphasis ? [focusEmphasis] : [];
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [expectDetailsOpen, setExpectDetailsOpen] = useState(false);
 
   // Customer Lab state
   const [labEnabled, setLabEnabled] = useState(false);
@@ -216,7 +225,7 @@ export default function SimulatePage() {
       id: "trust_credibility",
       shortLabel: "Trust & credibility",
       selectLabel: "🛡️ Trust & credibility",
-      tip: "Extra scrutiny on legitimacy, reviews, policies, and “would I get my order?”",
+      tip: "Extra scrutiny on legitimacy, reviews, policies, and 'would I get my order?'",
     },
     {
       id: "price_value",
@@ -272,6 +281,29 @@ export default function SimulatePage() {
   const stepSetupDone = !!selectedProduct;
   const stepRunReady = canRun;
 
+  // Progress bar: 0% → 50% (product picked) → 100% (ready to run)
+  const progressPct = canRun ? 100 : stepSetupDone ? 50 : 0;
+  const progressText = canRun ? "Ready to launch" : stepSetupDone ? "Almost there — check limits" : "Start by picking a product";
+
+  // CTA hint text
+  const ctaHint = !selectedProduct
+    ? "Select a product above to enable the launch button."
+    : !canRun
+      ? analysesQuota && analysesQuota.remaining <= 0
+        ? "You’ve used all analyses included in your plan this month. Upgrade or try again next month."
+        : "Can’t start a new analysis right now. Upgrade your plan or contact support if this persists."
+      : labEnabled
+        ? "Runs Scenario Lab: baseline audience plus your custom scenario in one analysis."
+        : focusEmphasis
+          ? `Runs a standard panel with extra weight on ${FOCUS_OPTIONS.find((o) => o.id === focusEmphasis)?.shortLabel ?? "one area"}.`
+          : "Runs a balanced five-person panel on the selected PDP — price, trust, shipping, imagery, and description.";
+
+  const runLabel = isSubmitting
+    ? "Starting analysis…"
+    : labEnabled
+      ? "▶ Run Customer Lab analysis"
+      : "▶ Run customer panel analysis";
+
   return (
     <Page fullWidth>
       <OnboardingTour
@@ -280,394 +312,341 @@ export default function SimulatePage() {
         steps={[
           {
             title: "Welcome to Customer Panel",
-            body:
-              "Pick any live product from your Shopify catalog and we will assemble 5 realistic customer personas to stress‑test the listing. No theme changes, no A/B setup required.",
+            body: "Pick any live product from your Shopify catalog and we will assemble 5 realistic customer personas to stress‑test the listing. No theme changes, no A/B setup required.",
           },
           {
             title: "Choose the right product",
-            body:
-              "Start with a hero product or a problem child. The panel will read the exact title, price, description, shipping and returns you have on the PDP today.",
+            body: "Start with a hero product or a problem child. The panel will read the exact title, price, description, shipping and returns you have on the PDP today.",
           },
           {
-            title: "Product + Scenario Lab",
-            body:
-              "Pick a product on the left (required). Scenario Lab sits beside it — that’s Pro parallel simulation. A short “what to expect” line stays at the top; open the sidebar for more detail.",
+            title: "Step-by-step setup",
+            body: "Follow the four steps: pick a product, configure Scenario Lab (optional Pro feature), set a focus area (optional), then launch. Results stream in within 30 seconds.",
           },
         ]}
       />
-      <TitleBar
-        title="Run Customer Panel Analysis"
-        breadcrumbs={[{ content: "Dashboard", url: "/app" }]}
-      />
-      <BlockStack gap="500">
-        <div className={flowStyles.simIntro}>
-          <h1 className={flowStyles.simIntroTitle}>Stress-test a live product page</h1>
-          <p className={flowStyles.simIntroBody}>
-            <strong>Choose a product</strong> from your catalog (required) — that’s what the panel
-            reads. <strong>Scenario Lab</strong> sits beside it: optional <strong>Pro</strong> parallel
-            simulation (baseline + custom scenario in one run). Then hit run.
-          </p>
-        </div>
+      <TitleBar title="Run Customer Panel Analysis" />
 
-        <div className={flowStyles.simExpectStrip}>
-          <p className={flowStyles.simExpectStripText}>
-            <strong>What to expect:</strong>{" "}
-            {agentCount} simulated shoppers on your live PDP · first read ~30s · full report ~5–10 min
-            {analysesQuota
-              ? ` · ${analysesQuota.remaining} of ${analysesQuota.limit} analyses left this month`
-              : ""}
-            . Covers price, trust, shipping, imagery, and description.
-          </p>
-        </div>
-
-        <div className={flowStyles.simStepper} aria-label="Setup flow">
-          <div
-            className={[
-              flowStyles.simStep,
-              stepSetupDone ? flowStyles.simStepDone : "",
-              !stepSetupDone ? flowStyles.simStepCurrent : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-          >
-            <span className={flowStyles.simStepLabel}>
-              {stepSetupDone ? "✓ Set up" : "1 · Set up"}
-            </span>
-            <span className={flowStyles.simStepSub}>
-              Product (required) + Scenario Lab (Pro, optional)
-            </span>
+      {/* Brand Studio "Instructions" banner */}
+      <div className={flowStyles.runBanner}>
+        <span className={flowStyles.runBannerEyebrow}>▶ RUN ANALYSIS</span>
+        <h1 className={flowStyles.runBannerTitle}>Stress-test a live product page</h1>
+        <p className={flowStyles.runBannerDesc}>
+          {agentCount} AI customer personas read your live product page and surface the exact friction points blocking sales.
+          {analysesQuota
+            ? ` ${analysesQuota.remaining} of ${analysesQuota.limit} analyses remaining this month.`
+            : " First results in ~30 seconds, full report in ~5–10 min."}
+        </p>
+        <div className={flowStyles.runBannerProgressWrap}>
+          <div className={flowStyles.runBannerProgressTrack}>
+            <div className={flowStyles.runBannerProgressFill} style={{ width: `${progressPct}%` }} />
           </div>
-          <div
-            className={[
-              flowStyles.simStep,
-              stepRunReady
-                ? flowStyles.simStepDone
-                : stepSetupDone
-                  ? flowStyles.simStepCurrent
-                  : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-          >
-            <span className={flowStyles.simStepLabel}>
-              {stepRunReady ? "✓ Ready to run" : "2 · Run"}
-            </span>
-            <span className={flowStyles.simStepSub}>
-              {stepRunReady
-                ? "Use the button below"
-                : selectedProduct
-                  ? analysesQuota && analysesQuota.remaining <= 0
-                    ? "Monthly analyses used up"
-                    : "Check plan limits"
-                  : "Select a product first"}
-            </span>
-          </div>
+          <span className={flowStyles.runBannerProgressText}>{progressText}</span>
         </div>
 
-        {error && (
-          <Banner tone="critical">
-            <Text as="p" variant="bodyMd">{error}</Text>
-          </Banner>
-        )}
+        {/* Always-visible launch CTA — points to the form submit so the
+            button is never hidden below the fold. */}
+        <div className={flowStyles.runBannerCta}>
+          <button
+            type="submit"
+            form="simulate-form"
+            disabled={!canRun || isSubmitting}
+            className={[
+              flowStyles.runBannerCtaBtn,
+              canRun ? flowStyles.runBannerCtaReady : flowStyles.runBannerCtaWaiting,
+            ].join(" ")}
+            aria-label={canRun ? "Run analysis now" : "Complete the steps below to run analysis"}
+          >
+            {isSubmitting ? "Starting analysis…" : canRun ? "▶ Run analysis now" : "Pick a product to enable"}
+          </button>
+          <span className={flowStyles.runBannerCtaHint}>
+            {canRun
+              ? "Results stream in under a minute. You can leave the tab open."
+              : "Pick a product below to unlock — Lab and emphasis are optional."}
+          </span>
+        </div>
+      </div>
 
-        {products.length === 0 ? (
-          <Card>
-            <div className={flowStyles.simCardInner}>
-              <EmptyState
-                heading="No published products found"
-                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+      {error && (
+        <Banner tone="critical">
+          <Text as="p" variant="bodyMd">{error}</Text>
+        </Banner>
+      )}
+
+      {products.length === 0 ? (
+        <Card>
+          <div className={flowStyles.simCardInner}>
+            <EmptyState
+              heading="No published products found"
+              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            >
+              <Text as="p" variant="bodyMd">
+                Auctovio analyses live product pages. Add at least one published product to your
+                Shopify catalog, then come back here to run your first panel.
+              </Text>
+              <Button
+                url="https://admin.shopify.com/products/new"
+                target="_blank"
+                variant="primary"
               >
-                <Text as="p" variant="bodyMd">
-                  Auctovio analyses live product pages. Add at least one published product to your
-                  Shopify catalog, then come back here to run your first panel.
-                </Text>
-                <Button
-                  url="https://admin.shopify.com/products/new"
-                  target="_blank"
-                  variant="primary"
-                >
-                  Add a product in Shopify
-                </Button>
-              </EmptyState>
-            </div>
-          </Card>
-        ) : (
-          <div className={flowStyles.simPageGrid}>
-            <div className={flowStyles.simPageMain}>
-              <Card>
-                <div className={flowStyles.simCardInner}>
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="productId" value={selectedProduct} />
-                    <input type="hidden" name="focusAreas" value={JSON.stringify(focusAreas)} />
-                    <input
-                      type="hidden"
-                      name="labConfig"
-                      value={labEnabled
-                        ? JSON.stringify({
-                            audience: labAudience,
-                            skepticism: labSkepticism,
-                            coreConcern: labConcern,
-                            brutalityLevel: labBrutality,
-                            preset: labPreset,
-                          })
-                        : ""}
-                    />
-
-                    <BlockStack gap="500">
-                      <div className={flowStyles.simSetupGrid}>
-                        <div className={flowStyles.simSetupCol}>
-                          <div className={flowStyles.simSetupColHead}>
-                            <h2 className={flowStyles.simSetupColTitle}>Select a product</h2>
-                            <Badge tone="critical">Required</Badge>
-                          </div>
-                          <p className={flowStyles.simSetupColHint}>
-                            The panel reads this product’s live PDP — nothing to install or theme.
-                          </p>
-                          <Select
-                            label="Catalog product"
-                            options={productOptions}
-                            value={selectedProduct}
-                            onChange={setSelectedProduct}
-                            helpText="Required — pick what to analyze before you can run."
-                          />
-
-                          {selectedProductData && (
-                            <Box
-                              padding="300"
-                              background="bg-surface-secondary"
-                              borderRadius="200"
-                              borderWidth="025"
-                              borderColor="border"
-                            >
-                              <InlineStack gap="400" align="start" blockAlign="start">
-                                {selectedProductData.images[0] && (
-                                  <Thumbnail
-                                    source={selectedProductData.images[0].url}
-                                    alt={
-                                      selectedProductData.images[0].altText ?? selectedProductData.title
-                                    }
-                                    size="large"
-                                  />
-                                )}
-                                <BlockStack gap="100">
-                                  <Text as="p" variant="bodyMd" fontWeight="semibold">
-                                    {selectedProductData.title}
-                                  </Text>
-                                  <Text as="p" variant="bodySm" tone="subdued">
-                                    {selectedProductData.variants[0]?.price
-                                      ? `From $${selectedProductData.variants[0].price}`
-                                      : "Price not set"}
-                                  </Text>
-                                  <Text as="p" variant="bodySm" tone="subdued">
-                                    {selectedProductData.productType || "No product type"}
-                                  </Text>
-                                </BlockStack>
-                              </InlineStack>
-                            </Box>
-                          )}
-                        </div>
-
-                        <div className={[flowStyles.simSetupCol, flowStyles.simLabCol].join(" ")}>
-                          <div className={flowStyles.simSetupColHead}>
-                            <h2 className={flowStyles.simSetupColTitle}>Scenario Lab</h2>
-                            <Badge tone="attention">Pro</Badge>
-                          </div>
-                          <p className={flowStyles.simSetupColHint}>
-                            You’ll see this column on every run — optional parallel baseline + custom
-                            scenario for the same product.
-                          </p>
-                          <div className={flowStyles.simProLabWrap}>
-                            <ScenarioLabPanel
-                              labEnabled={labEnabled}
-                              onLabEnabledChange={setLabEnabled}
-                              labPreset={labPreset}
-                              onSelectPreset={applyPreset}
-                              onClearPreset={clearPreset}
-                              labAudience={labAudience}
-                              onAudienceChange={setLabAudience}
-                              labSkepticism={labSkepticism}
-                              onSkepticismChange={setLabSkepticism}
-                              labConcern={labConcern}
-                              onConcernChange={setLabConcern}
-                              labBrutality={labBrutality}
-                              onBrutalityChange={setLabBrutality}
-                              suggestedPreset={suggestedPreset}
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <BlockStack gap="200">
-                        <InlineStack align="space-between" blockAlign="center" gap="300" wrap>
-                          <Button
-                            disclosure={advancedOpen ? "up" : "down"}
-                            variant="plain"
-                            onClick={() => setAdvancedOpen((o) => !o)}
-                            aria-expanded={advancedOpen}
-                            aria-controls="simulate-advanced-panel"
-                          >
-                            {advancedOpen
-                              ? "Hide advanced options"
-                              : advancedSummaryParts.length > 0
-                                ? `Advanced options (${advancedSummaryParts.join(" · ")})`
-                                : "Advanced options (optional)"}
-                          </Button>
-                          {!advancedOpen && advancedSummaryParts.length > 0 && (
-                            <Badge tone="attention">Customized</Badge>
-                          )}
-                        </InlineStack>
-                        <Collapsible
-                          open={advancedOpen}
-                          id="simulate-advanced-panel"
-                          transition={{ duration: "200ms" }}
-                        >
-                          <Box
-                            padding="400"
-                            background="bg-surface-secondary"
-                            borderRadius="200"
-                            borderWidth="025"
-                            borderColor="border"
-                          >
-                            <BlockStack gap="200">
-                              <Text as="h3" variant="headingMd">
-                                Extra emphasis (pick one or none)
-                              </Text>
-                              <Text as="p" variant="bodySm" tone="subdued">
-                                Optional fine-tuning for any plan. Leave on balanced for a normal
-                                review.
-                              </Text>
-                              <div className={flowStyles.simFocusSelectWrap}>
-                                <Select
-                                  label="Where should the panel push harder?"
-                                  options={focusSelectOptions}
-                                  value={focusEmphasis}
-                                  onChange={setFocusEmphasis}
-                                  helpText={focusHelpText}
-                                />
-                              </div>
-                            </BlockStack>
-                          </Box>
-                        </Collapsible>
-                      </BlockStack>
-
-                      <div className={flowStyles.simCtaWrap}>
-                        <p className={flowStyles.simCtaHint}>
-                          {!selectedProduct
-                            ? "Select a product to enable the run button."
-                            : !canRun
-                              ? analysesQuota && analysesQuota.remaining <= 0
-                                ? "You've used all analyses included in your plan this month. Upgrade or try again next month."
-                                : "Can't start a new analysis right now. Upgrade your plan or contact support if this persists."
-                              : labEnabled
-                                ? "Runs Scenario Lab: baseline audience plus your custom scenario in one analysis."
-                              : focusEmphasis
-                                ? `Runs a standard panel with extra weight on ${FOCUS_OPTIONS.find((o) => o.id === focusEmphasis)?.shortLabel ?? "one area"}.`
-                                : "Runs a balanced five-person panel on the selected PDP — no extra tweaks."}
-                        </p>
-                        <Button
-                          variant="primary"
-                          size="large"
-                          submit
-                          fullWidth
-                          loading={isSubmitting}
-                          disabled={!canRun}
-                        >
-                          {isSubmitting
-                            ? "Starting analysis…"
-                            : labEnabled
-                              ? "Run Customer Lab analysis"
-                              : "Run customer panel analysis"}
-                        </Button>
-                      </div>
-                    </BlockStack>
-                  </fetcher.Form>
-                </div>
-              </Card>
-            </div>
-
-            <aside className={flowStyles.simPageAside}>
-              <div className={flowStyles.simSidebarSticky}>
-                <Card>
-                  <div className={flowStyles.simSidebarInner}>
-                    <BlockStack gap="400">
-                      <BlockStack gap="150">
-                        <Text as="h2" variant="headingMd">
-                          Pro · Scenario Lab
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          The lab beside your product picker is how you run two scenarios at once.
-                          Included on Pro and Enterprise.
-                        </Text>
-                      </BlockStack>
-                      {planTier === "FREE" ? (
-                        <Button url="/app/billing" variant="primary" fullWidth>
-                          View plans & upgrade
-                        </Button>
-                      ) : (
-                        <Banner tone="success">
-                          <Text as="p" variant="bodySm">
-                            Scenario Lab is on your plan — toggle <strong>Lab</strong> in the panel.
-                          </Text>
-                        </Banner>
-                      )}
-
-                      <BlockStack gap="200">
-                        <Button
-                          disclosure={expectDetailsOpen ? "up" : "down"}
-                          variant="plain"
-                          onClick={() => setExpectDetailsOpen((o) => !o)}
-                          aria-expanded={expectDetailsOpen}
-                          aria-controls="simulate-expect-details"
-                        >
-                          {expectDetailsOpen ? "Hide detail" : "What the panel checks (live PDP)"}
-                        </Button>
-                        <Collapsible
-                          open={expectDetailsOpen}
-                          id="simulate-expect-details"
-                          transition={{ duration: "200ms" }}
-                        >
-                          <ul className={flowStyles.simCheckList}>
-                            <li>
-                              <span className={flowStyles.simCheckIcon} aria-hidden>
-                                ✓
-                              </span>
-                              <span>Price vs. what buyers expect</span>
-                            </li>
-                            <li>
-                              <span className={flowStyles.simCheckIcon} aria-hidden>
-                                ✓
-                              </span>
-                              <span>Trust, reviews, and credibility</span>
-                            </li>
-                            <li>
-                              <span className={flowStyles.simCheckIcon} aria-hidden>
-                                ✓
-                              </span>
-                              <span>Shipping and returns clarity</span>
-                            </li>
-                            <li>
-                              <span className={flowStyles.simCheckIcon} aria-hidden>
-                                ✓
-                              </span>
-                              <span>Hero images and first impression</span>
-                            </li>
-                            <li>
-                              <span className={flowStyles.simCheckIcon} aria-hidden>
-                                ✓
-                              </span>
-                              <span>Description completeness</span>
-                            </li>
-                          </ul>
-                        </Collapsible>
-                      </BlockStack>
-                    </BlockStack>
-                  </div>
-                </Card>
-              </div>
-            </aside>
+                Add a product in Shopify
+              </Button>
+            </EmptyState>
           </div>
-        )}
-      </BlockStack>
+        </Card>
+      ) : (
+        <div className={flowStyles.runLayout}>
+          {/* ── Step cards (main area) ── */}
+          <div className={flowStyles.runMain}>
+            <Form method="post" id="simulate-form">
+              <input type="hidden" name="productId" value={selectedProduct} />
+              <input type="hidden" name="focusAreas" value={JSON.stringify(focusAreas)} />
+              <input
+                type="hidden"
+                name="labConfig"
+                value={labEnabled
+                  ? JSON.stringify({
+                      audience: labAudience,
+                      skepticism: labSkepticism,
+                      coreConcern: labConcern,
+                      brutalityLevel: labBrutality,
+                      preset: labPreset,
+                    })
+                  : ""}
+              />
+
+              {/* ── Step 1: Select product ── */}
+              <div className={[
+                flowStyles.runStepCard,
+                stepSetupDone ? flowStyles.runStepCardDone : flowStyles.runStepCardActive,
+              ].join(" ")}>
+                <div className={flowStyles.runStepCircleWrap}>
+                  <span className={flowStyles.runStepCircle}>{stepSetupDone ? "✓" : "1"}</span>
+                </div>
+                <div className={flowStyles.runStepBody}>
+                  <div className={flowStyles.runStepHead}>
+                    <span className={flowStyles.runStepTitle}>Select a product</span>
+                    {stepSetupDone
+                      ? <span className={flowStyles.doneBadge}>Done</span>
+                      : <span className={flowStyles.requiredBadge}>Required</span>
+                    }
+                  </div>
+                  <p className={flowStyles.runStepDesc}>
+                    The panel reads this product’s live PDP exactly as shoppers see it — title, price, images, description, and policies.
+                  </p>
+                  <Select
+                    label="Catalog product"
+                    options={productOptions}
+                    value={selectedProduct}
+                    onChange={setSelectedProduct}
+                    helpText="Pick what to analyze. Required before you can launch."
+                  />
+                  {selectedProductData && (
+                    <Box
+                      padding="300"
+                      background="bg-surface-secondary"
+                      borderRadius="200"
+                      borderWidth="025"
+                      borderColor="border"
+                    >
+                      <InlineStack gap="400" align="start" blockAlign="start">
+                        {selectedProductData.images[0] && (
+                          <Thumbnail
+                            source={selectedProductData.images[0].url}
+                            alt={selectedProductData.images[0].altText ?? selectedProductData.title}
+                            size="large"
+                          />
+                        )}
+                        <BlockStack gap="100">
+                          <Text as="p" variant="bodyMd" fontWeight="semibold">
+                            {selectedProductData.title}
+                          </Text>
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            {selectedProductData.variants[0]?.price
+                              ? `From $${selectedProductData.variants[0].price}`
+                              : "Price not set"}
+                          </Text>
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            {selectedProductData.productType || "No product type"}
+                          </Text>
+                        </BlockStack>
+                      </InlineStack>
+                    </Box>
+                  )}
+                </div>
+              </div>
+
+              {/* ── Step 2: Scenario Lab ── */}
+              <div className={flowStyles.runStepCard}>
+                <div className={flowStyles.runStepCircleWrap}>
+                  <span className={`${flowStyles.runStepCircle} ${flowStyles.runStepCirclePurple}`}>2</span>
+                </div>
+                <div className={flowStyles.runStepBody}>
+                  <div className={flowStyles.runStepHead}>
+                    <span className={flowStyles.runStepTitle}>Scenario Lab</span>
+                    <span className={flowStyles.proBadge}>Pro</span>
+                    <span className={flowStyles.optionalBadge}>Optional</span>
+                    {labEnabled && <span className={flowStyles.doneBadge}>Active</span>}
+                  </div>
+                  <p className={flowStyles.runStepDesc}>
+                    Run two scenarios at once — baseline + a custom audience or concern. Included on Pro and Enterprise plans.
+                  </p>
+                  <div className={flowStyles.simProLabWrap}>
+                    <ScenarioLabPanel
+                      labEnabled={labEnabled}
+                      onLabEnabledChange={setLabEnabled}
+                      labPreset={labPreset}
+                      onSelectPreset={applyPreset}
+                      onClearPreset={clearPreset}
+                      labAudience={labAudience}
+                      onAudienceChange={setLabAudience}
+                      labSkepticism={labSkepticism}
+                      onSkepticismChange={setLabSkepticism}
+                      labConcern={labConcern}
+                      onConcernChange={setLabConcern}
+                      labBrutality={labBrutality}
+                      onBrutalityChange={setLabBrutality}
+                      suggestedPreset={suggestedPreset}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Step 3: Focus emphasis ── */}
+              <div className={flowStyles.runStepCard}>
+                <div className={flowStyles.runStepCircleWrap}>
+                  <span className={flowStyles.runStepCircle}>3</span>
+                </div>
+                <div className={flowStyles.runStepBody}>
+                  <div className={flowStyles.runStepHead}>
+                    <span className={flowStyles.runStepTitle}>Extra emphasis</span>
+                    <span className={flowStyles.optionalBadge}>Optional</span>
+                    {focusEmphasis && <span className={flowStyles.doneBadge}>Set</span>}
+                  </div>
+                  <p className={flowStyles.runStepDesc}>
+                    Want the panel to focus harder on one area? Pick one — or leave balanced for a full-spectrum review across trust, price, shipping, visuals, and description.
+                  </p>
+                  <div className={flowStyles.simFocusSelectWrap}>
+                    <Select
+                      label="Where should the panel push harder?"
+                      options={focusSelectOptions}
+                      value={focusEmphasis}
+                      onChange={setFocusEmphasis}
+                      helpText={focusHelpText}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Step 4: Launch ── */}
+              <div className={[
+                flowStyles.runStepCard,
+                canRun ? flowStyles.runLaunchCard : "",
+              ].filter(Boolean).join(" ")}>
+                <div className={flowStyles.runStepCircleWrap}>
+                  <span className={[
+                    flowStyles.runStepCircle,
+                    canRun ? flowStyles.runStepCircleGreen : "",
+                  ].filter(Boolean).join(" ")}>
+                    {isSubmitting ? "…" : "▶"}
+                  </span>
+                </div>
+                <div className={flowStyles.runStepBody}>
+                  <div className={flowStyles.runStepHead}>
+                    <span className={flowStyles.runStepTitle}>Launch analysis</span>
+                  </div>
+                  <p className={flowStyles.runStepDesc}>{ctaHint}</p>
+                  <Button
+                    variant="primary"
+                    size="large"
+                    submit
+                    fullWidth
+                    loading={isSubmitting}
+                    disabled={!canRun}
+                  >
+                    {runLabel}
+                  </Button>
+                </div>
+              </div>
+            </Form>
+
+            {/* Sticky bottom launch bar — guarantees the launch button is
+                visible even when the form is scrolled past. Appears once the
+                user can run; dimmed but visible while quota check pending. */}
+            <div className={flowStyles.stickyLaunchBar}>
+              <div className={flowStyles.stickyLaunchBarText}>
+                <span className={flowStyles.stickyLaunchBarTitle}>
+                  {canRun ? "Ready to launch" : !selectedProduct ? "Pick a product to launch" : progressText}
+                </span>
+                <span className={flowStyles.stickyLaunchBarSub}>
+                  {canRun
+                    ? `${agentCount} AI personas · live PDP · streams in under a minute`
+                    : ctaHint}
+                </span>
+              </div>
+              <button
+                type="submit"
+                form="simulate-form"
+                disabled={!canRun || isSubmitting}
+                className={flowStyles.stickyLaunchBarBtn}
+              >
+                {isSubmitting ? "Starting…" : canRun ? "▶ Run analysis" : "Locked"}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Sidebar (sticky info panels) ── */}
+          <aside className={flowStyles.runAside}>
+            <div className={flowStyles.simSidebarSticky}>
+
+              {/* What the panel checks */}
+              <div className={flowStyles.simInfoPanel}>
+                <div className={flowStyles.simInfoPanelHead}>
+                  <span className={flowStyles.simInfoPanelIcon}>🔍</span>
+                  <div>
+                    <p className={flowStyles.simInfoPanelTitle}>What the panel checks</p>
+                    <p className={flowStyles.simInfoPanelSub}>Reads your live product page</p>
+                  </div>
+                </div>
+                <ul className={flowStyles.simCheckList}>
+                  {([
+                    "Price vs. what buyers expect",
+                    "Trust, reviews, and credibility",
+                    "Shipping and returns clarity",
+                    "Hero images and first impression",
+                    "Description completeness",
+                  ] as const).map((item) => (
+                    <li key={item}>
+                      <span className={flowStyles.simCheckIcon} aria-hidden>✓</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Scenario Lab info */}
+              <div className={flowStyles.simLabPanel}>
+                <div className={flowStyles.simLabPanelHead}>
+                  <span className={flowStyles.simLabPanelTitle}>Scenario Lab</span>
+                  <span className={flowStyles.simLabPanelBadge}>Pro</span>
+                </div>
+                <p className={flowStyles.simLabPanelDesc}>
+                  Run two scenarios at once — baseline + custom in a single analysis. Included on Pro and Enterprise.
+                </p>
+                {planTier === "FREE" ? (
+                  <a href="/app/billing" className={flowStyles.simLabUpgradeBtn}>
+                    ✦ View plans &amp; upgrade
+                  </a>
+                ) : (
+                  <div className={flowStyles.simLabActiveNote}>
+                    ✓ Lab is active — toggle <strong>Lab</strong> in Step 2 above.
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </aside>
+        </div>
+      )}
     </Page>
   );
 }

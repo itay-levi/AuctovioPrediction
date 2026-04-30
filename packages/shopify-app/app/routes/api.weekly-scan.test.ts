@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockStoreFindMany = vi.fn();
-const mockSimulationFindMany = vi.fn();
-const mockSessionFindFirst = vi.fn();
-const mockStoreUpdate = vi.fn();
+const {
+  mockStoreFindMany,
+  mockSimulationFindMany,
+  mockSessionFindFirst,
+  mockStoreUpdate,
+} = vi.hoisted(() => ({
+  mockStoreFindMany: vi.fn(),
+  mockSimulationFindMany: vi.fn(),
+  mockSessionFindFirst: vi.fn(),
+  mockStoreUpdate: vi.fn(),
+}));
 
 vi.mock("../db.server", () => ({
   default: {

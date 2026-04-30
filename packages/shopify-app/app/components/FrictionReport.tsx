@@ -109,8 +109,8 @@ function FrictionItem({
             <Text as="span" variant="headingSm">{item.emoji} {item.category}</Text>
           </InlineStack>
           <InlineStack gap="200">
-            <Badge tone={config.tone}>{config.emoji} {config.label}</Badge>
-            <Badge>{item.dropoutPct}% friction</Badge>
+            <Badge tone={config.tone}>{`${config.emoji} ${config.label}`}</Badge>
+            <Badge>{`${item.dropoutPct}% friction`}</Badge>
           </InlineStack>
         </InlineStack>
 

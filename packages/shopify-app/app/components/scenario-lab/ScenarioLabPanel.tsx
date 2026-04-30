@@ -164,7 +164,7 @@ export function ScenarioLabPanel({
                     {LAB_PRESETS.find(p => p.id === suggestedPreset)?.desc}
                   </Text>
                   <Button size="slim" onClick={() => onSelectPreset(suggestedPreset)}>
-                    Apply {LAB_PRESETS.find(p => p.id === suggestedPreset)?.title}
+                    {`Apply ${LAB_PRESETS.find(p => p.id === suggestedPreset)?.title ?? "preset"}`}
                   </Button>
                 </BlockStack>
               </Banner>

@@ -21,8 +21,9 @@ export async function computeShopHealthScore(storeId: string): Promise<HealthSco
   const scores = sims.map((s) => s.score!);
   const healthScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 
-  // Find most common friction category
-  const frictionCounts: Record<string, number> = { price: 0, trust: 0, logistics: 0 };
+  // Find most common friction category. Only count sims that actually contributed
+  // a friction signal — otherwise return null instead of an arbitrary default.
+  const frictionCounts: Record<string, number> = {};
   for (const sim of sims) {
     const report = sim.reportJson as { friction?: Record<string, { dropoutPct?: number }> } | null;
     if (!report?.friction) continue;
@@ -37,7 +38,8 @@ export async function computeShopHealthScore(storeId: string): Promise<HealthSco
     if (maxKey) frictionCounts[maxKey] = (frictionCounts[maxKey] ?? 0) + 1;
   }
 
-  const topFriction = Object.entries(frictionCounts).sort(([, a], [, b]) => b - a)[0]?.[0] ?? null;
+  const sortedFriction = Object.entries(frictionCounts).sort(([, a], [, b]) => b - a);
+  const topFriction = sortedFriction.length > 0 ? sortedFriction[0][0] : null;
 
   return { healthScore, simulationCount: sims.length, topFriction };
 }

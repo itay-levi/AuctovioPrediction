@@ -123,17 +123,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ...(failureReason && { failureReason }),
   });
 
-  // Update MT usage when simulation completes
-  if (status === "COMPLETED" && actualMtCost && typeof actualMtCost === "number") {
+  // Defense in depth: even with a valid ENGINE_API_KEY, never trust negative
+  // or non-finite numbers — those would decrement the MT counter and grant
+  // free analyses. Also cap any single callback to a sane upper bound.
+  const safeMt =
+    typeof actualMtCost === "number" && Number.isFinite(actualMtCost) && actualMtCost > 0
+      ? Math.min(actualMtCost, 10_000)
+      : 0;
+
+  if (status === "COMPLETED") {
     const sim = await db.simulation.findUnique({
       where: { id: simulationId },
       include: { store: { select: { shopDomain: true } } },
     });
-    if (sim?.store?.shopDomain) {
-      await incrementMtUsage(sim.store.shopDomain, actualMtCost);
+
+    if (safeMt > 0 && sim?.store?.shopDomain) {
+      await incrementMtUsage(sim.store.shopDomain, safeMt);
     }
 
-    // Trigger retake evaluation when a RETAKE simulation finishes
+    // Trigger retake evaluation when a RETAKE simulation finishes (regardless of MT).
     if (sim?.simulationType === "RETAKE" && sim.originalSimulationId) {
       _triggerRetakeEvaluation(sim).catch(() => {});
     }

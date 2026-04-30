@@ -31,6 +31,7 @@ import {
   type ScenarioHistoryRow,
   type TrustAuditFriction,
 } from "../components/sandbox/ComparisonLaboratory";
+import resultsStyles from "../styles/results-page.module.css";
 
 type ProductDna = {
   coreFear?: string;
@@ -196,7 +197,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     phase: true, verdict: true, reasoning: true,
   } as const;
 
-  const priceBatchDeltas = (deltas as DeltaRow[]).filter((d) => {
+  const priceBatchDeltas = (deltas as unknown as DeltaRow[]).filter((d) => {
     const dp = d.deltaParams as { batchGroupId?: string } | null;
     return dp?.batchGroupId?.startsWith("price_batch_");
   });
@@ -297,7 +298,24 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { error: "Simulation not found" };
   }
 
-  const { allowed, reason } = await canRunSimulation(shopDomain, store.id);
+  // Determine how many sims this action will create so MT quota is enforced correctly.
+  // - run_retake / run_whatif: 1 sim
+  // - simulate_all: one per experiment card (validated below)
+  // - batch_price_optimize: 3 sims (-5%, -10%, -15%)
+  const productDnaPreview = (originalSim as { productDna?: ProductDna | null }).productDna ?? null;
+  let simsToCreate = 1;
+  if (intent === "simulate_all") {
+    simsToCreate = productDnaPreview?.experimentCards?.length ?? 0;
+    if (simsToCreate === 0) {
+      return { error: "No experiment cards available. Run a new analysis first." };
+    }
+  } else if (intent === "batch_price_optimize") {
+    simsToCreate = 3;
+  }
+
+  // Sandbox creates delta/What-If/Retake sims — they consume MT but do not
+  // count against the monthly analysis slot quota.
+  const { allowed, reason } = await canRunSimulation(shopDomain, store.id, simsToCreate, false);
   if (!allowed) {
     return { error: reason };
   }
@@ -641,23 +659,83 @@ export default function SandboxPage() {
       };
     });
 
+  // Brand Studio score-ring helpers
+  const baselineTier =
+    baselineScore >= 80 ? { cls: resultsStyles.scoreTierStrong, label: "Strong baseline" } :
+    baselineScore >= 65 ? { cls: resultsStyles.scoreTierGood, label: "Good baseline" } :
+    baselineScore >= 45 ? { cls: resultsStyles.scoreTierMixed, label: "Mixed baseline" } :
+                           { cls: resultsStyles.scoreTierWeak, label: "Critical baseline" };
+  const baselineRingColor =
+    baselineScore >= 80 ? "#4ADE80" :
+    baselineScore >= 65 ? "#38BDF8" :
+    baselineScore >= 45 ? "#FBBF24" : "#F87171";
+  const baselineRingStyle = {
+    ["--ring-progress" as string]: `${(baselineScore / 100) * 360}deg`,
+    ["--ring-color" as string]: baselineRingColor,
+  } as React.CSSProperties;
+
   return (
     <Page fullWidth>
-      <TitleBar
-        title="PDP Simulator"
-        breadcrumbs={[
-          { content: "Dashboard", url: "/app" },
-          { content: "History", url: "/app/history" },
-          { content: "Results", url: `/app/results/${simulation.id}` },
-        ]}
-      />
+      <TitleBar title="PDP Simulator" />
       <BlockStack gap="500">
-        <Box maxWidth="40rem">
-          <Text as="p" variant="bodyMd" tone="subdued">
-            Discover friction on your PDP, build one test in the simulator (nothing goes live), then run the sim to see
-            side-by-side results — optional batch tools stay tucked away.
-          </Text>
-        </Box>
+
+        {/* Brand Studio hero — what this lab is + baseline score */}
+        <div className={resultsStyles.scoreHero}>
+          <div className={resultsStyles.scoreHeroLeft}>
+            <span className={resultsStyles.scoreEyebrow}>
+              <span className={resultsStyles.scoreEyebrowDot} aria-hidden />
+              🧪 What-If Lab · Private workspace
+            </span>
+            <h1 className={resultsStyles.scoreTitle}>{productTitle}</h1>
+            <p className={resultsStyles.scoreTLDR}>
+              Stress-test pricing, shipping, and copy changes against your baseline panel — your live PDP
+              stays unchanged. Each scenario costs MT but doesn&apos;t consume monthly analysis slots.
+            </p>
+            <div className={resultsStyles.heroMeta}>
+              <a
+                className={resultsStyles.heroChip}
+                href={`/app/results/${simulation.id}`}
+                style={{ textDecoration: "none" }}
+              >
+                ← Back to results
+              </a>
+              {isPro && (
+                <a
+                  className={resultsStyles.heroChip}
+                  href="#lab-price-optimizer-panel"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    document.getElementById("lab-price-optimizer-panel")
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}
+                  style={{ textDecoration: "none", background: "rgba(255,255,255,0.18)", borderColor: "rgba(255,255,255,0.35)", color: "#FFFFFF", fontWeight: 800 }}
+                >
+                  💰 Try the Price Optimizer
+                </a>
+              )}
+              <span className={resultsStyles.heroChip}>
+                {scenarioHistory.length} {scenarioHistory.length === 1 ? "scenario" : "scenarios"} run
+              </span>
+              {hasInProgress && (
+                <span className={`${resultsStyles.heroChip} ${resultsStyles.heroChipLive}`}>
+                  ● Running · {Math.floor(deltaElapsed)}s
+                </span>
+              )}
+            </div>
+          </div>
+          <div className={resultsStyles.scoreHeroRight}>
+            <div className={resultsStyles.scoreRing} style={baselineRingStyle}>
+              <div className={resultsStyles.scoreRingInner}>
+                <span className={resultsStyles.scoreRingNum}>{baselineScore}</span>
+                <span className={resultsStyles.scoreRingDenom}>BASELINE</span>
+              </div>
+            </div>
+            <span className={`${resultsStyles.scoreTier} ${baselineTier.cls}`}>
+              {baselineTier.label}
+            </span>
+          </div>
+        </div>
+
         {fetcher.data?.error && (
           <Banner tone="critical" title="Could not start analysis">
             <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
@@ -771,14 +849,17 @@ export default function SandboxPage() {
                           : "critical"
                       }
                     >
-                      Overall: {retakeEvaluation.overallVerdict}
+                      {`Overall: ${retakeEvaluation.overallVerdict}`}
                     </Badge>
                     {latestRetake?.score != null && (
                       <Badge tone="info">
-                        New score: {latestRetake.score}/100
-                        {(simulation.score ?? 0) > 0 && (
-                          <> ({latestRetake.score - (simulation.score ?? 0) >= 0 ? "+" : ""}{latestRetake.score - (simulation.score ?? 0)} pts)</>
-                        )}
+                        {(() => {
+                          const orig = simulation.score ?? 0;
+                          const delta = latestRetake.score! - orig;
+                          const sign = delta >= 0 ? "+" : "";
+                          const tail = orig > 0 ? ` (${sign}${delta} pts)` : "";
+                          return `New score: ${latestRetake.score}/100${tail}`;
+                        })()}
                       </Badge>
                     )}
                   </InlineStack>

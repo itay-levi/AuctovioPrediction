@@ -9,21 +9,30 @@ vi.mock("@remix-run/react", async () => {
 
 import { useRouteError } from "@remix-run/react";
 
+// Build a route error response that satisfies isRouteErrorResponse():
+// requires status:number, statusText:string, internal:boolean, "data" in error.
+const routeErr = (status: number, data: unknown = "") => ({
+  status,
+  statusText: "",
+  internal: false,
+  data,
+});
+
 describe("RouteErrorBoundary", () => {
   it("shows 404 copy", () => {
-    vi.mocked(useRouteError).mockReturnValue({ status: 404, data: "" } as never);
+    vi.mocked(useRouteError).mockReturnValue(routeErr(404) as never);
     render(<RouteErrorBoundary />);
     expect(screen.getByText("Not found")).toBeInTheDocument();
   });
 
   it("shows 403 copy", () => {
-    vi.mocked(useRouteError).mockReturnValue({ status: 403, data: "" } as never);
+    vi.mocked(useRouteError).mockReturnValue(routeErr(403) as never);
     render(<RouteErrorBoundary />);
     expect(screen.getByText("Access denied")).toBeInTheDocument();
   });
 
   it("shows generic route error with data", () => {
-    vi.mocked(useRouteError).mockReturnValue({ status: 500, data: "oops" } as never);
+    vi.mocked(useRouteError).mockReturnValue(routeErr(500, "oops") as never);
     render(<RouteErrorBoundary />);
     expect(screen.getByText("oops")).toBeInTheDocument();
   });

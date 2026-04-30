@@ -100,16 +100,32 @@ export function IntelligenceExport({
   const handlePrint = useCallback(() => {
     const win = window.open("", "_blank");
     if (!win) return;
-    win.document.write(`
-      <html><head><title>Intelligence Report — ${productTitle}</title>
-      <style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;line-height:1.6;font-size:16px}
-      h1{font-size:24px}pre{white-space:pre-wrap;font-family:inherit}</style></head>
-      <body><h1>CustomerPanel AI — Intelligence Report</h1>
-      <p><strong>Product:</strong> ${productTitle}</p>
-      <p><strong>Generated:</strong> ${new Date().toLocaleDateString()}</p>
-      <hr/><pre>${synthesis}</pre></body></html>
-    `);
-    win.document.close();
+    // XSS-safe: build the DOM with createElement + textContent so neither the
+    // product title (merchant input) nor the synthesis (engine output) can
+    // inject script tags into the print window.
+    const doc = win.document;
+    doc.open();
+    doc.write(
+      "<!doctype html><html><head><title></title><style>body{font-family:Georgia,serif;max-width:800px;margin:40px auto;line-height:1.6;font-size:16px}h1{font-size:24px}pre{white-space:pre-wrap;font-family:inherit}</style></head><body></body></html>",
+    );
+    doc.close();
+    doc.title = `Intelligence Report — ${productTitle}`;
+
+    const h1 = doc.createElement("h1");
+    h1.textContent = "CustomerPanel AI — Intelligence Report";
+    const pProduct = doc.createElement("p");
+    const pProductBold = doc.createElement("strong");
+    pProductBold.textContent = "Product: ";
+    pProduct.append(pProductBold, doc.createTextNode(productTitle));
+    const pDate = doc.createElement("p");
+    const pDateBold = doc.createElement("strong");
+    pDateBold.textContent = "Generated: ";
+    pDate.append(pDateBold, doc.createTextNode(new Date().toLocaleDateString()));
+    const hr = doc.createElement("hr");
+    const pre = doc.createElement("pre");
+    pre.textContent = synthesis ?? "";
+
+    doc.body.append(h1, pProduct, pDate, hr, pre);
     win.print();
   }, [synthesis, productTitle]);
 

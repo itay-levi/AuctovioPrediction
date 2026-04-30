@@ -185,7 +185,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }).filter(Boolean) as { headline: string; verdict: string; body: string }[];
 
   const rawRecs = simulation.recommendations;
-  const recs = (Array.isArray(rawRecs) ? rawRecs : []) as Recommendation[];
+  const recs = (Array.isArray(rawRecs) ? rawRecs : []) as unknown as Recommendation[];
   const priorityOrder = { High: 0, Medium: 1, Low: 2 };
   const recommendations = [...recs].sort(
     (a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9),

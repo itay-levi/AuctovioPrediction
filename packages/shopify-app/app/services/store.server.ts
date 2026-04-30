@@ -50,14 +50,32 @@ export const AGENT_COUNTS: Record<PlanTier, number> = {
 export async function getMtBudgetStatus(shopDomain: string) {
   const store = await db.store.findUnique({
     where: { shopDomain },
-    select: { planTier: true, mtBudgetUsed: true },
+    select: { id: true, planTier: true },
   });
   if (!store) return null;
+
+  // MT budget is monthly — sum mtCost for COMPLETED sims this calendar month.
+  // (FAILED sims are not charged. PENDING/RUNNING are uncharged but reserved
+  // via the slot count guard in canRunSimulation.)
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+
+  const agg = await db.simulation.aggregate({
+    where: {
+      storeId: store.id,
+      status: "COMPLETED",
+      createdAt: { gte: monthStart },
+    },
+    _sum: { mtCost: true },
+  });
+
+  const used = agg._sum.mtCost ?? 0;
   const limit = MT_LIMITS[store.planTier];
   return {
-    used: store.mtBudgetUsed,
+    used,
     limit,
-    remaining: Math.max(0, limit - store.mtBudgetUsed),
+    remaining: Math.max(0, limit - used),
     tier: store.planTier,
   };
 }

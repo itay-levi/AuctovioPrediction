@@ -72,10 +72,7 @@ export default function BillingPage() {
 
   return (
     <Page>
-      <TitleBar
-        title="Plans & Billing"
-        breadcrumbs={[{ content: "Dashboard", url: "/app" }]}
-      />
+      <TitleBar title="Plans & Billing" />
       <Layout>
         <Layout.Section>
           <BlockStack gap="500">

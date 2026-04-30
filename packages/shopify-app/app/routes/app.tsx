@@ -1,5 +1,5 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
-import { Link, Outlet, useLoaderData, useRouteError } from "@remix-run/react";
+import { Link, Outlet, useLoaderData, useRouteError, useLocation } from "@remix-run/react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
@@ -9,6 +9,7 @@ import { authenticate } from "../shopify.server";
 import { upsertStore, setShopType } from "../services/store.server";
 import { classifyStoreNiche } from "../services/engine.server";
 import { fetchProducts } from "../services/products.server";
+import shellStyles from "../styles/app-shell.module.css";
 
 export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
@@ -34,8 +35,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };
 };
 
+const NAV_ITEMS: Array<{ to: string; label: string; icon: string; exact?: boolean }> = [
+  { to: "/app", label: "Home", icon: "⊞", exact: true },
+  { to: "/app/simulate", label: "Run", icon: "▶" },
+  { to: "/app/history", label: "History", icon: "◎" },
+  { to: "/app/billing", label: "Plans", icon: "◆" },
+];
+
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
+  const location = useLocation();
 
   return (
     <AppProvider isEmbeddedApp apiKey={apiKey}>
@@ -47,7 +56,36 @@ export default function App() {
         <Link to="/app/history">History</Link>
         <Link to="/app/billing">Upgrade</Link>
       </NavMenu>
-      <Outlet />
+      <div className={shellStyles.shell}>
+        <nav className={shellStyles.sidebar} aria-label="App navigation">
+          <div className={shellStyles.sidebarLogo} aria-hidden>🤖</div>
+          <div className={shellStyles.sidebarDivider} />
+          {NAV_ITEMS.map((item) => {
+            const isActive = item.exact
+              ? location.pathname === item.to
+              : location.pathname.startsWith(item.to);
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={[
+                  shellStyles.navItem,
+                  isActive ? shellStyles.navItemActive : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                aria-current={isActive ? "page" : undefined}
+              >
+                <span className={shellStyles.navIcon}>{item.icon}</span>
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className={shellStyles.main}>
+          <Outlet />
+        </div>
+      </div>
     </AppProvider>
   );
 }

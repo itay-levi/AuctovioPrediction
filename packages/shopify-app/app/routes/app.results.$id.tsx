@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useRevalidator, useFetcher } from "@remix-run/react";
+import { Prisma } from "@prisma/client";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
   Page,
@@ -15,7 +16,6 @@ import {
   Box,
   Divider,
   Spinner,
-  Tabs,
   ProgressBar,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
@@ -42,6 +42,7 @@ import type { Recommendation, TrustAudit } from "../components/RecommendationsPa
 import { OnboardingTour } from "../components/OnboardingTour";
 import { sanitizeAgentReasoning } from "../utils/sanitizeAgentReasoning";
 import analysingStyles from "../styles/results-analysing.module.css";
+import resultsStyles from "../styles/results-page.module.css";
 
 type ScoreBreakdown = {
   panelScore: number;
@@ -545,7 +546,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // Fetch retake sims for this Lab simulation (PRO only)
   const retakeSims = simulation.labGroupId ? await db.simulation.findMany({
-    where: { originalSimulationId: simulation.id, simulationType: "RETAKE" } as Parameters<typeof db.simulation.findMany>[0]["where"],
+    where: { originalSimulationId: simulation.id, simulationType: "RETAKE" } as Prisma.SimulationWhereInput,
     orderBy: { createdAt: "desc" },
     take: 3,
     select: { id: true, status: true, score: true, retakeEvaluation: true, createdAt: true },
@@ -651,7 +652,7 @@ function LabRetakeEvaluation({
           <Text as="p" variant="headingSm">Retake result — {audienceLabel}</Text>
           {scoreDeltaVal != null && (
             <Badge tone={scoreDeltaVal > 0 ? "success" : scoreDeltaVal < 0 ? "critical" : "warning"}>
-              {scoreDeltaVal > 0 ? `+${scoreDeltaVal}` : `${scoreDeltaVal}`} pts
+              {`${scoreDeltaVal > 0 ? `+${scoreDeltaVal}` : `${scoreDeltaVal}`} pts`}
             </Badge>
           )}
         </InlineStack>
@@ -672,7 +673,7 @@ function LabRetakeEvaluation({
         <Box padding="300" background="bg-surface" borderRadius="200" borderWidth="025" borderColor="border">
           <BlockStack gap="100">
             <Badge tone={evaluation.overallVerdict === "Pass" ? "success" : evaluation.overallVerdict === "Improving" ? "warning" : "critical"}>
-              Overall: {evaluation.overallVerdict}
+              {`Overall: ${evaluation.overallVerdict}`}
             </Badge>
             {evaluation.overallPolishingTouch && (
               <Text as="p" variant="bodySm" tone="subdued">💡 {evaluation.overallPolishingTouch}</Text>
@@ -681,6 +682,149 @@ function LabRetakeEvaluation({
         </Box>
       </BlockStack>
     </Box>
+  );
+}
+
+// ── Live Panel Room — premium "AI thinking" experience ────────────────
+// 5 panelist avatars assembling on a Brand Studio dark hero. Cycles through
+// 6 timed steps; each step also sets which panelist is "active" (typing).
+// AI-independent — runs purely on a client-side timer.
+
+interface Panelist {
+  id: string;
+  emoji: string;
+  name: string;
+  role: string;
+}
+
+const PANELISTS: Panelist[] = [
+  { id: "budget_optimizer", emoji: "💰", name: "Marcus",  role: "Budget Optimizer" },
+  { id: "brand_loyalist",   emoji: "❤️", name: "Sofia",   role: "Brand Loyalist" },
+  { id: "research_analyst", emoji: "🔍", name: "Alex",    role: "Research Analyst" },
+  { id: "impulse_decider",  emoji: "⚡", name: "Jordan",  role: "Impulse Decider" },
+  { id: "gift_seeker",      emoji: "🎁", name: "Priya",   role: "Gift Seeker" },
+];
+
+interface ActivityStep {
+  title: string;
+  sub: string;
+  // -1 = no panelist active yet; 0–4 = panelist index typing
+  active: number;
+  // panelists 0..(done-1) get the green check overlay
+  done: number;
+}
+
+const ACTIVITY_STEPS: ActivityStep[] = [
+  { title: "Scanning your product page",          sub: "Reading title, description, pricing & images",       active: -1, done: 0 },
+  { title: "Assembling your AI customer panel",   sub: "Calibrating 5 distinct buyer archetypes",             active: -1, done: 0 },
+  { title: "Marcus is reading your listing",      sub: "Budget Optimizer scrutinising price vs. value",       active: 0,  done: 0 },
+  { title: "Sofia is checking trust signals",     sub: "Brand Loyalist looking at reviews & policies",        active: 1,  done: 1 },
+  { title: "Alex is digging into the details",    sub: "Research Analyst comparing specs",                    active: 2,  done: 2 },
+  { title: "Jordan is reacting on impulse",       sub: "Impulse Decider judging first-glance appeal",         active: 3,  done: 3 },
+  { title: "Priya is evaluating gifting fit",     sub: "Gift Seeker weighing presentation & policy",          active: 4,  done: 4 },
+  { title: "Panel debate in progress",            sub: "Cross-checking objections, hardening verdicts",       active: -1, done: 5 },
+];
+
+function LivePanelRoom({
+  elapsedSeconds,
+  stale,
+  onRefresh,
+}: {
+  elapsedSeconds: number;
+  stale: boolean;
+  onRefresh: () => void;
+}) {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    if (step >= ACTIVITY_STEPS.length - 1) return;
+    const timer = setTimeout(() => setStep((s) => s + 1), 2400);
+    return () => clearTimeout(timer);
+  }, [step]);
+
+  const cycled = step >= ACTIVITY_STEPS.length - 1;
+  const current = ACTIVITY_STEPS[step];
+
+  const headline = stale
+    ? "Still working — large panels can take several minutes"
+    : current.title;
+  const sub = stale
+    ? "Auto-refreshing in the background. You can leave this tab open — results will be here when you return."
+    : cycled
+      ? "Each panelist's verdict will appear below as soon as they finish."
+      : current.sub;
+
+  const elapsedLabel = elapsedSeconds < 60
+    ? `${elapsedSeconds}s`
+    : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`;
+
+  return (
+    <div className={resultsStyles.panelRoom} role="status" aria-live="polite">
+      <div className={resultsStyles.panelRoomHead}>
+        <div>
+          <span className={resultsStyles.panelRoomEyebrow}>
+            <span className={resultsStyles.panelRoomEyebrowDot} aria-hidden />
+            Live · panel in session
+          </span>
+          <h3 key={headline} className={resultsStyles.panelRoomTitle}>{headline}</h3>
+          <p className={resultsStyles.panelRoomSub}>{sub}</p>
+        </div>
+        <div className={resultsStyles.panelRoomMeta}>
+          <span className={resultsStyles.panelRoomTimer}>{elapsedLabel}</span>
+          {stale && (
+            <button
+              type="button"
+              className={resultsStyles.panelRoomRefresh}
+              onClick={onRefresh}
+            >
+              Refresh
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={resultsStyles.panelRoomRoster}>
+        {PANELISTS.map((p, i) => {
+          const isActive = current.active === i;
+          const isDone = i < current.done;
+          const cls = [
+            resultsStyles.panelistCard,
+            isActive ? resultsStyles.panelistCardActive : "",
+            isDone ? resultsStyles.panelistCardDone : "",
+          ].filter(Boolean).join(" ");
+          return (
+            <div
+              key={p.id}
+              className={cls}
+              style={{ animationDelay: `${i * 90}ms` }}
+            >
+              <span className={resultsStyles.panelistAvatar} aria-hidden>
+                {p.emoji}
+                {isDone && (
+                  <span className={resultsStyles.panelistAvatarCheck}>✓</span>
+                )}
+              </span>
+              <span className={resultsStyles.panelistName}>{p.name}</span>
+              <span className={resultsStyles.panelistRole}>{p.role}</span>
+              {isActive && (
+                <span className={resultsStyles.panelistTyping} aria-hidden>
+                  <span className={resultsStyles.panelistTypingDot} />
+                  <span className={resultsStyles.panelistTypingDot} />
+                  <span className={resultsStyles.panelistTypingDot} />
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className={resultsStyles.panelRoomBar} aria-hidden>
+        <div className={resultsStyles.panelRoomBarFill} />
+      </div>
+      <p className={resultsStyles.panelRoomFootnote}>
+        AI customer panel · streams in real time · no need to refresh
+      </p>
+    </div>
   );
 }
 
@@ -864,166 +1008,180 @@ export default function ResultsPage() {
       />
       <TitleBar
         title={isDone ? `Results — ${productTitle}` : `Analysing — ${productTitle}`}
-        breadcrumbs={[
-          { content: "Dashboard", url: "/app" },
-          { content: "History", url: "/app/history" },
-        ]}
       />
       <BlockStack gap="400">
 
-        {/* ── Status banners ── */}
-        {simulation.status === "FAILED" && (
-          <Banner tone="critical" title="Analysis did not complete">
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd">
-                {failureReason ?? "The analysis was interrupted. Your budget has not been charged."}
-              </Text>
-              <Button url="/app/simulate" variant="plain">Run a new analysis</Button>
-            </BlockStack>
-          </Banner>
-        )}
-
-        {!isDone && (
-          <div
-            className={analysingStyles.statusBar}
-            style={
-              staleWarning
-                ? { borderColor: "var(--p-color-border-warning, #b98900)" }
-                : undefined
-            }
-          >
-            <InlineStack align="space-between" blockAlign="center" gap="400" wrap>
-              <InlineStack gap="300" blockAlign="center">
-                <Spinner size="small" />
-                <BlockStack gap="050">
-                  <Text as="p" variant="bodyMd" fontWeight="semibold">
-                    {staleWarning
-                      ? "Still running — large panels can take several minutes"
-                      : elapsedSeconds < 60
-                        ? "Preparing your panel"
-                        : "Panel is debating — updates appear as they arrive"}
-                  </Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {staleWarning
-                      ? "This page refreshes automatically. You can leave the tab open."
-                      : "No need to refresh — we poll your results in the background."}
-                  </Text>
-                </BlockStack>
-              </InlineStack>
-              <InlineStack gap="300" blockAlign="center" wrap={false}>
-                {elapsedSeconds > 0 && (
-                  <Badge tone="info">{formatElapsed(elapsedSeconds)}</Badge>
-                )}
-                {staleWarning ? (
-                  <Button onClick={revalidate} variant="plain" size="slim">
-                    Refresh now
-                  </Button>
+        {/* ── Brand Studio score hero ── */}
+        {(() => {
+          const tier =
+            score >= 80 ? { cls: resultsStyles.scoreTierStrong, label: "Strong" } :
+            score >= 65 ? { cls: resultsStyles.scoreTierGood, label: "Good" } :
+            score >= 45 ? { cls: resultsStyles.scoreTierMixed, label: "Needs work" } :
+                           { cls: resultsStyles.scoreTierWeak, label: "Critical" };
+          const ringColor =
+            score >= 80 ? "#4ADE80" :
+            score >= 65 ? "#38BDF8" :
+            score >= 45 ? "#FBBF24" : "#F87171";
+          const ringStyle = isDone && simulation.score != null
+            ? {
+                ["--ring-progress" as string]: `${(score / 100) * 360}deg`,
+                ["--ring-color" as string]: ringColor,
+              } as React.CSSProperties
+            : { ["--ring-color" as string]: "rgba(255,255,255,0.20)" } as React.CSSProperties;
+          return (
+            <div className={resultsStyles.scoreHero}>
+              <div className={resultsStyles.scoreHeroLeft}>
+                <span className={resultsStyles.scoreEyebrow}>
+                  <span className={resultsStyles.scoreEyebrowDot} aria-hidden />
+                  {simulation.status === "FAILED"
+                    ? "Analysis failed"
+                    : isDone
+                      ? "Customer panel analysis"
+                      : "Panel debating · live"}
+                </span>
+                <h1 className={resultsStyles.scoreTitle}>{productTitle}</h1>
+                {simulation.status === "FAILED" ? (
+                  <p className={resultsStyles.scoreTLDR}>
+                    {failureReason ?? "The analysis was interrupted. Your budget has not been charged."}
+                  </p>
+                ) : isDone && tldr ? (
+                  <p className={resultsStyles.scoreTLDR}>{tldr}</p>
                 ) : (
-                  <Text as="span" variant="bodySm" tone="subdued">
-                    Auto-updating
-                  </Text>
+                  <p className={resultsStyles.scoreTLDR}>
+                    Your AI customer panel is debating this PDP. Results stream in as each phase completes — feel free to leave this tab open.
+                  </p>
                 )}
-              </InlineStack>
-            </InlineStack>
-          </div>
+                <div className={resultsStyles.heroMeta}>
+                  {!isDone && (
+                    <span className={`${resultsStyles.heroChip} ${resultsStyles.heroChipLive}`}>
+                      ● Live · {formatElapsed(elapsedSeconds)}
+                    </span>
+                  )}
+                  {simulation.status === "FAILED" && (
+                    <span className={`${resultsStyles.heroChip} ${resultsStyles.heroChipFailed}`}>
+                      ✕ Failed
+                    </span>
+                  )}
+                  {isDone && simulation.status === "COMPLETED" && (
+                    <a
+                      className={resultsStyles.heroChip}
+                      href={`/app/reports/${simulation.id}`}
+                      style={{ textDecoration: "none" }}
+                    >
+                      📄 Open printable report
+                    </a>
+                  )}
+                  {simulation.status === "FAILED" && (
+                    <a
+                      className={resultsStyles.heroChip}
+                      href="/app/simulate"
+                      style={{ textDecoration: "none" }}
+                    >
+                      ↻ Run a new analysis
+                    </a>
+                  )}
+                </div>
+              </div>
+              <div className={resultsStyles.scoreHeroRight}>
+                {isDone && simulation.score != null ? (
+                  <>
+                    <div className={resultsStyles.scoreRing} style={ringStyle}>
+                      <div className={resultsStyles.scoreRingInner}>
+                        <span className={resultsStyles.scoreRingNum}>{score}</span>
+                        <span className={resultsStyles.scoreRingDenom}>/ 100</span>
+                      </div>
+                    </div>
+                    <span className={`${resultsStyles.scoreTier} ${tier.cls}`}>
+                      {tier.label}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className={resultsStyles.scoreRing} style={ringStyle}>
+                      <div className={resultsStyles.scoreRingInner}>
+                        <span className={resultsStyles.scoreNotReady}>
+                          {simulation.status === "FAILED" ? "—" : "•••"}
+                        </span>
+                      </div>
+                    </div>
+                    <span className={resultsStyles.scoreTier}>
+                      {simulation.status === "FAILED" ? "No score" : "Calculating"}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Live Panel Room — premium "AI thinking" experience while we
+            wait for engine results. AI-independent timed sequence keeps
+            users engaged through the cold-start gap. */}
+        {!isDone && simulation.status !== "FAILED" && (
+          <LivePanelRoom
+            elapsedSeconds={elapsedSeconds}
+            stale={staleWarning}
+            onRefresh={revalidate}
+          />
         )}
 
-        {/* ── TL;DR — shown when complete ── */}
-        {isDone && tldr && (
-          <Banner tone={tldrTone}>
-            <InlineStack gap="300" blockAlign="start">
-              <Text as="span" variant="headingMd">{score >= 80 ? "✅" : score >= 60 ? "⚠️" : "🚨"}</Text>
-              <BlockStack gap="050">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">TL;DR — {tldr}</Text>
-                <AnalyticsSafeBadge />
-              </BlockStack>
-            </InlineStack>
-          </Banner>
+        {/* Analytics-safe positioning badge — only when complete */}
+        {isDone && simulation.score != null && (
+          <Box paddingBlockEnd="200">
+            <AnalyticsSafeBadge />
+          </Box>
         )}
 
-        {simulation.status === "COMPLETED" && simulation.score != null && (
-          <Banner tone="info" title="Download a PDF of this analysis">
-            <BlockStack gap="300">
-              <Text as="p" variant="bodyMd">
-                We deliver the report as a print-friendly page. Your browser turns it into a PDF — no extra
-                software needed.
-              </Text>
-              <BlockStack gap="150">
-                <Text as="p" variant="bodySm">
-                  <strong>1.</strong> Open the printable report (button below).
-                </Text>
-                <Text as="p" variant="bodySm">
-                  <strong>2.</strong> On that page, click <strong>Print / Save as PDF</strong> or press{" "}
-                  <strong>Ctrl+P</strong> (Windows) / <strong>⌘+P</strong> (Mac).
-                </Text>
-                <Text as="p" variant="bodySm">
-                  <strong>3.</strong> In the print dialog, set <strong>Destination</strong> to{" "}
-                  <strong>Save as PDF</strong> (Chrome / Edge) or <strong>PDF</strong> → Save (Safari), then save
-                  the file.
-                </Text>
-              </BlockStack>
-              <Box paddingBlockStart="100">
-                <Button url={`/app/reports/${simulation.id}`} variant="primary">
-                  Open printable report
-                </Button>
-              </Box>
-            </BlockStack>
-          </Banner>
-        )}
+        {/* ── Brand Studio tab nav (replaces Polaris Tabs) ── */}
+        <div className={resultsStyles.tabNav} role="tablist" aria-label="Result sections">
+          {tabs.map((t, i) => {
+            const isActive = selectedTab === i;
+            const showCount = i === 2 && isDone && issueCount > 0;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className={`${resultsStyles.tabBtn} ${isActive ? resultsStyles.tabBtnActive : ""}`}
+                onClick={() => setSelectedTab(i)}
+              >
+                {i === 0 ? "📊 Overview" : i === 1 ? "💬 Panel debate" : "✅ Action plan"}
+                {showCount && (
+                  <span className={resultsStyles.tabBtnCount}>{issueCount}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-        {/* ── Tabs ── */}
-        <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab}>
+        {/* ── Tab content (now wrapped in plain div — our own tab nav above) ── */}
+        <div role="tabpanel">
 
           {/* ════════════ TAB 0: OVERVIEW ════════════ */}
           {selectedTab === 0 && (
             <Box paddingBlockStart="400">
               <BlockStack gap="500">
 
-                {/* What-If Lab — premium spotlight (above the fold) */}
+                {/* Compact What-If Lab card — Brand Studio style */}
                 {isDone && (
-                  <div className={analysingStyles.whatIfPremium}>
-                    <div className={analysingStyles.whatIfTopRow}>
-                      <BlockStack gap="300">
-                        <p className={analysingStyles.whatIfEyebrow}>Private simulation workspace</p>
-                        <div className={analysingStyles.whatIfTitleRow}>
-                          <h2 className={analysingStyles.whatIfTitle}>What-If Lab</h2>
-                          <Badge tone="magic">{isPro ? "Included in your plan" : "Pro & Enterprise"}</Badge>
-                        </div>
-                        <p className={analysingStyles.whatIfSubtitle}>
-                          Model pricing, shipping, offers, and copy changes before you commit — the same AI
-                          customer panel, in an isolated workspace that never touches your live PDP.
-                        </p>
-                        <div className={analysingStyles.whatIfFeatures}>
-                          <div className={analysingStyles.whatIfFeature}>
-                            <span className={analysingStyles.whatIfFeatureLabel}>Zero storefront risk</span>
-                            Scenarios stay in the lab until you decide what to ship.
-                          </div>
-                          <div className={analysingStyles.whatIfFeature}>
-                            <span className={analysingStyles.whatIfFeatureLabel}>Apples-to-apples</span>
-                            Compare side by side with this run&apos;s baseline and score deltas.
-                          </div>
-                          <div className={analysingStyles.whatIfFeature}>
-                            <span className={analysingStyles.whatIfFeatureLabel}>Built for decisions</span>
-                            Turn “what if we…” into numbers your team can act on.
-                          </div>
-                        </div>
-                      </BlockStack>
-                      <div className={analysingStyles.whatIfCtaCol}>
-                        <Button
-                          url={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
-                          variant="primary"
-                          size="large"
-                          tone={isPro ? undefined : "critical"}
-                        >
-                          {isPro ? "Launch What-If Lab" : "Upgrade to unlock"}
-                        </Button>
-                        <p className={analysingStyles.whatIfFootnote}>
-                          {isPro
-                            ? "Sandbox only · your live listing stays unchanged"
-                            : "Unlock the full lab on Pro or Enterprise"}
-                        </p>
-                      </div>
+                  <div className={resultsStyles.whatIfCompact}>
+                    <div className={resultsStyles.whatIfCompactLeft}>
+                      <p className={resultsStyles.whatIfCompactEyebrow}>
+                        🧪 Private simulation workspace · {isPro ? "Included" : "Pro & Enterprise"}
+                      </p>
+                      <h3 className={resultsStyles.whatIfCompactTitle}>What-If Lab</h3>
+                      <p className={resultsStyles.whatIfCompactDesc}>
+                        Model pricing, shipping, and copy changes against this baseline — your live PDP
+                        stays unchanged.
+                      </p>
                     </div>
+                    <a
+                      className={`${resultsStyles.whatIfCompactCta} ${isPro ? "" : resultsStyles.whatIfCompactCtaLocked}`}
+                      href={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
+                    >
+                      {isPro ? "Launch What-If Lab →" : "🔒 Upgrade to unlock"}
+                    </a>
                   </div>
                 )}
 
@@ -1388,7 +1546,7 @@ export default function ResultsPage() {
 
                               {latestRetake?.retakeEvaluation && (
                                 <LabRetakeEvaluation
-                                  evaluation={latestRetake.retakeEvaluation as RetakeEvaluation}
+                                  evaluation={latestRetake.retakeEvaluation as unknown as RetakeEvaluation}
                                   newScore={latestRetake.score ?? null}
                                   originalScore={simulation.score!}
                                   audienceLabel={labConfig ? (AUDIENCE_LABELS[labConfig.audience] ?? "audience") : "audience"}
@@ -1582,7 +1740,7 @@ export default function ResultsPage() {
             </Box>
           )}
 
-        </Tabs>
+        </div>
 
       </BlockStack>
     </Page>

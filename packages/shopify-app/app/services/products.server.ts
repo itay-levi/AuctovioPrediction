@@ -34,9 +34,22 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-// Simple in-memory cache (per-process, 15-min TTL)
+// Simple in-memory cache (per-process, 15-min TTL).
+// Bounded LRU: evicts the oldest entry when MAX_ENTRIES is exceeded so a server
+// hosting many shops doesn't grow memory unboundedly.
 const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 15 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 200;
+
+function setCacheBounded(key: string, entry: CacheEntry) {
+  if (cache.has(key)) cache.delete(key); // refresh insertion order
+  cache.set(key, entry);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey === undefined) break;
+    cache.delete(firstKey);
+  }
+}
 
 const PRODUCT_FIELDS = `
   id
@@ -111,15 +124,23 @@ export async function fetchProducts(
       variables: { first: Math.min(25, limit - products.length), after: cursor },
     });
     const json = (await res.json()) as {
-      data: {
-        products: {
+      data?: {
+        products?: {
           pageInfo: { hasNextPage: boolean; endCursor: string };
           edges: { node: Record<string, unknown> }[];
         };
       };
+      errors?: { message: string }[];
     };
 
-    const page = json.data.products;
+    if (json.errors?.length) {
+      throw new Error(`Shopify products query failed: ${json.errors.map((e) => e.message).join("; ")}`);
+    }
+    const page = json.data?.products;
+    if (!page) {
+      // Defensive: empty data block. Stop the loop instead of spinning forever.
+      break;
+    }
     for (const edge of page.edges) {
       const node = edge.node as {
         id: string;
@@ -157,10 +178,15 @@ export async function fetchProducts(
     }
 
     hasMore = page.pageInfo.hasNextPage;
-    cursor = page.pageInfo.endCursor;
+    const nextCursor = page.pageInfo.endCursor;
+    // Defensive: if Shopify says "more pages" but doesn't give a cursor, stop.
+    if (hasMore && !nextCursor) {
+      break;
+    }
+    cursor = nextCursor;
   }
 
-  cache.set(cacheKey, { data: products, expiresAt: Date.now() + CACHE_TTL_MS });
+  setCacheBounded(cacheKey, { data: products, expiresAt: Date.now() + CACHE_TTL_MS });
   return products;
 }
 

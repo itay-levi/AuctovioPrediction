@@ -10,7 +10,7 @@ describe("RecommendationsPanel", () => {
       data: undefined,
       submit: vi.fn(),
       Form: ({ children }: React.PropsWithChildren) => <form>{children}</form>,
-    } as ReturnType<typeof Remix.useFetcher>);
+    } as unknown as ReturnType<typeof Remix.useFetcher>);
   });
 
   const trustAudit = {
@@ -92,7 +92,7 @@ describe("RecommendationsPanel", () => {
     );
     expect(screen.getByText(/losing 60%/)).toBeInTheDocument();
     expect(screen.getByText(/improved by \+3/)).toBeInTheDocument();
-    expect(screen.getByText(/Fix Now/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Fix Now/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Grows Over Time/)).toBeInTheDocument();
     expect(screen.getByText("T1")).toBeInTheDocument();
   });

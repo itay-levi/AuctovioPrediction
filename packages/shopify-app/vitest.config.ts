@@ -8,7 +8,10 @@ import { defineConfig } from "vitest/config";
  * cover those with contract/integration/E2E tests outside this unit suite.
  */
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  // Cast both plugins to silence the duplicate-Vite type error caused by the
+  // monorepo hoisting two Vite copies — runtime is unaffected.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plugins: [react() as any, tsconfigPaths() as any],
   test: {
     environment: "jsdom",
     globals: true,

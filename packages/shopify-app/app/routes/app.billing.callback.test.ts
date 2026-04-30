@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-const mockGraphql = vi.fn();
+const { mockGraphql } = vi.hoisted(() => ({ mockGraphql: vi.fn() }));
 
 vi.mock("../shopify.server", () => ({
   authenticate: {

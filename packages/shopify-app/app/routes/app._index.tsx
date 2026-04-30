@@ -57,14 +57,82 @@ function formatDate(iso: string | Date): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
+// ── StoreHealth panel ──────────────────────────────────────────────────────
+
+function StoreHealth({
+  avgScore,
+  totalAnalyses,
+  mtPct,
+  tierLabel,
+}: {
+  avgScore: number | null;
+  totalAnalyses: number;
+  mtPct: number;
+  tierLabel: string;
+}) {
+  const score = avgScore ?? 0;
+  const color = avgScore == null ? "#E2E8F0"
+    : score >= 70 ? "#16A34A"
+    : score >= 45 ? "#D97706"
+    : "#DC2626";
+  const ringBg = avgScore != null
+    ? `conic-gradient(${color} 0% ${score}%, #E2E8F0 ${score}% 100%)`
+    : "conic-gradient(#E2E8F0 0% 100%)";
+
+  const healthLabel = avgScore == null ? "Getting started"
+    : score >= 70 ? "Excellent"
+    : score >= 45 ? "Good"
+    : "Needs Work";
+
+  const items: { label: string; done: boolean; value?: string }[] = [
+    { label: "Store connected", done: true },
+    { label: "Analyses run", done: totalAnalyses > 0, value: String(totalAnalyses) },
+    { label: "Budget available", done: mtPct < 80, value: `${Math.max(0, 100 - mtPct)}%` },
+    { label: "Avg score", done: avgScore != null && avgScore >= 45, value: avgScore != null ? `${avgScore}/100` : "—" },
+    { label: "Plan", done: true, value: tierLabel },
+  ];
+
+  return (
+    <div className={styles.healthCard}>
+      <div className={styles.healthTop}>
+        <div className={styles.healthRing} style={{ background: ringBg }}>
+          <div className={styles.healthRingInner}>
+            <span className={styles.healthRingNum}>{avgScore ?? "—"}</span>
+            {avgScore != null && <span className={styles.healthRingLabel}>/ 100</span>}
+          </div>
+        </div>
+        <div className={styles.healthMeta}>
+          <p className={styles.healthTitle}>Store Health</p>
+          <p className={styles.healthSubLabel}>{healthLabel}</p>
+        </div>
+      </div>
+      <div className={styles.healthList}>
+        {items.map((item) => (
+          <div key={item.label} className={styles.healthRow}>
+            <span className={item.done ? styles.healthDone : styles.healthTodo}>
+              {item.done ? "✓" : ""}
+            </span>
+            <span className={styles.healthRowLabel}>{item.label}</span>
+            {item.value !== undefined && (
+              <span className={styles.healthRowValue}>{item.value}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Score ring (hero) ──────────────────────────────────────────────────────
 
 function ScoreRing({ score }: { score: number }) {
   const pct = Math.min(100, Math.max(0, score));
   const color = pct >= 70 ? "#16A34A" : pct >= 45 ? "#D97706" : "#DC2626";
   return (
-    <div className={styles.heroScoreRing}
-      style={{ background: `conic-gradient(${color} 0% ${pct}%, #E2E8F0 ${pct}% 100%)` }}>
+    <div
+      className={styles.heroScoreRing}
+      style={{ background: `conic-gradient(${color} 0% ${pct}%, rgba(255,255,255,0.15) ${pct}% 100%)` }}
+    >
       <div className={styles.heroScoreRingInner}>
         <span className={styles.heroScoreNum}>{score}</span>
         <span className={styles.heroScoreSub}>{scoreLabel(score)}</span>
@@ -72,6 +140,8 @@ function ScoreRing({ score }: { score: number }) {
     </div>
   );
 }
+
+// ── Analysis row (returning users) ─────────────────────────────────────────
 
 function AnalysisRow({ sim }: {
   sim: {
@@ -165,8 +235,12 @@ export default function Dashboard() {
   const agentCount = tierLabel === "ENTERPRISE" ? "50 agents" : tierLabel === "PRO" ? "25 agents" : "5 agents";
   const weeklyScan = tierLabel === "FREE" ? "1 product" : "All products";
 
-  // Representative score for hero ring (avg or last completed)
   const heroScore = avgScore ?? completedSims[0]?.score ?? 68;
+
+  // Step card states for first-time users
+  const step1Done = true; // store is always connected by definition
+  const step2Done = recentSims.length > 0;
+  const step3Done = completedSims.length > 0;
 
   return (
     <Page>
@@ -195,35 +269,50 @@ export default function Dashboard() {
         )}
 
         {/* ── Hero ── */}
-        <div className={styles.hero}>
-          <div className={styles.heroContent}>
-            <span className={styles.heroEyebrow}>🤖 AI Customer Panel</span>
-            <h1 className={styles.heroHeadline}>
-              Understand Why Customers<br />Buy or Leave
-            </h1>
-            <p className={styles.heroSub}>
-              Run instant 5-agent AI customer panels that reveal real friction points
-              and clear actions to improve your Shopify product pages.
-            </p>
-            <div className={styles.heroActions}>
-              <Link to="/app/simulate" className={styles.btnPrimary}>
-                ▶ Run New Analysis
-              </Link>
-              <Link to="/app/history" className={styles.btnSecondary}>
-                ◎ View Past Analyses
-              </Link>
+        {isFirstTime ? (
+          /* First-time: full hero */
+          <div className={styles.hero}>
+            <div className={styles.heroContent}>
+              <span className={styles.heroEyebrow}>🤖 AI Customer Panel</span>
+              <h1 className={styles.heroHeadline}>
+                Understand Why Customers<br />Buy or Leave
+              </h1>
+              <p className={styles.heroSub}>
+                Run instant 5-agent AI customer panels that reveal real friction points
+                and clear actions to improve your Shopify product pages.
+              </p>
+              <div className={styles.heroActions}>
+                <Link to="/app/simulate" className={styles.btnHeroPrimary}>
+                  ▶ Run Your First Analysis
+                </Link>
+              </div>
             </div>
           </div>
-          {!isFirstTime && (
+        ) : (
+          /* Returning: compact hero with score ring */
+          <div className={styles.heroCompact}>
+            <div className={styles.heroCompactContent}>
+              <h1 className={styles.heroCompactTitle}>Your Store Intelligence Dashboard</h1>
+              <p className={styles.heroCompactSub}>
+                Track analysis results, spot friction patterns, and keep improving your product pages.
+              </p>
+              <div className={styles.heroCompactActions}>
+                <Link to="/app/simulate" className={styles.btnHeroPrimary}>
+                  ▶ Run New Analysis
+                </Link>
+                <Link to="/app/history" className={styles.btnHeroSecondary}>
+                  ◎ View All History
+                </Link>
+              </div>
+            </div>
             <div className={styles.heroIllustration}>
               <ScoreRing score={heroScore} />
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* ── Quick stats ── */}
         <div className={styles.statsRow}>
-          {/* Analyses this month */}
           <div className={styles.statCard}>
             <div className={`${styles.statCardAccent} ${styles.accentBlue}`} />
             <span className={styles.statIcon}>📊</span>
@@ -231,7 +320,6 @@ export default function Dashboard() {
             <div className={styles.statLabel}>Analyses this month</div>
           </div>
 
-          {/* Budget used */}
           <div className={styles.statCard}>
             <div className={`${styles.statCardAccent} ${mtPct >= 80 ? styles.accentAmber : styles.accentBlue}`} />
             <span className={styles.statIcon}>⚡</span>
@@ -246,7 +334,6 @@ export default function Dashboard() {
             <div className={styles.statSub}>{mtUsed} / {mtLimit} MT · {mtPct}% used</div>
           </div>
 
-          {/* Average score */}
           <div className={styles.statCard}>
             <div className={`${styles.statCardAccent} ${styles.accentGreen}`} />
             <span className={styles.statIcon}>🎯</span>
@@ -259,7 +346,6 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Success rate */}
           <div className={styles.statCard}>
             <div className={`${styles.statCardAccent} ${styles.accentPurple}`} />
             <span className={styles.statIcon}>✅</span>
@@ -275,36 +361,77 @@ export default function Dashboard() {
 
         {/* ── Main grid ── */}
         {isFirstTime ? (
-          /* First-time experience */
+          /* ── First-time: Brand Studio step cards ── */
           <div className={styles.mainGrid}>
             <div>
-              <div className={styles.sectionCard}>
-                <div className={styles.sectionHeader}>
-                  <h2 className={styles.sectionTitle}>How it works</h2>
-                </div>
-                <div style={{ padding: "1.25rem 1.375rem" }}>
-                  <div className={styles.stepsGrid}>
-                    {([
-                      { num: "1", icon: "🛍️", title: "Pick a product", desc: "Select any live product from your Shopify catalog — no setup required." },
-                      { num: "2", icon: "🧑‍🤝‍🧑", title: "Run the panel", desc: "5 AI customer personas stress-test your listing. First results appear in ~30 seconds." },
-                      { num: "3", icon: "🎯", title: "Fix what's blocking sales", desc: "Get a score, a friction breakdown, and one-click fixes for critical issues." },
-                    ] as const).map((step) => (
-                      <div key={step.num} className={styles.stepCard}>
-                        <span className={styles.stepNum}>{step.num}</span>
-                        <span className={styles.stepIcon}>{step.icon}</span>
-                        <p className={styles.stepTitle}>{step.title}</p>
-                        <p className={styles.stepDesc}>{step.desc}</p>
-                      </div>
-                    ))}
+              <div className={styles.getStartedHead}>
+                <h2 className={styles.getStartedTitle}>Get started in 3 steps</h2>
+                <p className={styles.getStartedSub}>Follow these steps to run your first AI customer panel and start uncovering what's blocking sales.</p>
+              </div>
+
+              <div className={styles.stepsV2}>
+                {/* Step 1: Store connected */}
+                <div className={`${styles.stepCardV2} ${step1Done ? styles.stepCardV2Done : styles.stepCardV2Active}`}>
+                  <div className={styles.stepCircleV2}>{step1Done ? "✓" : "1"}</div>
+                  <div className={styles.stepCardBodyV2}>
+                    <div className={styles.stepCardTitleRow}>
+                      <span className={styles.stepCardTitleV2}>Store connected</span>
+                      {step1Done && <span className={styles.doneBadge}>Done</span>}
+                    </div>
+                    <p className={styles.stepCardDescV2}>
+                      Your Shopify store is linked and ready. The panel reads your live product pages directly — no theme changes, no A/B setup required.
+                    </p>
                   </div>
-                  <Link to="/app/simulate" className={styles.btnPrimary} style={{ display: "inline-flex" }}>
-                    ▶ Run Your First Analysis
-                  </Link>
+                </div>
+
+                {/* Step 2: Run first analysis */}
+                <div className={`${styles.stepCardV2} ${step2Done ? styles.stepCardV2Done : styles.stepCardV2Active}`}>
+                  <div className={styles.stepCircleV2}>{step2Done ? "✓" : "2"}</div>
+                  <div className={styles.stepCardBodyV2}>
+                    <div className={styles.stepCardTitleRow}>
+                      <span className={styles.stepCardTitleV2}>Run your first analysis</span>
+                      {step2Done && <span className={styles.doneBadge}>Done</span>}
+                    </div>
+                    <p className={styles.stepCardDescV2}>
+                      Pick any live product from your catalog and 5 AI customer personas stress-test the listing. First results appear in ~30 seconds, full report in ~5–10 minutes.
+                    </p>
+                    {!step2Done && (
+                      <Link to="/app/simulate" className={styles.stepCtaBtn}>
+                        ▶ Run Analysis
+                      </Link>
+                    )}
+                  </div>
+                </div>
+
+                {/* Step 3: Fix what's blocking sales */}
+                <div className={`${styles.stepCardV2} ${step3Done ? styles.stepCardV2Done : step2Done ? styles.stepCardV2Active : styles.stepCardV2Dim}`}>
+                  <div className={styles.stepCircleV2}>{step3Done ? "✓" : "3"}</div>
+                  <div className={styles.stepCardBodyV2}>
+                    <div className={styles.stepCardTitleRow}>
+                      <span className={styles.stepCardTitleV2}>Fix what's blocking sales</span>
+                      {step3Done && <span className={styles.doneBadge}>Done</span>}
+                    </div>
+                    <p className={styles.stepCardDescV2}>
+                      Get your product's score, a friction breakdown across price, trust, and logistics, plus one-click AI-generated fixes for critical issues.
+                    </p>
+                    {step3Done && completedSims[0] && (
+                      <Link to={`/app/results/${completedSims[0].id}`} className={`${styles.stepCtaBtn} ${styles.stepCtaBtnGreen}`}>
+                        View Your Report →
+                      </Link>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
 
+            {/* Right: Health + Plan */}
             <div>
+              <StoreHealth
+                avgScore={avgScore}
+                totalAnalyses={recentSims.length}
+                mtPct={mtPct}
+                tierLabel={tierLabel}
+              />
               <div className={styles.sectionCard}>
                 <div className={styles.sectionHeader}>
                   <h2 className={styles.sectionTitle}>Your free plan includes</h2>
@@ -332,9 +459,8 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          /* Returning merchant */
+          /* ── Returning users: analyses list + health panel ── */
           <div className={styles.mainGrid}>
-            {/* Recent analyses */}
             <div className={styles.sectionCard}>
               <div className={styles.sectionHeader}>
                 <h2 className={styles.sectionTitle}>Recent Analyses</h2>
@@ -358,8 +484,13 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Plan card */}
             <div>
+              <StoreHealth
+                avgScore={avgScore}
+                totalAnalyses={recentSims.length}
+                mtPct={mtPct}
+                tierLabel={tierLabel}
+              />
               <div className={styles.sectionCard}>
                 <div className={styles.sectionHeader}>
                   <h2 className={styles.sectionTitle}>Your Plan</h2>
@@ -387,8 +518,10 @@ export default function Dashboard() {
                     </div>
                     <div className={styles.planRow}>
                       <span className={styles.planRowLabel}>Budget remaining</span>
-                      <span className={styles.planRowValue}
-                        style={{ color: mtPct >= 80 ? "var(--red)" : "inherit" }}>
+                      <span
+                        className={styles.planRowValue}
+                        style={{ color: mtPct >= 80 ? "var(--red)" : "inherit" }}
+                      >
                         {mtLimit - mtUsed} MT
                       </span>
                     </div>

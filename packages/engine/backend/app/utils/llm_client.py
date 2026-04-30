@@ -25,7 +25,7 @@ import time
 import threading
 import collections
 from typing import Optional, Dict, Any, List
-from openai import OpenAI, RateLimitError
+from openai import OpenAI, RateLimitError, APITimeoutError
 
 from ..config import Config
 
@@ -162,6 +162,7 @@ class LLMClient:
         """
         throttle = _throttle_deep if self._use_deep_throttle else _throttle_fast
         tier_label = "deep(70B)" if self._use_deep_throttle else "fast(8B)"
+        timeout_retries = 2
         for attempt in range(max_retries + 1):
             throttle()
             try:
@@ -177,6 +178,18 @@ class LLMClient:
                 logger.warning(
                     f"[{tier_label}] 429 — attempt {attempt + 1}/{max_retries + 1}, "
                     f"backoff {wait_secs}s"
+                )
+                time.sleep(wait_secs)
+            except APITimeoutError:
+                if attempt >= timeout_retries:
+                    logger.error(
+                        f"[{tier_label}] Request timed out — {attempt + 1} attempts failed."
+                    )
+                    raise
+                wait_secs = 2 ** attempt
+                logger.warning(
+                    f"[{tier_label}] Timeout — attempt {attempt + 1}/{timeout_retries + 1}, "
+                    f"retrying in {wait_secs}s"
                 )
                 time.sleep(wait_secs)
             except Exception as e:

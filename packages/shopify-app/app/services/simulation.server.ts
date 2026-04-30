@@ -11,7 +11,13 @@ export async function estimateSimulationCost(tier: PlanTier): Promise<number> {
 
 export async function canRunSimulation(
   shopDomain: string,
-  storeId: string
+  storeId: string,
+  // simulationsToCreate: how many DB rows the caller will create. Lab=2,
+  // batch What-If=N, single sim=1.
+  simulationsToCreate: number = 1,
+  // countsTowardSlotQuota: only true for root sims (the primary monthly limit).
+  // What-If / delta / Retake sims consume MT but not the analysis slot quota.
+  countsTowardSlotQuota: boolean = true,
 ): Promise<{ allowed: boolean; reason?: string }> {
   // Skip all budget/limit checks in development
   if (process.env.NODE_ENV === "development") {
@@ -24,36 +30,39 @@ export async function canRunSimulation(
   // Expire zombies first so they don't inflate the monthly count
   await expireStuckSimulations(storeId);
 
-  const estimate = await estimateSimulationCost(budget.tier);
-  if (budget.remaining < estimate) {
+  const perRunEstimate = await estimateSimulationCost(budget.tier);
+  const totalEstimate = perRunEstimate * simulationsToCreate;
+  if (budget.remaining < totalEstimate) {
     return {
       allowed: false,
-      reason: `Insufficient MT budget. Need ${estimate} MT, have ${budget.remaining}.`,
+      reason: `Insufficient MT budget. Need ${totalEstimate} MT, have ${budget.remaining}.`,
     };
   }
 
-  // Check monthly simulation count
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+  if (countsTowardSlotQuota) {
+    // Check monthly simulation count
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
 
-  // Only count root (product scan) simulations — What-Ifs / delta runs are not
-  // new analyses and should not consume the monthly slot quota.
-  const simCount = await db.simulation.count({
-    where: {
-      storeId,
-      originalSimulationId: null,
-      createdAt: { gte: monthStart },
-      status: { not: "FAILED" as SimulationStatus },
-    },
-  });
+    // Only count root (product scan) simulations — What-Ifs / delta runs are not
+    // new analyses and should not consume the monthly slot quota.
+    const simCount = await db.simulation.count({
+      where: {
+        storeId,
+        originalSimulationId: null,
+        createdAt: { gte: monthStart },
+        status: { not: "FAILED" as SimulationStatus },
+      },
+    });
 
-  const limit = SIM_LIMITS[budget.tier];
-  if (simCount >= limit) {
-    return {
-      allowed: false,
-      reason: `Monthly simulation limit reached (${limit} for ${budget.tier} plan).`,
-    };
+    const limit = SIM_LIMITS[budget.tier];
+    if (simCount + simulationsToCreate > limit) {
+      return {
+        allowed: false,
+        reason: `Monthly simulation limit reached (${limit} for ${budget.tier} plan).`,
+      };
+    }
   }
 
   return { allowed: true };
@@ -400,6 +409,7 @@ export async function updateSimulationFromCallback(
       nicheConcern?: string;
       phase: number;
       verdict: string;
+      confidenceScore?: number;
       reasoning: string;
     }[];
   }

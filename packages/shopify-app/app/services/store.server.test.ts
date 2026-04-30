@@ -17,6 +17,9 @@ vi.mock("../db.server", () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    simulation: {
+      aggregate: vi.fn(),
+    },
   },
 }));
 
@@ -49,15 +52,34 @@ describe("store.server", () => {
     await expect(getMtBudgetStatus("x")).resolves.toBeNull();
   });
 
-  it("getMtBudgetStatus computes remaining", async () => {
+  it("getMtBudgetStatus computes remaining from this month's COMPLETED sims", async () => {
     vi.mocked(db.store.findUnique).mockResolvedValue({
+      id: "store-1",
       planTier: "FREE",
-      mtBudgetUsed: 10,
+    } as never);
+    vi.mocked(db.simulation.aggregate).mockResolvedValue({
+      _sum: { mtCost: 10 },
     } as never);
     await expect(getMtBudgetStatus("x")).resolves.toEqual({
       used: 10,
       limit: 30,
       remaining: 20,
+      tier: "FREE",
+    });
+  });
+
+  it("getMtBudgetStatus returns 0 used when no sims this month (monthly reset)", async () => {
+    vi.mocked(db.store.findUnique).mockResolvedValue({
+      id: "store-1",
+      planTier: "FREE",
+    } as never);
+    vi.mocked(db.simulation.aggregate).mockResolvedValue({
+      _sum: { mtCost: null },
+    } as never);
+    await expect(getMtBudgetStatus("x")).resolves.toEqual({
+      used: 0,
+      limit: 30,
+      remaining: 30,
       tier: "FREE",
     });
   });

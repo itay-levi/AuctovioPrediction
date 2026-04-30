@@ -15,7 +15,7 @@ describe("IntelligenceExport", () => {
           {children}
         </form>
       ),
-    } as ReturnType<typeof Remix.useFetcher>);
+    } as unknown as ReturnType<typeof Remix.useFetcher>);
   });
 
   it("shows upgrade card when not Pro", () => {

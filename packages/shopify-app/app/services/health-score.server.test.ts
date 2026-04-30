@@ -43,7 +43,7 @@ describe("computeShopHealthScore", () => {
           },
         },
       },
-    ] as Awaited<ReturnType<typeof db.simulation.findMany>>);
+    ] as unknown as Awaited<ReturnType<typeof db.simulation.findMany>>);
     const r = await computeShopHealthScore("store-1");
     expect(r.healthScore).toBe(70);
     expect(r.simulationCount).toBe(2);
@@ -53,7 +53,7 @@ describe("computeShopHealthScore", () => {
   it("ignores sims without friction", async () => {
     vi.mocked(db.simulation.findMany).mockResolvedValue([
       { score: 50, reportJson: null },
-    ] as Awaited<ReturnType<typeof db.simulation.findMany>>);
+    ] as unknown as Awaited<ReturnType<typeof db.simulation.findMany>>);
     const r = await computeShopHealthScore("store-1");
     expect(r.topFriction).toBe(null);
   });

@@ -9,6 +9,7 @@ Endpoints:
 
 import threading
 import logging
+import sys
 from flask import Blueprint, request, jsonify
 
 from ...config import Config
@@ -44,6 +45,12 @@ _simulation_semaphore = threading.Semaphore(2)
 _archetype_cache: dict[str, list] = {}
 _intelligence_cache: dict[str, dict] = {}   # product_key → {"product_context": str, "no_return_acceptable": bool, "gap_context": str, "gap_items": list}
 _niche_profile_cache: dict[str, dict] = {}
+
+
+def _is_interpreter_shutting_down(err: Exception) -> bool:
+    """Best-effort detection for Flask dev-reloader teardown races."""
+    msg = str(err).lower()
+    return "interpreter shutdown" in msg or (isinstance(err, RuntimeError) and sys.is_finalizing())
 
 
 def _require_auth(f):
@@ -180,15 +187,21 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             _need_dna = product_dna is None and not _supplied_dna
             _need_niche = not (_panel_key and _panel_key in _niche_profile_cache)
 
-            with _PreTPE(max_workers=3) as _pre_pool:
-                _intel_fut = _pre_pool.submit(generate_product_intelligence, llm, req.productJson)
-                _dna_fut   = _pre_pool.submit(extract_product_dna, llm, req.productJson) if _need_dna else None
-                _niche_fut = _pre_pool.submit(_gen_niche, llm, req.productJson) if _need_niche else None
+            try:
+                with _PreTPE(max_workers=3) as _pre_pool:
+                    _intel_fut = _pre_pool.submit(generate_product_intelligence, llm, req.productJson)
+                    _dna_fut   = _pre_pool.submit(extract_product_dna, llm, req.productJson) if _need_dna else None
+                    _niche_fut = _pre_pool.submit(_gen_niche, llm, req.productJson) if _need_niche else None
 
-                intelligence = _intel_fut.result()
-                if _dna_fut and product_dna is None:
-                    product_dna = _dna_fut.result()
-                niche_map = _niche_fut.result() if _niche_fut else _niche_profile_cache.get(_panel_key or "", {})
+                    intelligence = _intel_fut.result()
+                    if _dna_fut and product_dna is None:
+                        product_dna = _dna_fut.result()
+                    niche_map = _niche_fut.result() if _niche_fut else _niche_profile_cache.get(_panel_key or "", {})
+            except RuntimeError as e:
+                if _is_interpreter_shutting_down(e):
+                    logger.info(f"Simulation {req.simulationId} cancelled during app reload")
+                    return
+                raise
 
             if _panel_key and _need_niche:
                 _niche_profile_cache[_panel_key] = niche_map
@@ -235,11 +248,17 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                 return "", []
 
         if intelligence is not None and intelligence.checklist:
-            with _PreTPE(max_workers=2) as _gap_trust_pool:
-                _gap_fut = _gap_trust_pool.submit(_run_gap_llm)
-                _trust_fut = _gap_trust_pool.submit(_run_trust_audit_llm)
-                gap_context, gap_items_for_recs = _gap_fut.result()
-                trust_audit = _trust_fut.result()
+            try:
+                with _PreTPE(max_workers=2) as _gap_trust_pool:
+                    _gap_fut = _gap_trust_pool.submit(_run_gap_llm)
+                    _trust_fut = _gap_trust_pool.submit(_run_trust_audit_llm)
+                    gap_context, gap_items_for_recs = _gap_fut.result()
+                    trust_audit = _trust_fut.result()
+            except RuntimeError as e:
+                if _is_interpreter_shutting_down(e):
+                    logger.info(f"Simulation {req.simulationId} cancelled during app reload")
+                    return
+                raise
         else:
             trust_audit = _run_trust_audit_llm()
 

@@ -33,7 +33,7 @@ describe("api.cron.cleanup", () => {
       request: new Request("https://x", { headers: { Authorization: "Bearer test-cron-secret" } }),
     } as never);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { expired?: number; error?: string };
     expect(body.expired).toBe(2);
   });
 });

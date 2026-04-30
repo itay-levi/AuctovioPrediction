@@ -65,6 +65,62 @@ describe("products.server", () => {
     await expect(fetchProductById(admin, "gid://x")).resolves.toBeNull();
   });
 
+  it("fetchProducts surfaces GraphQL errors instead of crashing", async () => {
+    const admin = {
+      graphql: vi.fn().mockResolvedValue({
+        json: async () => ({
+          errors: [{ message: "Field 'products' not allowed" }],
+        }),
+      }),
+    };
+    await expect(fetchProducts(admin, "errored-shop", 50)).rejects.toThrow(
+      /Shopify products query failed/,
+    );
+  });
+
+  it("fetchProducts breaks when hasNextPage but no endCursor (no infinite loop)", async () => {
+    const admin = {
+      graphql: vi.fn().mockResolvedValue({
+        json: async () => ({
+          data: {
+            products: {
+              pageInfo: { hasNextPage: true, endCursor: null },
+              edges: [
+                {
+                  node: {
+                    id: "1",
+                    title: "X",
+                    handle: "x",
+                    descriptionHtml: "",
+                    productType: "T",
+                    vendor: "V",
+                    tags: [],
+                    status: "ACTIVE",
+                    onlineStoreUrl: null,
+                    images: { edges: [] },
+                    variants: { edges: [] },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      }),
+    };
+    const list = await fetchProducts(admin, "buggy-shop", 100);
+    expect(list).toHaveLength(1);
+    // Should NOT loop forever even though hasNextPage was true
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetchProducts breaks gracefully when data block is empty", async () => {
+    const admin = {
+      graphql: vi.fn().mockResolvedValue({ json: async () => ({}) }),
+    };
+    const list = await fetchProducts(admin, "empty-shop", 50);
+    expect(list).toEqual([]);
+  });
+
   it("extractCatalogMetadata aggregates", () => {
     const products: ShopifyProduct[] = [
       {
