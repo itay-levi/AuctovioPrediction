@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher, useRevalidator } from "@remix-run/react";
+import { useLoaderData, useFetcher, useRevalidator, Link } from "@remix-run/react";
 import {
   Page,
   Text,
@@ -692,26 +692,33 @@ export default function SandboxPage() {
               stays unchanged. Each scenario costs MT but doesn&apos;t consume monthly analysis slots.
             </p>
             <div className={resultsStyles.heroMeta}>
-              <a
+              <Link
                 className={resultsStyles.heroChip}
-                href={`/app/results/${simulation.id}`}
+                to={`/app/results/${simulation.id}`}
                 style={{ textDecoration: "none" }}
               >
                 ← Back to results
-              </a>
+              </Link>
               {isPro && (
-                <a
+                <button
+                  type="button"
                   className={resultsStyles.heroChip}
-                  href="#lab-price-optimizer-panel"
-                  onClick={(e) => {
-                    e.preventDefault();
+                  onClick={() => {
                     document.getElementById("lab-price-optimizer-panel")
                       ?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }}
-                  style={{ textDecoration: "none", background: "rgba(255,255,255,0.18)", borderColor: "rgba(255,255,255,0.35)", color: "#FFFFFF", fontWeight: 800 }}
+                  style={{
+                    textDecoration: "none",
+                    background: "rgba(255,255,255,0.18)",
+                    borderColor: "rgba(255,255,255,0.35)",
+                    color: "#FFFFFF",
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
                 >
                   💰 Try the Price Optimizer
-                </a>
+                </button>
               )}
               <span className={resultsStyles.heroChip}>
                 {scenarioHistory.length} {scenarioHistory.length === 1 ? "scenario" : "scenarios"} run

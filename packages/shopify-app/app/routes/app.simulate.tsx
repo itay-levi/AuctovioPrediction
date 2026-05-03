@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { useLoaderData, Form, useNavigation, useActionData } from "@remix-run/react";
+import { useLoaderData, Form, useNavigation, useActionData, Link } from "@remix-run/react";
 import db from "../db.server";
 import { Prisma } from "@prisma/client";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
@@ -633,9 +633,9 @@ export default function SimulatePage() {
                   Run two scenarios at once — baseline + custom in a single analysis. Included on Pro and Enterprise.
                 </p>
                 {planTier === "FREE" ? (
-                  <a href="/app/billing" className={flowStyles.simLabUpgradeBtn}>
+                  <Link to="/app/billing" className={flowStyles.simLabUpgradeBtn}>
                     ✦ View plans &amp; upgrade
-                  </a>
+                  </Link>
                 ) : (
                   <div className={flowStyles.simLabActiveNote}>
                     ✓ Lab is active — toggle <strong>Lab</strong> in Step 2 above.

@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useRevalidator, useFetcher } from "@remix-run/react";
+import { useLoaderData, useRevalidator, useFetcher, Link } from "@remix-run/react";
 import { Prisma } from "@prisma/client";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import {
@@ -1063,22 +1063,22 @@ export default function ResultsPage() {
                     </span>
                   )}
                   {isDone && simulation.status === "COMPLETED" && (
-                    <a
+                    <Link
                       className={resultsStyles.heroChip}
-                      href={`/app/reports/${simulation.id}`}
+                      to={`/app/reports/${simulation.id}`}
                       style={{ textDecoration: "none" }}
                     >
                       📄 Open printable report
-                    </a>
+                    </Link>
                   )}
                   {simulation.status === "FAILED" && (
-                    <a
+                    <Link
                       className={resultsStyles.heroChip}
-                      href="/app/simulate"
+                      to="/app/simulate"
                       style={{ textDecoration: "none" }}
                     >
                       ↻ Run a new analysis
-                    </a>
+                    </Link>
                   )}
                 </div>
               </div>
@@ -1176,12 +1176,12 @@ export default function ResultsPage() {
                         stays unchanged.
                       </p>
                     </div>
-                    <a
+                    <Link
                       className={`${resultsStyles.whatIfCompactCta} ${isPro ? "" : resultsStyles.whatIfCompactCtaLocked}`}
-                      href={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
+                      to={isPro ? `/app/sandbox/${simulation.id}` : "/app/billing?feature=sandbox"}
                     >
                       {isPro ? "Launch What-If Lab →" : "🔒 Upgrade to unlock"}
-                    </a>
+                    </Link>
                   </div>
                 )}
 
