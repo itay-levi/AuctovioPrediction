@@ -98,14 +98,17 @@ export default function BillingPage() {
               <Banner tone="critical" title="Payment not confirmed">
                 <Text as="p" variant="bodyMd">
                   Your subscription could not be verified with Shopify. Please try again or contact support.
-                  Your account remains on the {currentTier === "FREE" ? "Free" : currentTier} plan.
+                  {currentTier === "PRO" || currentTier === "ENTERPRISE"
+                    ? ` Your ${currentTier} subscription is still active.`
+                    : " Your account is unchanged — you can keep running pay-per-report analyses."}
                 </Text>
               </Banner>
             )}
             {justDowngraded && (
-              <Banner tone="success" title="Plan downgraded">
+              <Banner tone="success" title="Subscription cancelled">
                 <Text as="p" variant="bodyMd">
-                  Your plan has been downgraded to Free. Changes take effect immediately.
+                  Your subscription was cancelled. You can keep running analyses — unlocking the full
+                  report goes back to <strong>${UNLOCK_REPORT_PRICE} per report</strong>.
                 </Text>
               </Banner>
             )}
@@ -122,55 +125,24 @@ export default function BillingPage() {
               one-time purchase and never auto-renews.
             </Text>
 
-            {/* ── Pay-per-scan info banner (FREE-tier users only) ── */}
-            {currentTier === "FREE" && (
-              <Banner tone="info" title="Don't want a subscription yet? Pay per scan.">
-                <Text as="p" variant="bodyMd">
-                  Every analysis runs for free and you always see the score. To see the full report
-                  (friction breakdown, panelist verdicts, action plan, printable PDF) you can unlock that
-                  specific report for <strong>${UNLOCK_REPORT_PRICE}</strong> — one-time, no subscription.
-                  The unlock button appears on each completed report.
-                </Text>
+            {/* ── How pricing works (replaces the Free plan card) ── */}
+            {currentTier !== "PRO" && currentTier !== "ENTERPRISE" && (
+              <Banner tone="info" title="How CustomerPanel AI is priced">
+                <BlockStack gap="200">
+                  <Text as="p" variant="bodyMd">
+                    Running an analysis is included with installing the app — you always see the
+                    score and a top-line preview. You only pay when you want the <strong>full report</strong>
+                    (friction breakdown, every panelist&apos;s verdict, ranked action plan, printable PDF).
+                  </Text>
+                  <Text as="p" variant="bodyMd">
+                    Pick whichever fits how often you use it:
+                  </Text>
+                </BlockStack>
               </Banner>
             )}
 
             {/* ── Plan cards ── */}
             <InlineStack gap="400" align="start" wrap>
-
-              {/* FREE */}
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <Card>
-                  <BlockStack gap="300">
-                    <InlineStack align="space-between">
-                      <Text as="h2" variant="headingLg">Free</Text>
-                      {currentTier === "FREE" && <Badge tone="success">Current plan</Badge>}
-                    </InlineStack>
-                    <Text as="p" variant="headingXl">
-                      $0
-                      <Text as="span" variant="bodySm" tone="subdued"> USD / month</Text>
-                    </Text>
-                    <Divider />
-                    <List type="bullet">
-                      <List.Item>5-agent customer panel</List.Item>
-                      <List.Item>3 analyses per month</List.Item>
-                      <List.Item>30 MT budget</List.Item>
-                      <List.Item>Score + teaser on every report</List.Item>
-                      <List.Item>{`Unlock the full report for $${UNLOCK_REPORT_PRICE} (one-time)`}</List.Item>
-                    </List>
-                    {currentTier === "FREE" ? (
-                      <Button disabled variant="plain">Current plan</Button>
-                    ) : (
-                      <Button
-                        variant="plain"
-                        tone="critical"
-                        onClick={() => setShowDowngradeModal(true)}
-                      >
-                        Downgrade to Free
-                      </Button>
-                    )}
-                  </BlockStack>
-                </Card>
-              </div>
 
               {/* SINGLE SCAN UNLOCK — pay-per-report */}
               <div style={{ flex: 1, minWidth: 240 }}>
@@ -246,6 +218,15 @@ export default function BillingPage() {
                           : "Start 7-day free trial"}
                       </Button>
                     </fetcher.Form>
+                    {currentTier === "PRO" && (
+                      <Button
+                        variant="plain"
+                        tone="critical"
+                        onClick={() => setShowDowngradeModal(true)}
+                      >
+                        Cancel subscription
+                      </Button>
+                    )}
                   </BlockStack>
                 </Card>
               </div>
@@ -289,6 +270,15 @@ export default function BillingPage() {
                           : "Start 7-day free trial"}
                       </Button>
                     </fetcher.Form>
+                    {currentTier === "ENTERPRISE" && (
+                      <Button
+                        variant="plain"
+                        tone="critical"
+                        onClick={() => setShowDowngradeModal(true)}
+                      >
+                        Cancel subscription
+                      </Button>
+                    )}
                   </BlockStack>
                 </Card>
               </div>
@@ -301,9 +291,9 @@ export default function BillingPage() {
       <Modal
         open={showDowngradeModal}
         onClose={() => setShowDowngradeModal(false)}
-        title="Downgrade to Free?"
+        title="Cancel subscription?"
         primaryAction={{
-          content: "Yes, downgrade",
+          content: "Yes, cancel subscription",
           destructive: true,
           onAction: () => {
             const form = new FormData();
@@ -313,14 +303,15 @@ export default function BillingPage() {
           },
         }}
         secondaryActions={[
-          { content: "Cancel", onAction: () => setShowDowngradeModal(false) },
+          { content: "Keep subscription", onAction: () => setShowDowngradeModal(false) },
         ]}
       >
         <Modal.Section>
           <Text as="p" variant="bodyMd">
-            Downgrading to Free will immediately cancel your paid subscription. Your MT budget will reset
-            to 30 MT and you will be limited to 3 analyses per month. This cannot be undone — you will
-            need to start a new trial if you wish to re-subscribe.
+            Cancelling will immediately end your paid plan. You&apos;ll still be able to run analyses
+            and see the score on each one, but unlocking the full report will go back to{" "}
+            <strong>${UNLOCK_REPORT_PRICE} per report</strong>. You can re-subscribe at any time —
+            though the 7-day free trial only applies once per store.
           </Text>
         </Modal.Section>
       </Modal>
