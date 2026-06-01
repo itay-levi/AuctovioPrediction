@@ -1769,7 +1769,7 @@ export function ComparisonLaboratory({
                 <p className={styles.refineKicker}>What-If Lab</p>
                 <h2 className={styles.refineHeadline}>Test one PDP change — safely.</h2>
                 <Text as="p" variant="bodyMd" tone="subdued">
-                  Tune a single variable in the workspace. We forecast shopper response; your storefront stays untouched
+                  Tune a single variable in the workspace. We simulate panel response; your storefront stays untouched
                   until you publish.
                 </Text>
                 <div className={styles.refineProductRow}>

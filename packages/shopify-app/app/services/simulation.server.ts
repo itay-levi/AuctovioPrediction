@@ -1,9 +1,43 @@
 import db from "../db.server";
-import { AGENT_COUNTS, SIM_LIMITS, getMtBudgetStatus } from "./store.server";
+import { AGENT_COUNTS, SIM_LIMITS, MT_LIMITS, getMtBudgetStatus } from "./store.server";
 import { triggerSimulation } from "./engine.server";
 import type { SimulationStatus, PlanTier } from "@prisma/client";
 
 const MT_ESTIMATE_PER_AGENT = 2; // ~2 MT per agent for a full simulation
+
+/**
+ * Thrown by createSimulation/createRetakeSimulation when the in-transaction
+ * quota recheck fails (e.g. two concurrent submits both passed canRunSimulation
+ * but only one actually fits). Routes catch this and surface a friendly message.
+ */
+export class QuotaExceededError extends Error {
+  constructor(public readonly reason: string) {
+    super(reason);
+    this.name = "QuotaExceededError";
+  }
+}
+
+/**
+ * Whether the full Customer Confidence Report for this simulation is visible
+ * to the merchant. Free-tier sees a teaser by default; PRO/ENTERPRISE always
+ * see everything; FREE tier merchants who paid the $4.99 one-time unlock for
+ * THIS specific simulation see everything for that one report.
+ */
+export function isReportUnlocked(
+  sim: { unlockedAt?: Date | string | null } | null | undefined,
+  tier: PlanTier,
+): boolean {
+  if (process.env.NODE_ENV === "development") return true;
+  if (tier === "PRO" || tier === "ENTERPRISE") return true;
+  return !!sim?.unlockedAt;
+}
+
+function _monthStart(): Date {
+  const d = new Date();
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
 
 export async function estimateSimulationCost(tier: PlanTier): Promise<number> {
   return AGENT_COUNTS[tier] * MT_ESTIMATE_PER_AGENT;
@@ -106,7 +140,74 @@ function _triggerWithErrorHandling(
           failureReason: "The analysis could not be started. Please try again.",
         } as Parameters<typeof db.simulation.update>[0]["data"],
       })
-      .catch(() => {});
+      .catch((updateErr: unknown) => {
+        // Last line of defense before the cron sweep — at least log it so
+        // ops can see DB outages causing stuck PENDING rows.
+        console.error("[Engine] Failed to mark sim FAILED after trigger error", {
+          simulationId,
+          err: updateErr instanceof Error ? updateErr.message : String(updateErr),
+        });
+      });
+  });
+}
+
+/**
+ * Atomically: recount this-month root simulations, recompute used MT, and
+ * insert the new simulation rows in a single transaction. If concurrent
+ * submits at the quota boundary cause a violation, this throws
+ * QuotaExceededError so the route can surface a friendly message.
+ */
+async function _atomicCreateSimulations<T>(args: {
+  storeId: string;
+  tier: PlanTier;
+  rootSimsToCreate: number; // 0 for delta/retake, 1 for single, 2 for Lab
+  totalMtToReserve: number;
+  insert: (tx: Parameters<Parameters<typeof db.$transaction>[0]>[0]) => Promise<T>;
+}): Promise<T> {
+  const { storeId, tier, rootSimsToCreate, totalMtToReserve, insert } = args;
+  return db.$transaction(async (tx) => {
+    if (rootSimsToCreate > 0) {
+      const monthStart = _monthStart();
+      const slotCount = await tx.simulation.count({
+        where: {
+          storeId,
+          originalSimulationId: null,
+          createdAt: { gte: monthStart },
+          status: { not: "FAILED" as SimulationStatus },
+        },
+      });
+      const slotLimit = SIM_LIMITS[tier];
+      if (slotCount + rootSimsToCreate > slotLimit) {
+        throw new QuotaExceededError(
+          `Monthly simulation limit reached (${slotLimit} for ${tier} plan).`,
+        );
+      }
+    }
+
+    if (totalMtToReserve > 0) {
+      const monthStart = _monthStart();
+      const mtAgg = await tx.simulation.aggregate({
+        where: {
+          storeId,
+          status: "COMPLETED",
+          createdAt: { gte: monthStart },
+        },
+        _sum: { mtCost: true },
+      });
+      const used = mtAgg._sum.mtCost ?? 0;
+      const limit = MT_LIMITS[tier];
+      if (used + totalMtToReserve > limit) {
+        throw new QuotaExceededError(
+          `Insufficient MT budget. Need ${totalMtToReserve} MT, have ${Math.max(0, limit - used)}.`,
+        );
+      }
+    }
+
+    return insert(tx);
+  }, {
+    // Serializable: catches the case where two concurrent transactions both
+    // see the same count and both try to insert past the limit.
+    isolationLevel: "Serializable",
   });
 }
 
@@ -135,33 +236,41 @@ export async function createSimulation(
   if (labConfig) {
     const labGroupId = `lab_${Date.now()}_${storeId.slice(-6)}`;
 
-    // Baseline — general public, default settings, no labConfig
-    const baseline = await db.simulation.create({
-      data: {
-        storeId,
-        productUrl,
-        productJson: productJson as object,
-        status: "PENDING",
-        phase: 0,
-        mtCost: estimatedMt,
-        focusAreas: focusAreas.length ? focusAreas : undefined,
-        labGroupId,
-        isBaseline: true,
-      },
-    });
-
-    // Target — user's custom Lab config
-    const target = await db.simulation.create({
-      data: {
-        storeId,
-        productUrl,
-        productJson: productJson as object,
-        status: "PENDING",
-        phase: 0,
-        mtCost: estimatedMt,
-        focusAreas: focusAreas.length ? focusAreas : undefined,
-        labGroupId,
-        isBaseline: false,
+    // Atomic: recheck quota + insert both rows in one Serializable transaction
+    // so two concurrent Lab submits at the boundary cannot both succeed.
+    const { baseline, target } = await _atomicCreateSimulations({
+      storeId,
+      tier,
+      rootSimsToCreate: 2,
+      totalMtToReserve: estimatedMt * 2,
+      insert: async (tx) => {
+        const baselineRow = await tx.simulation.create({
+          data: {
+            storeId,
+            productUrl,
+            productJson: productJson as object,
+            status: "PENDING",
+            phase: 0,
+            mtCost: estimatedMt,
+            focusAreas: focusAreas.length ? focusAreas : undefined,
+            labGroupId,
+            isBaseline: true,
+          },
+        });
+        const targetRow = await tx.simulation.create({
+          data: {
+            storeId,
+            productUrl,
+            productJson: productJson as object,
+            status: "PENDING",
+            phase: 0,
+            mtCost: estimatedMt,
+            focusAreas: focusAreas.length ? focusAreas : undefined,
+            labGroupId,
+            isBaseline: false,
+          },
+        });
+        return { baseline: baselineRow, target: targetRow };
       },
     });
 
@@ -212,17 +321,25 @@ export async function createSimulation(
   }
 
   // ── Standard single simulation ───────────────────────────────────────────────
-  const simulation = await db.simulation.create({
-    data: {
-      storeId,
-      productUrl,
-      productJson: productJson as object,
-      status: "PENDING",
-      phase: 0,
-      mtCost: estimatedMt,
-      focusAreas: focusAreas.length ? focusAreas : undefined,
-    },
+  const simulation = await _atomicCreateSimulations({
+    storeId,
+    tier,
+    rootSimsToCreate: 1,
+    totalMtToReserve: estimatedMt,
+    insert: (tx) =>
+      tx.simulation.create({
+        data: {
+          storeId,
+          productUrl,
+          productJson: productJson as object,
+          status: "PENDING",
+          phase: 0,
+          mtCost: estimatedMt,
+          focusAreas: focusAreas.length ? focusAreas : undefined,
+        },
+      }),
   });
+  console.info("[Sim] created", { simulationId: simulation.id, shopDomain, tier, agentCount, isLab: false });
 
   _triggerWithErrorHandling(simulation.id, {
     simulationId: simulation.id,
@@ -261,18 +378,27 @@ export async function createRetakeSimulation(
   const callbackUrl = `${appUrl}/webhooks/engine/callback`;
   const isPro = tier === "PRO" || tier === "ENTERPRISE";
 
-  const retakeSim = await db.simulation.create({
-    data: {
-      storeId: originalSim.storeId,
-      productUrl: originalSim.productUrl,
-      productJson: freshProductJson as object,
-      status: "PENDING",
-      phase: 0,
-      mtCost: estimatedMt,
-      originalSimulationId: originalSim.id,
-      simulationType: "RETAKE",
-    } as Parameters<typeof db.simulation.create>[0]["data"],
+  const retakeSim = await _atomicCreateSimulations({
+    storeId: originalSim.storeId,
+    tier,
+    rootSimsToCreate: 0, // Retakes don't consume monthly slot quota
+    totalMtToReserve: estimatedMt,
+    insert: (tx) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (tx as any).simulation.create({
+        data: {
+          storeId: originalSim.storeId,
+          productUrl: originalSim.productUrl,
+          productJson: freshProductJson as object,
+          status: "PENDING",
+          phase: 0,
+          mtCost: estimatedMt,
+          originalSimulationId: originalSim.id,
+          simulationType: "RETAKE",
+        },
+      }) as Promise<{ id: string; storeId: string; productUrl: string; status: SimulationStatus }>,
   });
+  console.info("[Sim] retake created", { simulationId: retakeSim.id, shopDomain, originalSimulationId: originalSim.id, tier });
 
   _triggerWithErrorHandling(retakeSim.id, {
     simulationId: retakeSim.id,

@@ -14,12 +14,15 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  // 20 min matches the in-process expireStuckSimulations threshold so the
+  // cron sweep never kills sims that the loaders would still treat as live.
+  // Engine phase 2/3 work can legitimately exceed 15 min on large panels.
+  const cutoff = new Date(Date.now() - 20 * 60 * 1000);
 
   const result = await db.simulation.updateMany({
     where: {
       status: { in: ["PENDING", "RUNNING"] },
-      updatedAt: { lt: fifteenMinutesAgo },
+      updatedAt: { lt: cutoff },
     },
     data: {
       status: "FAILED",
@@ -27,5 +30,6 @@ export async function action({ request }: ActionFunctionArgs) {
     } as Parameters<typeof db.simulation.updateMany>[0]["data"],
   });
 
+  console.info("[Cron] cleanup", { expired: result.count });
   return json({ expired: result.count });
 }

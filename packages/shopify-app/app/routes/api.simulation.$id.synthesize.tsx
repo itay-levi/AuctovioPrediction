@@ -78,8 +78,16 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const data = (await res.json()) as { synthesis: string };
     synthesis = data.synthesis;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: `Synthesis failed: ${msg}` }, { status: 500 });
+    // Log the full error server-side; return a generic message so we don't
+    // leak engine URLs, library names, or stack traces to the merchant.
+    console.error("[Synthesize] failed", {
+      simulationId: simulation.id,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return Response.json(
+      { error: "Synthesis is temporarily unavailable. Please try again in a moment." },
+      { status: 500 },
+    );
   }
 
   // Store permanently (cast needed until Prisma client regenerates with new columns)

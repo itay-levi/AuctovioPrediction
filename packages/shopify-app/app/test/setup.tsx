@@ -35,11 +35,42 @@ afterEach(() => {
 });
 
 vi.mock("@shopify/polaris", () => {
+  const sanitizeDomProps = (props: Record<string, unknown>) => {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(props)) {
+      if (
+        key.startsWith("data-") ||
+        key.startsWith("aria-") ||
+        key === "id" ||
+        key === "className" ||
+        key === "style" ||
+        key === "role" ||
+        key === "title" ||
+        key === "name" ||
+        key === "value" ||
+        key === "placeholder" ||
+        key === "href" ||
+        key === "target" ||
+        key === "rel" ||
+        key === "disabled" ||
+        key === "type" ||
+        key === "checked" ||
+        key === "defaultValue" ||
+        key === "autoComplete" ||
+        key === "htmlFor" ||
+        key === "tabIndex" ||
+        key.startsWith("on")
+      ) {
+        out[key] = value;
+      }
+    }
+    return out;
+  };
   const wrap =
     (Tag: keyof JSX.IntrinsicElements = "div") =>
     ({ children, ...rest }: PropsWithChildren<Record<string, unknown>>) => {
       const El = Tag as "div";
-      return <El {...(rest as object)}>{children}</El>;
+      return <El {...sanitizeDomProps(rest)}>{children}</El>;
     };
   return {
     AppProvider: ({ children }: PropsWithChildren) => <div data-polaris-app>{children}</div>,
@@ -50,7 +81,7 @@ vi.mock("@shopify/polaris", () => {
       tone,
       ...rest
     }: PropsWithChildren<{ title?: ReactNode; tone?: string } & Record<string, unknown>>) => (
-      <div data-banner data-tone={tone} {...(rest as object)}>
+      <div data-banner data-tone={tone} {...sanitizeDomProps(rest)}>
         {title ? <div data-banner-title>{title}</div> : null}
         {children}
       </div>
@@ -67,11 +98,15 @@ vi.mock("@shopify/polaris", () => {
       { onClick?: () => void; submit?: boolean; url?: string } & Record<string, unknown>
     >) =>
       url ? (
-        <a href={url} {...(rest as object)}>
+        <a href={url} {...sanitizeDomProps(rest)}>
           {children}
         </a>
       ) : (
-        <button type={submit ? "submit" : "button"} onClick={onClick} {...(rest as object)}>
+        <button
+          type={submit ? "submit" : "button"}
+          onClick={onClick}
+          {...sanitizeDomProps(rest)}
+        >
           {children}
         </button>
       ),
@@ -89,7 +124,7 @@ vi.mock("@shopify/polaris", () => {
       url,
       ...rest
     }: PropsWithChildren<{ url?: string } & Record<string, unknown>>) => (
-      <a href={url as string} {...(rest as object)}>
+      <a href={url as string} {...sanitizeDomProps(rest)}>
         {children}
       </a>
     ),
@@ -144,7 +179,7 @@ vi.mock("@shopify/polaris", () => {
         aria-label="range"
         value={value ?? 0}
         onChange={(e) => onChange?.(Number(e.target.value))}
-        {...(rest as object)}
+        {...sanitizeDomProps(rest)}
       />
     ),
     SkeletonBodyText: () => <div data-skeleton />,
@@ -155,7 +190,7 @@ vi.mock("@shopify/polaris", () => {
       ...rest
     }: PropsWithChildren<{ as?: keyof JSX.IntrinsicElements } & Record<string, unknown>>) => {
       const T = (Comp || "span") as "span";
-      return <T {...(rest as object)}>{children}</T>;
+      return <T {...sanitizeDomProps(rest)}>{children}</T>;
     },
     TextField: ({
       label,
@@ -176,7 +211,7 @@ vi.mock("@shopify/polaris", () => {
           value={value}
           autoComplete={autoComplete}
           onChange={(e) => onChange?.(e.target.value)}
-          {...(rest as object)}
+          {...sanitizeDomProps(rest)}
         />
       </label>
     ),

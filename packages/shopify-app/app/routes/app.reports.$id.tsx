@@ -1,9 +1,10 @@
 import type { LoaderFunctionArgs, MetaFunction } from "@remix-run/node";
 import { Link, useLoaderData } from "@remix-run/react";
+import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 import type { CSSProperties } from "react";
 import { authenticate } from "../shopify.server";
 import { getStore } from "../services/store.server";
-import { getSimulation } from "../services/simulation.server";
+import { getSimulation, isReportUnlocked } from "../services/simulation.server";
 import type { Recommendation } from "../types/simulation";
 import { sanitizeAgentReasoning } from "../utils/sanitizeAgentReasoning";
 import styles from "../styles/customer-panel-report.module.css";
@@ -89,6 +90,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   if (!simulation || simulation.storeId !== store?.id) {
     throw new Response("Not found", { status: 404 });
+  }
+
+  // Paywall enforcement: the printable PDF is a paid-only artefact.
+  // Without this, a FREE-tier merchant could URL-poke their way past the
+  // paywall by going to /app/reports/:id directly.
+  if (
+    !isReportUnlocked(
+      simulation as unknown as { unlockedAt?: Date | string | null },
+      store.planTier,
+    )
+  ) {
+    throw new Response("Locked — unlock the report first", { status: 403 });
   }
 
   if (simulation.status !== "COMPLETED" || simulation.score == null) {
@@ -514,4 +527,8 @@ export default function CustomerPanelReportPage() {
       </div>
     </div>
   );
+}
+
+export function ErrorBoundary() {
+  return <RouteErrorBoundary />;
 }

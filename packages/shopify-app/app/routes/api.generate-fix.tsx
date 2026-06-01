@@ -23,7 +23,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const result = await generateFix(signal, productType);
     return Response.json(result);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: msg }, { status: 500 });
+    console.error("[GenerateFix] failed", {
+      signal,
+      shopDomain,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return Response.json(
+      { error: "Could not generate the suggested fix right now. Please try again." },
+      { status: 500 },
+    );
   }
 };

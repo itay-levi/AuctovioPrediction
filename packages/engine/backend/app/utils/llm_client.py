@@ -56,9 +56,17 @@ def _tpm_guard_for(
     label: str,
     estimated_tokens: int = _TPM_AVG_TOKENS,
 ) -> None:
-    """Generic TPM guard — shared logic for both fast and deep model pools."""
-    with tpm_lock:
-        while True:
+    """
+    Generic TPM guard — shared logic for both fast and deep model pools.
+
+    The lock is RELEASED while sleeping so other threads on the same pool can
+    also re-check (and also wait if needed) instead of being fully serialized
+    behind one sleeping thread. Without this, debate parallelism collapses to
+    sequential whenever the TPM cap is hit.
+    """
+    while True:
+        sleep_for = 0.0
+        with tpm_lock:
             now = time.monotonic()
             while tpm_calls and now - tpm_calls[0][0] >= _TPM_WINDOW:
                 tpm_calls.popleft()
@@ -74,6 +82,8 @@ def _tpm_guard_for(
                 f"[tpm_guard:{label}] {used}/{tpm_limit} tokens used — "
                 f"sleeping {sleep_for:.1f}s"
             )
+        # Sleep outside the lock so concurrent threads can also re-evaluate.
+        if sleep_for > 0:
             time.sleep(sleep_for)
 
 
@@ -162,7 +172,7 @@ class LLMClient:
         """
         throttle = _throttle_deep if self._use_deep_throttle else _throttle_fast
         tier_label = "deep(70B)" if self._use_deep_throttle else "fast(8B)"
-        timeout_retries = 2
+        timeout_retries = min(2, max_retries)
         for attempt in range(max_retries + 1):
             throttle()
             try:

@@ -7,7 +7,7 @@ import db from "../db.server";
 // We must delete all data associated with the shop.
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);
-  console.log(`[GDPR] ${topic} received for ${shop} — purging all store data`);
+  console.info(`[GDPR] ${topic} received for ${shop} — purging all store data`);
 
   // Delete all store data in dependency order
   await db.$transaction(async (tx) => {

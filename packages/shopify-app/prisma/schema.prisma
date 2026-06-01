@@ -74,12 +74,24 @@ model Simulation {
   comparisonSummary    Json?            // {scoreDelta, whyGap, divergenceTopics, targetPersonaCard}
   productDna           Json?            // {coreFear, coreDesire, personaHooks} — cached from Phase 0
   failureReason        String?          // merchant-friendly error message when status = FAILED
+  // Pay-per-scan unlock. Free-tier merchants see a teaser by default; a $4.99
+  // one-time charge sets these fields and unlocks the full report for this row.
+  unlockedAt           DateTime?
+  unlockChargeId       String?          // Shopify AppPurchaseOneTime gid for audit/refund
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   agentLogs            AgentLog[]
   store                Store            @relation(fields: [storeId], references: [id])
   original             Simulation?      @relation("DeltaRuns", fields: [originalSimulationId], references: [id])
   deltas               Simulation[]     @relation("DeltaRuns")
+
+  // Indexes for hot query paths. Without these, every loader does a sequential
+  // scan once the table grows beyond a few thousand rows.
+  @@index([storeId, originalSimulationId, createdAt(sort: Desc)])  // history list, recent sims, _index dashboard
+  @@index([storeId, status, createdAt])                             // canRunSimulation slot count, getMtBudgetStatus aggregate
+  @@index([originalSimulationId, simulationType, createdAt(sort: Desc)]) // sandbox deltas + retakes
+  @@index([labGroupId])                                              // getLabPartnerSimulation
+  @@index([storeId, productUrl, status, createdAt(sort: Desc)])     // getPreviousCompletedSimulation
 }
 
 model AgentLog {

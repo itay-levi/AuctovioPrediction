@@ -17,9 +17,23 @@ from .utils.logger import setup_logger, get_logger
 
 
 def create_app(config_class=Config):
-    """Flask应用工厂函数"""
+    """Flask app factory."""
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    # Fail closed on missing required secrets. We log the errors first so
+    # operators can see the cause, then raise so the process exits.
+    config_errors = config_class.validate() if hasattr(config_class, 'validate') else []
+    if config_errors:
+        for err in config_errors:
+            print(f"[Config] FATAL: {err}", flush=True)
+        # In debug we allow soft-start so a developer iterating on the config
+        # doesn't get hard-crashed; production must always fail closed.
+        if not (os.environ.get('FLASK_DEBUG', '').lower() == 'true'):
+            raise RuntimeError(
+                "Engine refused to start: missing required configuration. "
+                "Set the listed environment variables before booting."
+            )
     
     # 设置JSON编码：确保中文直接显示（而不是 \uXXXX 格式）
     # Flask >= 2.3 使用 app.json.ensure_ascii，旧版本使用 JSON_AS_ASCII 配置
@@ -72,10 +86,15 @@ def create_app(config_class=Config):
     from .miroshop.api.routes import bp as miroshop_bp
     app.register_blueprint(miroshop_bp)
     
-    # 健康检查
+    # Health check — reports config readiness so ops can spot misconfig fast.
     @app.route('/health')
     def health():
-        return {'status': 'ok', 'service': 'MiroFish Backend'}
+        validation_errors = config_class.validate() if hasattr(config_class, 'validate') else []
+        return {
+            'status': 'ok' if not validation_errors else 'degraded',
+            'service': 'MiroFish Backend',
+            'config_errors': validation_errors,
+        }
     
     if should_log_startup:
         logger.info("MiroFish Backend 启动完成")

@@ -17,7 +17,7 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { useState, useEffect, useRef } from "react";
 import { authenticate } from "../shopify.server";
 import { getStore, getMtBudgetStatus } from "../services/store.server";
-import { getSimulation, getSimulationLabRoot, canRunSimulation, createRetakeSimulation } from "../services/simulation.server";
+import { getSimulation, getSimulationLabRoot, canRunSimulation, createRetakeSimulation, QuotaExceededError } from "../services/simulation.server";
 import { requireTier } from "../services/gates.server";
 import { fetchProductById, fetchStoreContext } from "../services/products.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
@@ -213,23 +213,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       )
     : [];
 
-  // Fetch agent logs for completed batch sims in parallel
+  // Fetch agent logs for all completed batch sims in a SINGLE round-trip
+  // (was N+1 — one findUnique per sim).
   const completedBatchSims = latestBatchDeltas.filter((d) => d.status === "COMPLETED");
-  const batchLogsResults = completedBatchSims.length > 0
-    ? await Promise.all(
-        completedBatchSims.map((d) =>
-          db.simulation.findUnique({
-            where: { id: d.id },
-            select: { agentLogs: { orderBy: { createdAt: "asc" }, select: agentLogSelect } },
-          })
-        )
-      )
-    : [];
-
   const batchLogsMap: Record<string, AgentLogSlim[]> = {};
-  completedBatchSims.forEach((d, i) => {
-    batchLogsMap[d.id] = batchLogsResults[i]?.agentLogs ?? [];
-  });
+  if (completedBatchSims.length > 0) {
+    const allLogs = await db.agentLog.findMany({
+      where: { simulationId: { in: completedBatchSims.map((d) => d.id) } },
+      orderBy: { createdAt: "asc" },
+      select: { ...agentLogSelect, simulationId: true },
+    });
+    for (const d of completedBatchSims) batchLogsMap[d.id] = [];
+    for (const log of allLogs) {
+      const { simulationId: simId, ...rest } = log;
+      (batchLogsMap[simId] ||= []).push(rest as AgentLogSlim);
+    }
+  }
 
   function frictionFromReportJson(rj: unknown): PriceBatchResult["friction"] {
     const r = rj as {
@@ -285,9 +284,29 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const intent = (formData.get("intent") as string | null) ?? "run_whatif";
-  const priceOverride = formData.get("price") ? Number(formData.get("price")) : undefined;
-  const shippingDays = formData.get("shippingDays") ? Number(formData.get("shippingDays")) : undefined;
-  const activeExperiment = (formData.get("activeExperiment") as string | null) || undefined;
+
+  // Bound numeric inputs — these flow into engine prompts. Reject extreme values
+  // (e.g. negative prices, 999-day shipping) and silently clamp to safe ranges.
+  const rawPrice = formData.get("price");
+  const priceOverride = rawPrice
+    ? (() => {
+        const n = Number(rawPrice);
+        if (!Number.isFinite(n) || n <= 0) return undefined;
+        return Math.min(1_000_000, n);
+      })()
+    : undefined;
+  const rawShipping = formData.get("shippingDays");
+  const shippingDays = rawShipping
+    ? (() => {
+        const n = Number(rawShipping);
+        if (!Number.isFinite(n) || n < 0) return undefined;
+        return Math.min(365, Math.round(n));
+      })()
+    : undefined;
+
+  // activeExperiment is forwarded to LLM as a hypothesis string — cap length.
+  const rawActive = formData.get("activeExperiment") as string | null;
+  const activeExperiment = rawActive ? rawActive.slice(0, 500) : undefined;
 
   const [originalSim, store] = await Promise.all([
     getSimulationLabRoot(params.id!),
@@ -341,16 +360,24 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
     const storeContext = await fetchStoreContext(admin).catch(() => null) ?? undefined;
 
-    const retakeSim = await createRetakeSimulation(
-      originalSim,
-      freshProduct,
-      shopDomain,
-      store.shopType ?? "general_retail",
-      tier,
-      appUrl,
-      undefined,
-      storeContext,
-    );
+    let retakeSim;
+    try {
+      retakeSim = await createRetakeSimulation(
+        originalSim,
+        freshProduct,
+        shopDomain,
+        store.shopType ?? "general_retail",
+        tier,
+        appUrl,
+        undefined,
+        storeContext,
+      );
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        return { error: err.reason };
+      }
+      throw err;
+    }
 
     console.info(`[Retake] Created ${retakeSim.id} for original ${originalSim.id}`);
     throw redirect(`/app/sandbox/${originalSim.id}`);
@@ -743,11 +770,21 @@ export default function SandboxPage() {
           </div>
         </div>
 
-        {fetcher.data?.error && (
-          <Banner tone="critical" title="Could not start analysis">
-            <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
-          </Banner>
-        )}
+        {fetcher.data?.error && (() => {
+          // Tailor the banner title to the action that failed so a retake error
+          // doesn't read "Could not start analysis".
+          const lastIntent = fetcher.formData?.get("intent")?.toString() ?? "";
+          const title =
+            lastIntent === "run_retake" ? "Could not start retake" :
+            lastIntent === "simulate_all" ? "Could not start experiment batch" :
+            lastIntent === "batch_price_optimize" ? "Could not start price optimizer" :
+            "Could not start analysis";
+          return (
+            <Banner tone="critical" title={title}>
+              <Text as="p" variant="bodyMd">{fetcher.data.error}</Text>
+            </Banner>
+          );
+        })()}
 
         {deltaStale && hasInProgress && (
           <Banner tone="warning" title="Analysis is taking longer than expected">

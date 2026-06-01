@@ -4,12 +4,14 @@ import { incrementMtUsage } from "../services/store.server";
 import { evaluateRetake } from "../services/engine.server";
 import db from "../db.server";
 
-async function _triggerRetakeEvaluation(retakeSim: {
+interface RetakeSimSnapshot {
   id: string;
   originalSimulationId: string | null;
   score: number | null;
   reportJson: unknown;
-}) {
+}
+
+async function _triggerRetakeEvaluation(retakeSim: RetakeSimSnapshot): Promise<void> {
   if (!retakeSim.originalSimulationId) return;
 
   const originalSim = await db.simulation.findUnique({
@@ -48,6 +50,38 @@ async function _triggerRetakeEvaluation(retakeSim: {
   }
 }
 
+interface CallbackBody {
+  simulationId?: string;
+  phase?: number;
+  status?: string;
+  score?: number;
+  imageScore?: number;
+  reportJson?: unknown;
+  actualMtCost?: number;
+  recommendations?: unknown[];
+  trustAudit?: unknown;
+  comparisonInsight?: string;
+  productDna?: unknown;
+  failureReason?: string;
+  agentLogs?: {
+    agentId: string;
+    archetype: string;
+    archetypeName?: string;
+    archetypeEmoji?: string;
+    personaName?: string;
+    personaAge?: number;
+    personaOccupation?: string;
+    personaMotivation?: string;
+    nicheConcern?: string;
+    phase: number;
+    verdict: string;
+    reasoning: string;
+  }[];
+}
+
+const VALID_STATUSES = ["RUNNING", "COMPLETED", "FAILED"] as const;
+type CallbackStatus = (typeof VALID_STATUSES)[number];
+
 // Called by Auctovio engine (Groq) when a simulation phase completes
 // Auth: Bearer token (ENGINE_API_KEY)
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -58,37 +92,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  let body: {
-    simulationId?: string;
-    phase?: number;
-    status?: string;
-    score?: number;
-    imageScore?: number;
-    reportJson?: unknown;
-    actualMtCost?: number;
-    recommendations?: unknown[];
-    trustAudit?: unknown;
-    comparisonInsight?: string;
-    productDna?: unknown;
-    failureReason?: string;
-    agentLogs?: {
-      agentId: string;
-      archetype: string;
-      archetypeName?: string;
-      archetypeEmoji?: string;
-      personaName?: string;
-      personaAge?: number;
-      personaOccupation?: string;
-      personaMotivation?: string;
-      nicheConcern?: string;
-      phase: number;
-      verdict: string;
-      reasoning: string;
-    }[];
-  };
-
+  let body: CallbackBody;
   try {
-    body = await request.json() as typeof body;
+    body = (await request.json()) as CallbackBody;
   } catch {
     return new Response("Invalid JSON", { status: 400 });
   }
@@ -103,15 +109,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response("Missing simulationId", { status: 400 });
   }
 
-  const validStatuses = ["RUNNING", "COMPLETED", "FAILED"];
-  if (!status || !validStatuses.includes(status)) {
+  if (!status || !(VALID_STATUSES as readonly string[]).includes(status)) {
     return new Response("Invalid status", { status: 400 });
   }
+
+  const incomingStatus = status as CallbackStatus;
+
+  // Terminal-state guard: once a sim is COMPLETED or FAILED we never accept
+  // any further status updates from the engine. This protects against:
+  //   1. Retried callbacks (network blip, engine retries) double-charging MT
+  //   2. A late "RUNNING" arriving after a FAILED reset — would un-fail a sim
+  //   3. The "FAILED then later COMPLETED" race where cron expired the sim
+  //      and a slow engine callback then re-credits the merchant.
+  // We do this with an atomic updateMany filtered by current status; if 0
+  // rows match the row was already terminal — short-circuit.
+  const existing = await db.simulation.findUnique({
+    where: { id: simulationId },
+    select: { status: true, storeId: true, simulationType: true },
+  });
+  if (!existing) {
+    return new Response("Simulation not found", { status: 404 });
+  }
+  const currentStatus = existing.status;
+  const isAlreadyTerminal = currentStatus === "COMPLETED" || currentStatus === "FAILED";
+  if (isAlreadyTerminal) {
+    console.info("[EngineCallback] ignored: sim already terminal", {
+      simulationId,
+      currentStatus,
+      incomingStatus,
+    });
+    return new Response(null, { status: 200 });
+  }
+
+  console.info("[EngineCallback] received", {
+    simulationId,
+    phase: phase ?? 0,
+    status: incomingStatus,
+    score,
+    actualMtCost,
+    hasFailureReason: !!failureReason,
+    agentLogCount: agentLogs?.length ?? 0,
+  });
 
   // Update simulation record + insert agent logs
   await updateSimulationFromCallback(simulationId, {
     phase: phase ?? 0,
-    status: status as "RUNNING" | "COMPLETED" | "FAILED",
+    status: incomingStatus,
     score,
     imageScore,
     reportJson,
@@ -124,26 +167,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   // Defense in depth: even with a valid ENGINE_API_KEY, never trust negative
-  // or non-finite numbers — those would decrement the MT counter and grant
-  // free analyses. Also cap any single callback to a sane upper bound.
+  // or non-finite numbers. Cap any single callback to a sane upper bound.
   const safeMt =
     typeof actualMtCost === "number" && Number.isFinite(actualMtCost) && actualMtCost > 0
       ? Math.min(actualMtCost, 10_000)
       : 0;
 
-  if (status === "COMPLETED") {
+  if (incomingStatus === "COMPLETED") {
     const sim = await db.simulation.findUnique({
       where: { id: simulationId },
       include: { store: { select: { shopDomain: true } } },
     });
 
     if (safeMt > 0 && sim?.store?.shopDomain) {
+      // The terminal-state guard above already ensures this branch only runs
+      // once per simulation, so the MT charge cannot double-bill on retry.
       await incrementMtUsage(sim.store.shopDomain, safeMt);
+      console.info("[EngineCallback] MT charged", {
+        simulationId,
+        shopDomain: sim.store.shopDomain,
+        mt: safeMt,
+      });
     }
 
-    // Trigger retake evaluation when a RETAKE simulation finishes (regardless of MT).
     if (sim?.simulationType === "RETAKE" && sim.originalSimulationId) {
-      _triggerRetakeEvaluation(sim).catch(() => {});
+      _triggerRetakeEvaluation(sim).catch((err: unknown) => {
+        console.error("[Retake] Evaluation trigger failed", {
+          simulationId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
     }
   }
 

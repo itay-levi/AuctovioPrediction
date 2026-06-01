@@ -54,7 +54,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   await upgradePlanTier(session.shop, plan);
-  console.log(`[Billing] Upgraded ${session.shop} to ${plan} (subscription ${chargeId})`);
+  console.info(`[Billing] Upgraded ${session.shop} to ${plan} (subscription ${chargeId})`);
 
   throw redirect("/app?upgraded=1");
 };

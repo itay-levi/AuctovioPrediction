@@ -28,6 +28,7 @@ import {
   saveComparisonSummary,
   expireStuckSimulations,
   createRetakeSimulation,
+  isReportUnlocked,
 } from "../services/simulation.server";
 import { compareLabSimulations } from "../services/engine.server";
 import type { LabConfig, RetakeEvaluationResult } from "../services/engine.server";
@@ -573,6 +574,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
     retakeSims,
     targetRecs: targetRecs ?? null,
+    // Pay-per-scan: free-tier merchants see a teaser unless they've unlocked
+    // THIS specific report ($4.99 one-time) or upgraded to Pro/Enterprise.
+    isReportUnlocked: isReportUnlocked(
+      simulation as unknown as { unlockedAt?: Date | string | null },
+      store.planTier,
+    ),
   };
 };
 
@@ -828,8 +835,115 @@ function LivePanelRoom({
   );
 }
 
+// ── Paywall: $4.99 one-time unlock for FREE-tier merchants ────────────────
+// Posts to /app/billing/unlock; on success Shopify returns a confirmationUrl
+// which we redirect the parent window to. We use window.top because Shopify's
+// payment confirmation has to break out of the embedded iframe.
+function PaywallCard({
+  simulationId,
+  topFrictionLabel,
+  issueCount,
+  panelistCount,
+}: {
+  simulationId: string;
+  topFrictionLabel: string | null;
+  issueCount: number;
+  panelistCount: number;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onUnlock = async () => {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const fd = new FormData();
+      fd.set("simulationId", simulationId);
+      const res = await fetch("/app/billing/unlock", { method: "POST", body: fd });
+      const data = (await res.json()) as { confirmationUrl?: string | null; alreadyUnlocked?: boolean; error?: string };
+      if (!res.ok || data.error) {
+        setErr(data.error ?? "Could not start checkout. Please try again.");
+        setSubmitting(false);
+        return;
+      }
+      if (data.alreadyUnlocked) {
+        window.location.reload();
+        return;
+      }
+      if (data.confirmationUrl) {
+        // Shopify checkout flow expects the parent (admin) window to navigate.
+        // Fall back to current window if window.top is blocked.
+        try {
+          (window.top ?? window).location.href = data.confirmationUrl;
+        } catch {
+          window.location.href = data.confirmationUrl;
+        }
+        return;
+      }
+      setErr("Unexpected response from billing. Please try again.");
+      setSubmitting(false);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Network error. Please try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className={resultsStyles.paywallCard}>
+      <span className={resultsStyles.paywallEyebrow}>
+        Locked · Pay to reveal the full report
+      </span>
+      <h2 className={resultsStyles.paywallTitle}>
+        Unlock your full Customer Confidence Report
+      </h2>
+      <p className={resultsStyles.paywallSub}>
+        You&apos;re seeing the score and a sneak peek. Pay once to see exactly{" "}
+        <strong style={{ color: "#FDE68A" }}>why</strong> your panel reacted that way —
+        every objection, every fix, every panelist&apos;s full reasoning.
+      </p>
+      <ul className={resultsStyles.paywallBullets}>
+        <li className={resultsStyles.paywallBullet}>
+          Full friction breakdown — exact % per category
+        </li>
+        <li className={resultsStyles.paywallBullet}>
+          {`All ${panelistCount} panelists' full verdicts and reasoning`}
+        </li>
+        <li className={resultsStyles.paywallBullet}>
+          {`Prioritised action plan — ${issueCount > 0 ? `${issueCount} fixes` : "specific fixes"} ranked by impact`}
+        </li>
+        <li className={resultsStyles.paywallBullet}>
+          {topFrictionLabel
+            ? `Top friction (${topFrictionLabel}) — every objection in the panel's own words`
+            : "Top objections in the panel's own words"}
+        </li>
+        <li className={resultsStyles.paywallBullet}>
+          Trust audit · printable PDF report
+        </li>
+      </ul>
+      <div className={resultsStyles.paywallActions}>
+        <button
+          type="button"
+          className={resultsStyles.paywallPrimary}
+          onClick={onUnlock}
+          disabled={submitting}
+        >
+          {submitting ? "Opening checkout…" : "🔓 Unlock this report"}
+          <span className={resultsStyles.paywallPriceTag}>$4.99 · one-time</span>
+        </button>
+        <Link to="/app/billing" className={resultsStyles.paywallSecondary}>
+          Or upgrade to Pro — 10 reports + What-If Lab
+        </Link>
+      </div>
+      <p className={resultsStyles.paywallFinePrint}>
+        Billed via Shopify · no subscription · this unlock covers this report forever
+      </p>
+      {err && <div className={resultsStyles.paywallError}>{err}</div>}
+    </div>
+  );
+}
+
 export default function ResultsPage() {
-  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason, retakeSims } = useLoaderData<typeof loader>();
+  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason, retakeSims, isReportUnlocked: reportUnlocked } = useLoaderData<typeof loader>();
   const { revalidate } = useRevalidator();
   const retakeFetcher = useFetcher<typeof action>();
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -1062,7 +1176,7 @@ export default function ResultsPage() {
                       ✕ Failed
                     </span>
                   )}
-                  {isDone && simulation.status === "COMPLETED" && (
+                  {isDone && simulation.status === "COMPLETED" && reportUnlocked && (
                     <Link
                       className={resultsStyles.heroChip}
                       to={`/app/reports/${simulation.id}`}
@@ -1130,6 +1244,33 @@ export default function ResultsPage() {
           <Box paddingBlockEnd="200">
             <AnalyticsSafeBadge />
           </Box>
+        )}
+
+        {/* ── Teaser strip + paywall — shown to FREE users on a completed,
+            still-locked report. Surfaces the score (already in hero) plus a
+            content-free "what we found" preview, then the $4.99 unlock CTA. */}
+        {isDone && simulation.status === "COMPLETED" && !reportUnlocked && (
+          <>
+            <div className={resultsStyles.teaserSignals}>
+              <span className={resultsStyles.teaserSignalsChip}>
+                🎯 Top friction: {topFrictionCat ? topFrictionLabel[topFrictionCat] : "detecting…"}
+              </span>
+              {issueCount > 0 && (
+                <span className={`${resultsStyles.teaserSignalsChip} ${resultsStyles.teaserSignalsChipMuted}`}>
+                  🔧 {issueCount} prioritised fixes identified
+                </span>
+              )}
+              <span className={`${resultsStyles.teaserSignalsChip} ${resultsStyles.teaserSignalsChipMuted}`}>
+                💬 5 panelist verdicts ready
+              </span>
+            </div>
+            <PaywallCard
+              simulationId={simulation.id}
+              topFrictionLabel={topFrictionCat ? topFrictionLabel[topFrictionCat] : null}
+              issueCount={issueCount}
+              panelistCount={5}
+            />
+          </>
         )}
 
         {/* ── Brand Studio tab nav (replaces Polaris Tabs) ── */}
@@ -1240,7 +1381,14 @@ export default function ResultsPage() {
                           <Text as="h2" variant="headingMd">Friction Breakdown</Text>
                           {!isDone && <Text as="p" variant="bodySm" tone="subdued">Ready after analysis completes</Text>}
                         </InlineStack>
-                        {isDone ? (
+                        {isDone && !reportUnlocked ? (
+                          <div className={resultsStyles.lockedStub}>
+                            <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
+                            <span className={resultsStyles.lockedStubText}>
+                              <strong>Friction percentages, top objections, and the recommended fix per category</strong> are part of the full report. Unlock above for $4.99.
+                            </span>
+                          </div>
+                        ) : isDone ? (
                           <div style={{ display: "flex", gap: "16px", alignItems: "stretch" }}>
                             {frictionCols.map(({ key, label, emoji, description, impactLine }) => {
                               const pct = frictionData[key].dropoutPct;
@@ -1561,6 +1709,13 @@ export default function ResultsPage() {
                                 </Banner>
                               )}
 
+                              {/* Surface action errors so the user sees why a click did nothing */}
+                              {retakeFetcher.data && "error" in retakeFetcher.data && retakeFetcher.data.error && (
+                                <Banner tone="critical" title="Could not start retake">
+                                  <Text as="p" variant="bodyMd">{retakeFetcher.data.error}</Text>
+                                </Banner>
+                              )}
+
                               {!retakeRunning && (
                                 <retakeFetcher.Form method="post">
                                   <input type="hidden" name="intent" value="run_lab_retake" />
@@ -1594,7 +1749,23 @@ export default function ResultsPage() {
           )}
 
           {/* ════════════ TAB 1: PANEL DEBATE ════════════ */}
-          {selectedTab === 1 && (
+          {selectedTab === 1 && isDone && !reportUnlocked && (
+            <Box paddingBlockStart="400">
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">Panel debate · locked</Text>
+                  <div className={resultsStyles.lockedStub}>
+                    <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
+                    <span className={resultsStyles.lockedStubText}>
+                      <strong>The full panel debate — each panelist&apos;s verdict, reasoning, and the dissenter dynamics</strong> are part of the full report. Unlock above for $4.99 to see exactly what every panelist said.
+                    </span>
+                  </div>
+                </BlockStack>
+              </Card>
+            </Box>
+          )}
+
+          {selectedTab === 1 && (!isDone || reportUnlocked) && (
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
                 <Card>
@@ -1696,7 +1867,23 @@ export default function ResultsPage() {
           )}
 
           {/* ════════════ TAB 2: ACTION PLAN ════════════ */}
-          {selectedTab === 2 && (
+          {selectedTab === 2 && isDone && !reportUnlocked && (
+            <Box paddingBlockStart="400">
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">Action plan · locked</Text>
+                  <div className={resultsStyles.lockedStub}>
+                    <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
+                    <span className={resultsStyles.lockedStubText}>
+                      <strong>The prioritised fix list, trust audit, and one-click policy generation</strong> are part of the full report. Unlock above for $4.99 to see every fix ranked by impact.
+                    </span>
+                  </div>
+                </BlockStack>
+              </Card>
+            </Box>
+          )}
+
+          {selectedTab === 2 && (!isDone || reportUnlocked) && (
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
 

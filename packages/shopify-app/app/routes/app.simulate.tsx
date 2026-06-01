@@ -29,6 +29,7 @@ import {
   createSimulation,
   estimateSimulationCost,
   getMonthlyAnalysesQuota,
+  QuotaExceededError,
 } from "../services/simulation.server";
 import { OnboardingTour } from "../components/OnboardingTour";
 import {
@@ -123,21 +124,52 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const appUrl = process.env.SHOPIFY_APP_URL ?? "";
   const productUrl = product.onlineStoreUrl ?? `https://${shopDomain}/products/${product.handle}`;
 
+  // Validate focusAreas against the known allowlist — never forward arbitrary
+  // strings to the engine (prompt-injection mitigation).
+  const VALID_FOCUS_IDS = new Set([
+    "trust_credibility",
+    "price_value",
+    "technical_specs",
+    "visual_branding",
+    "mobile_friction",
+  ]);
   const rawFocus = formData.get("focusAreas") as string | null;
   let focusAreas: string[] = [];
   try {
-    focusAreas = rawFocus ? JSON.parse(rawFocus) : [];
-    if (!Array.isArray(focusAreas)) focusAreas = [];
+    const parsed = rawFocus ? JSON.parse(rawFocus) : [];
+    if (Array.isArray(parsed)) {
+      focusAreas = parsed.filter(
+        (v: unknown): v is string => typeof v === "string" && VALID_FOCUS_IDS.has(v),
+      );
+    }
   } catch {
     focusAreas = [];
   }
 
+  // Validate labConfig shape and bound numeric fields. Strings are length-capped
+  // and non-allowlisted enum values fall back to defaults — these flow into LLM
+  // prompts on the engine so we never trust raw merchant input.
+  const VALID_AUDIENCES = new Set(["general", "professional", "gen_z", "luxury"]);
+  const VALID_CONCERNS = new Set(["", "price", "trust", "shipping", "quality"]);
   const rawLab = formData.get("labConfig") as string | null;
-  let labConfig: unknown;
-  try {
-    labConfig = rawLab ? JSON.parse(rawLab) : undefined;
-  } catch {
-    labConfig = undefined;
+  let labConfig: import("../services/engine.server").LabConfig | undefined;
+  if (rawLab) {
+    try {
+      const raw = JSON.parse(rawLab) as Record<string, unknown>;
+      if (raw && typeof raw === "object") {
+        const audience = VALID_AUDIENCES.has(raw.audience as string)
+          ? (raw.audience as import("../services/engine.server").LabConfig["audience"])
+          : "general";
+        const concernRaw = typeof raw.coreConcern === "string" ? raw.coreConcern : "";
+        const coreConcern = VALID_CONCERNS.has(concernRaw) ? concernRaw : "";
+        const skepticism = Math.min(10, Math.max(1, Math.round(Number(raw.skepticism) || 5)));
+        const brutalityLevel = Math.min(10, Math.max(1, Math.round(Number(raw.brutalityLevel) || 5)));
+        const preset = typeof raw.preset === "string" ? raw.preset.slice(0, 50) : "";
+        labConfig = { audience, skepticism, coreConcern, brutalityLevel, preset };
+      }
+    } catch {
+      labConfig = undefined;
+    }
   }
 
   // Lab runs create 2 simulations (baseline + target). Validate quota for the
@@ -153,18 +185,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Non-blocking: if this fails, simulation proceeds without policy context.
   const storeContext = await fetchStoreContext(admin).catch(() => null) ?? undefined;
 
-  const simulation = await createSimulation(
-    store.id,
-    shopDomain,
-    store.shopType ?? "general_retail",
-    productUrl,
-    product,
-    budget.tier,
-    appUrl,
-    focusAreas,
-    labConfig as Parameters<typeof createSimulation>[8],
-    storeContext,
-  );
+  let simulation;
+  try {
+    simulation = await createSimulation(
+      store.id,
+      shopDomain,
+      store.shopType ?? "general_retail",
+      productUrl,
+      product,
+      budget.tier,
+      appUrl,
+      focusAreas,
+      labConfig,
+      storeContext,
+    );
+  } catch (err) {
+    if (err instanceof QuotaExceededError) {
+      return { error: err.reason };
+    }
+    throw err;
+  }
 
   throw redirect(`/app/results/${simulation.id}`);
 };

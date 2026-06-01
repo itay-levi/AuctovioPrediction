@@ -30,6 +30,7 @@ def post_phase_update(
     trust_audit: Optional[dict] = None,
     comparison_insight: Optional[str] = None,
     product_dna: Optional[dict] = None,   # {"coreFear", "coreDesire", "personaHooks"}
+    failure_reason: Optional[str] = None,  # merchant-friendly message when status=FAILED
     partial: bool = False,  # True → fire-and-forget, 1 attempt, non-blocking
 ) -> bool:
     payload = {
@@ -55,10 +56,20 @@ def post_phase_update(
         payload["comparisonInsight"] = comparison_insight
     if product_dna is not None:
         payload["productDna"] = product_dna
+    if failure_reason:
+        # Cap to 500 chars so a verbose stack trace doesn't break the UI banner.
+        payload["failureReason"] = failure_reason[:500]
 
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        # SHOPIFY_APP_API_KEY missing → callback would arrive unauthenticated and
+        # the Shopify side will reject with 401. Log loudly so this is debuggable.
+        logger.error(
+            "[Callback] SHOPIFY_APP_API_KEY is not configured — callback to %s will be unauthenticated",
+            callback_url,
+        )
 
     max_attempts = 1 if partial else MAX_RETRIES
     for attempt in range(max_attempts):

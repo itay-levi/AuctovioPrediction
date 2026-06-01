@@ -29,7 +29,7 @@ from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeR
 logger = logging.getLogger("miroshop.routes")
 bp = Blueprint("miroshop", __name__, url_prefix="/miroshop")
 
-SHOPIFY_APP_API_KEY = Config.__dict__.get("SHOPIFY_APP_API_KEY", None)
+SHOPIFY_APP_API_KEY = getattr(Config, "SHOPIFY_APP_API_KEY", None) or None
 
 # ── Concurrency cap ────────────────────────────────────────────────────────────
 # Allow at most 2 simulations to run simultaneously so the TPM / RPM budgets
@@ -37,14 +37,57 @@ SHOPIFY_APP_API_KEY = Config.__dict__.get("SHOPIFY_APP_API_KEY", None)
 # before being rejected with FAILED (avoids silent queue-overflow).
 _simulation_semaphore = threading.Semaphore(2)
 
-# ── Panel consistency cache ─────────────────────────────────────────────────────
+# ── Panel consistency cache (bounded LRU + lock) ───────────────────────────────
 # Same product URL → same panel members → consistent scores across re-runs.
-# Keyed by productUrl (or product handle as fallback).
-# Both caches live for the process lifetime — no TTL needed since panel composition
-# should be stable for a given product listing.
-_archetype_cache: dict[str, list] = {}
-_intelligence_cache: dict[str, dict] = {}   # product_key → {"product_context": str, "no_return_acceptable": bool, "gap_context": str, "gap_items": list}
-_niche_profile_cache: dict[str, dict] = {}
+# Bounded so a server hosting many merchants doesn't grow memory unboundedly.
+# All access is guarded by `_cache_lock` because the engine writes from
+# multiple threads (per-phase ThreadPoolExecutor + concurrent simulations).
+_CACHE_MAX_ENTRIES = 500
+_cache_lock = threading.Lock()
+
+class _BoundedCache:
+    """Thread-safe LRU dict with O(1) eviction. Lock-protected."""
+    __slots__ = ("_data", "_max")
+
+    def __init__(self, max_entries: int) -> None:
+        # OrderedDict-like via insertion order: refresh on hit by re-inserting.
+        # Using a plain dict (Python 3.7+ guarantees insertion order).
+        self._data: dict[str, object] = {}
+        self._max = max_entries
+
+    def get(self, key: str, default=None):
+        with _cache_lock:
+            if key in self._data:
+                # Refresh recency
+                val = self._data.pop(key)
+                self._data[key] = val
+                return val
+            return default
+
+    def __contains__(self, key: str) -> bool:
+        with _cache_lock:
+            return key in self._data
+
+    def set(self, key: str, value) -> None:
+        if not key:
+            return  # never cache under empty keys (cross-product contamination)
+        with _cache_lock:
+            if key in self._data:
+                self._data.pop(key)
+            self._data[key] = value
+            while len(self._data) > self._max:
+                # Evict oldest
+                first = next(iter(self._data))
+                self._data.pop(first, None)
+
+    def __len__(self) -> int:
+        with _cache_lock:
+            return len(self._data)
+
+
+_archetype_cache = _BoundedCache(_CACHE_MAX_ENTRIES)
+_intelligence_cache = _BoundedCache(_CACHE_MAX_ENTRIES)
+_niche_profile_cache = _BoundedCache(_CACHE_MAX_ENTRIES)
 
 
 def _is_interpreter_shutting_down(err: Exception) -> bool:
@@ -107,6 +150,7 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             simulation_id=req.simulationId,
             phase=0,
             status="FAILED",
+            failure_reason="Server is at capacity right now — please try again in a minute.",
         )
         return
 
@@ -134,17 +178,17 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         # Generate product-specific archetypes inside the thread so the HTTP endpoint
         # returns 202 instantly rather than blocking for 30+ seconds.
         if archetypes is None:
-            if _panel_key and _panel_key in _archetype_cache:
-                archetypes = _archetype_cache[_panel_key]
-                print(
-                    f"[{req.productJson.get('title', '?')}] Using cached archetypes "
-                    f"({len(archetypes)} members)",
-                    flush=True,
+            cached_archetypes = _archetype_cache.get(_panel_key) if _panel_key else None
+            if cached_archetypes is not None:
+                archetypes = cached_archetypes
+                logger.info(
+                    "[%s] Using cached archetypes (%d members)",
+                    req.productJson.get("title", "?"),
+                    len(archetypes),
                 )
             else:
                 archetypes = generate_archetypes(llm, req.productJson, count=5)
-                if _panel_key:
-                    _archetype_cache[_panel_key] = archetypes
+                _archetype_cache.set(_panel_key, archetypes)
 
         # Product intelligence + DNA — run once per product, cached together.
         # Delta (what-if) runs skip this entirely if DNA is pre-supplied in delta_context.
@@ -165,8 +209,8 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
 
         intelligence = None  # set when we run full extraction (not intel-cache hit)
 
-        if _panel_key and _panel_key in _intelligence_cache:
-            cached_intel = _intelligence_cache[_panel_key]
+        cached_intel = _intelligence_cache.get(_panel_key) if _panel_key else None
+        if cached_intel is not None:
             product_context = cached_intel["product_context"]
             no_return_from_intelligence = cached_intel["no_return_acceptable"]
             gap_context = cached_intel.get("gap_context", "")
@@ -174,18 +218,17 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             if product_dna is None:
                 product_dna = dna_from_dict(cached_intel.get("product_dna"))
             # Niche profiles may still need generating if not yet cached
-            _need_niche = not (_panel_key and _panel_key in _niche_profile_cache)
-            if _need_niche:
+            cached_niche = _niche_profile_cache.get(_panel_key) if _panel_key else None
+            if cached_niche is None:
                 niche_map = _gen_niche(llm, req.productJson)
-                if _panel_key:
-                    _niche_profile_cache[_panel_key] = niche_map
+                _niche_profile_cache.set(_panel_key, niche_map)
             else:
-                niche_map = _niche_profile_cache[_panel_key]
+                niche_map = cached_niche
         else:
             # Run DNA + niche profiles concurrently with intelligence extraction
             # (all three only need product_json — no mutual dependency)
             _need_dna = product_dna is None and not _supplied_dna
-            _need_niche = not (_panel_key and _panel_key in _niche_profile_cache)
+            _need_niche = _panel_key not in _niche_profile_cache if _panel_key else True
 
             try:
                 with _PreTPE(max_workers=3) as _pre_pool:
@@ -196,15 +239,22 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
                     intelligence = _intel_fut.result()
                     if _dna_fut and product_dna is None:
                         product_dna = _dna_fut.result()
-                    niche_map = _niche_fut.result() if _niche_fut else _niche_profile_cache.get(_panel_key or "", {})
+                    if _niche_fut:
+                        niche_map = _niche_fut.result()
+                    else:
+                        # Reuse the cached map. _panel_key is non-empty here because
+                        # _need_niche=False implies the key is present in the cache.
+                        niche_map = _niche_profile_cache.get(_panel_key) if _panel_key else {}
+                        if niche_map is None:
+                            niche_map = {}
             except RuntimeError as e:
                 if _is_interpreter_shutting_down(e):
                     logger.info(f"Simulation {req.simulationId} cancelled during app reload")
                     return
                 raise
 
-            if _panel_key and _need_niche:
-                _niche_profile_cache[_panel_key] = niche_map
+            if _need_niche:
+                _niche_profile_cache.set(_panel_key, niche_map)
 
             product_context = format_product_context(intelligence)
             no_return_from_intelligence = intelligence.no_return_acceptable if intelligence else None
@@ -262,14 +312,14 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
         else:
             trust_audit = _run_trust_audit_llm()
 
-        if _panel_key and intelligence is not None:
-            _intelligence_cache[_panel_key] = {
+        if intelligence is not None:
+            _intelligence_cache.set(_panel_key, {
                 "product_context": product_context,
                 "no_return_acceptable": no_return_from_intelligence,
                 "gap_context": gap_context,
                 "gap_items": gap_items_for_recs,
                 "product_dna": dna_to_dict(product_dna),
-            }
+            })
 
         # ── Customer Lab configuration ────────────────────────────────────────
         # Resolved first so lab_audience_context is available for trust_context assembly.
@@ -606,14 +656,17 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             from openai import RateLimitError
             if isinstance(e, RateLimitError):
                 logger.error(f"Simulation {req.simulationId} aborted — LLM quota exceeded (429). Rotate or upgrade API key.")
+                _failure = "Our AI panel is temporarily over capacity. Please try again in a minute."
             else:
                 logger.exception(f"Simulation {req.simulationId} failed: {e}")
+                _failure = "The analysis hit an unexpected error. Your budget has not been charged — please try again."
             post_phase_update(
                 callback_url=req.callbackUrl,
                 api_key=getattr(Config, "SHOPIFY_APP_API_KEY", None),
                 simulation_id=req.simulationId,
                 phase=0,
                 status="FAILED",
+                failure_reason=_failure,
             )
     finally:
         _simulation_semaphore.release()
@@ -788,7 +841,7 @@ Respond with valid JSON only, no markdown:
         })
     except Exception as e:
         logger.exception(f"Synthesis failed for {req.simulation_id}: {e}")
-        return jsonify({"error": f"Synthesis failed: {str(e)}"}), 500
+        return jsonify({"error": "Synthesis is temporarily unavailable. Please try again."}), 500
 
 
 _AUDIENCE_LABELS = {
@@ -847,10 +900,19 @@ def generate_fix():
     """
     body = request.get_json(force=True) or {}
     signal = body.get("signal", "")
-    product_type = body.get("productType", "general retail products")
+    raw_pt = body.get("productType", "general retail products")
 
     if signal not in _FIX_PROMPTS:
         return jsonify({"error": f"No fix template for signal '{signal}'"}), 400
+
+    # Sanitize productType — flows into the LLM prompt. Reject non-strings,
+    # cap length, and strip any literal '{...}' format placeholders that
+    # would otherwise crash str.format() with a KeyError or be exploitable.
+    if not isinstance(raw_pt, str):
+        raw_pt = "general retail products"
+    product_type = raw_pt[:100].replace("{", "").replace("}", "").strip()
+    if not product_type:
+        product_type = "general retail products"
 
     prompt = _FIX_PROMPTS[signal].format(product_type=product_type)
 
@@ -872,7 +934,8 @@ def generate_fix():
         })
     except Exception as e:
         logger.exception(f"generate-fix failed for signal={signal}: {e}")
-        return jsonify({"error": f"Generation failed: {str(e)}"}), 500
+        # Don't echo raw exception to caller — leaks library/model details.
+        return jsonify({"error": "Generation failed. Please try again."}), 500
 
 
 @bp.post("/lab/compare")
@@ -952,7 +1015,7 @@ Respond with valid JSON only:
         })
     except Exception as e:
         logger.exception(f"Lab compare failed: {e}")
-        return jsonify({"error": f"Comparison generation failed: {str(e)}"}), 500
+        return jsonify({"error": "Comparison generation failed. Please try again."}), 500
 
 
 @bp.post("/audit/evaluate")
@@ -983,7 +1046,7 @@ def audit_evaluate():
         return jsonify(result)
     except Exception as e:
         logger.exception(f"Audit evaluate failed: {e}")
-        return jsonify({"error": f"Evaluation failed: {str(e)}"}), 500
+        return jsonify({"error": "Evaluation failed. Please try again."}), 500
 
 
 @bp.get("/health")

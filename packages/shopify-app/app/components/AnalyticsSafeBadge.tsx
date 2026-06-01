@@ -10,10 +10,14 @@ export function AnalyticsSafeBadge() {
       content="MiroShop agents evaluate your listing data — they never visit your storefront, fire any browser events, or create sessions. Your Google Analytics, Facebook Pixel, and all conversion tracking stay completely clean."
       dismissOnMouseOut
     >
-      <div
+      <button
+        type="button"
+        aria-label="Analytics-safe — your live traffic is never affected. Click for details."
         onClick={() => setActive((v) => !v)}
         onMouseEnter={() => setActive(true)}
         onMouseLeave={() => setActive(false)}
+        onFocus={() => setActive(true)}
+        onBlur={() => setActive(false)}
         style={{
           display: "inline-flex",
           alignItems: "center",
@@ -23,6 +27,7 @@ export function AnalyticsSafeBadge() {
           background: "var(--p-color-bg-surface-success)",
           border: "1px solid var(--p-color-border-success)",
           cursor: "default",
+          fontFamily: "inherit",
         }}
       >
         <InlineStack gap="100" align="center" blockAlign="center">
@@ -33,7 +38,7 @@ export function AnalyticsSafeBadge() {
             — your live traffic is never affected
           </Text>
         </InlineStack>
-      </div>
+      </button>
     </Tooltip>
   );
 }

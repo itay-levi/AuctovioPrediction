@@ -17,12 +17,34 @@ else:
     load_dotenv(override=True)
 
 
+def _required_secret(name: str, dev_default: str | None = None) -> str:
+    """
+    Read a required secret from the environment. In production we never fall
+    back to a hardcoded default — that would let anyone with the source forge
+    Flask sessions or impersonate the engine. In development a local dev value
+    is allowed to keep the dev loop friction-free.
+    """
+    val = os.environ.get(name)
+    if val:
+        return val
+    is_dev = os.environ.get('FLASK_DEBUG', '').lower() == 'true' or os.environ.get('ENV', '').lower() == 'development'
+    if is_dev and dev_default is not None:
+        return dev_default
+    # Falsy in production — defer the hard failure to Config.validate() so the
+    # app starts up enough to log a meaningful error before exiting.
+    return ''
+
+
 class Config:
     """Flask配置类"""
-    
+
     # Flask配置
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'mirofish-secret-key')
-    DEBUG = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+    # SECRET_KEY: required in production; falls back to a dev-only value if FLASK_DEBUG
+    # is on so local runs don't break, but production validate() will fail closed.
+    SECRET_KEY = _required_secret('SECRET_KEY', dev_default='mirofish-dev-secret-DO-NOT-USE-IN-PROD')
+    # FLASK_DEBUG: default False so a misconfigured deployment doesn't expose the
+    # interactive Werkzeug debugger (RCE on any 500). Must be explicitly enabled.
+    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
     # JSON配置 - 禁用ASCII转义，让中文直接显示（而不是 \uXXXX 格式）
     JSON_AS_ASCII = False
@@ -82,10 +104,24 @@ class Config:
 
     @classmethod
     def validate(cls):
-        """验证必要配置"""
+        """Validate required configuration. Returns a list of errors."""
         errors = []
         if not cls.LLM_API_KEY:
-            errors.append("LLM_API_KEY 未配置")
+            errors.append("LLM_API_KEY not configured")
+        if not cls.SECRET_KEY:
+            errors.append(
+                "SECRET_KEY not configured — set it in the environment. "
+                "The hardcoded default has been removed for security."
+            )
+        if not cls.ENGINE_API_KEY:
+            errors.append(
+                "ENGINE_API_KEY not configured — required to authenticate inbound /miroshop/* requests."
+            )
+        if not cls.SHOPIFY_APP_API_KEY:
+            errors.append(
+                "SHOPIFY_APP_API_KEY not configured — required so engine callbacks "
+                "to the Shopify app carry an Authorization: Bearer header."
+            )
         # ZEP_API_KEY is optional — agent memory disabled if absent
         return errors
 

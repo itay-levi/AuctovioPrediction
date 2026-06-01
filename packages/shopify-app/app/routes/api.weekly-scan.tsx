@@ -69,7 +69,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       results.push({ shop: store.shopDomain, status: "sent" });
     } catch (err) {
-      results.push({ shop: store.shopDomain, status: `error: ${String(err)}` });
+      // Never serialise raw exception strings into HTTP responses — Prisma
+      // and DB driver errors can leak connection strings, file paths, etc.
+      // Log the full error server-side, return a generic status to the cron.
+      console.error("[WeeklyScan] shop failed", {
+        shop: store.shopDomain,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      results.push({ shop: store.shopDomain, status: "error" });
     }
   }
 

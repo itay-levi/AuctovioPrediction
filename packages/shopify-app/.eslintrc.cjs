@@ -10,4 +10,11 @@ module.exports = {
   globals: {
     shopify: "readonly"
   },
+  settings: {
+    jest: {
+      // We run Vitest, but remix preset enables jest plugin rules.
+      // Pinning avoids "Unable to detect Jest version" lint crashes.
+      version: 29,
+    },
+  },
 };

@@ -6,6 +6,6 @@ import { authenticate } from "../shopify.server";
 // We store NO personal customer data (only product analysis), so we respond 200 OK.
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);
-  console.log(`[GDPR] ${topic} received for ${shop} — no customer PII stored`);
+  console.info(`[GDPR] ${topic} received for ${shop} — no customer PII stored`);
   return new Response();
 };

@@ -4,7 +4,7 @@ import db from "../db.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, session, topic } = await authenticate.webhook(request);
-  console.log(`[Webhook] ${topic} for ${shop}`);
+  console.info(`[Webhook] ${topic} for ${shop}`);
 
   // Delete Shopify sessions
   if (session) {
