@@ -1814,6 +1814,46 @@ export function ComparisonLaboratory({
                         </div>
                       )}
 
+                      {/* "What to do" guide — replaces the silent disabled state on the Run button.
+                          Always tells the merchant exactly what action enables the simulation. */}
+                      {(() => {
+                        if (latestRunning) {
+                          return (
+                            <div className={`${styles.labGuide} ${styles.labGuideRunning}`}>
+                              <span className={styles.labGuideIcon} aria-hidden>⏳</span>
+                              <span className={styles.labGuideBody}>
+                                <span className={styles.labGuideTitle}>Simulation running…</span>
+                                <span className={styles.labGuideSub}>Open <strong>Run sim</strong> on the right to watch live votes as panelists vote.</span>
+                              </span>
+                            </div>
+                          );
+                        }
+                        if (hasBuildChange) {
+                          return (
+                            <div className={`${styles.labGuide} ${styles.labGuideReady}`}>
+                              <span className={styles.labGuideIcon} aria-hidden>✓</span>
+                              <span className={styles.labGuideBody}>
+                                <span className={styles.labGuideTitle}>Ready to run</span>
+                                <span className={styles.labGuideSub}>
+                                  Click <strong>▶ Run simulation</strong> below — your panel will compare this test to your baseline.
+                                </span>
+                              </span>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className={`${styles.labGuide} ${styles.labGuideWaiting}`}>
+                            <span className={styles.labGuideIcon} aria-hidden>1</span>
+                            <span className={styles.labGuideBody}>
+                              <span className={styles.labGuideTitle}>Pick what you want to test, then change one value</span>
+                              <span className={styles.labGuideSub}>
+                                Use the tabs below (Price · Shipping · % Off · Copy · Trust · Ideas) and adjust at least one input. The Run button will light up the moment you do.
+                              </span>
+                            </span>
+                          </div>
+                        );
+                      })()}
+
                       <div className={styles.refineMetricStrip}>
                         <div className={styles.refineMetricCell}>
                           <span className={styles.refineMetricLabel}>List price</span>
@@ -2108,32 +2148,59 @@ export function ComparisonLaboratory({
                         />
                       </div>
 
-                      <div className={styles.refineCardDock}>
-                        <InlineStack gap="300" blockAlign="center" wrap>
-                          <Button variant="secondary" onClick={() => setWizardStep(2)}>
-                            Open comparison view
-                          </Button>
-                          <fetcher.Form method="post">
-                            <input type="hidden" name="intent" value="run_whatif" />
-                            <input type="hidden" name="activeExperiment" value={activeExperimentPayload} />
-                            <input type="hidden" name="price" value={price} />
-                            <input type="hidden" name="shippingDays" value={shippingDays} />
-                            <Button
-                              variant="primary"
-                              submit
-                              size="large"
-                              loading={isSubmitting}
-                              disabled={!hasBuildChange || !!latestRunning}
-                            >
-                              Run simulation
-                            </Button>
-                          </fetcher.Form>
-                          {latestRunning && (
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              Running — open <strong>Run sim</strong> for live votes.
-                            </Text>
-                          )}
-                        </InlineStack>
+                      {/* Sticky Brand Studio dock — always visible at the bottom of
+                          the simulator column so the Run button never gets buried by
+                          the form's vertical sprawl. */}
+                      <div className={styles.labStickyDock}>
+                        <div className={styles.labStickyDockText}>
+                          <span className={styles.labStickyDockTitle}>
+                            {latestRunning
+                              ? "Simulation in progress"
+                              : hasBuildChange
+                                ? "Ready — your test is set"
+                                : "Change a value to enable"}
+                          </span>
+                          <span className={styles.labStickyDockSub}>
+                            {latestRunning
+                              ? "Watch your panel vote in real time on the Run sim tab."
+                              : hasBuildChange
+                                ? "5 panelists will compare this test against your baseline."
+                                : "Pick a tab above and move the slider, type into a field, or tap a chip."}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.labStickyDockGhost}
+                          onClick={() => setWizardStep(2)}
+                        >
+                          Open comparison view
+                        </button>
+                        <fetcher.Form method="post">
+                          <input type="hidden" name="intent" value="run_whatif" />
+                          <input type="hidden" name="activeExperiment" value={activeExperimentPayload} />
+                          <input type="hidden" name="price" value={price} />
+                          <input type="hidden" name="shippingDays" value={shippingDays} />
+                          <button
+                            type="submit"
+                            className={styles.labStickyDockBtn}
+                            disabled={!hasBuildChange || !!latestRunning || isSubmitting}
+                            aria-label={
+                              latestRunning
+                                ? "Simulation already running"
+                                : hasBuildChange
+                                  ? "Run the simulation"
+                                  : "Change a value first to enable the simulation"
+                            }
+                          >
+                            {isSubmitting
+                              ? "Starting…"
+                              : latestRunning
+                                ? "Running…"
+                                : hasBuildChange
+                                  ? "▶ Run simulation"
+                                  : "Locked"}
+                          </button>
+                        </fetcher.Form>
                       </div>
                     </>
                   )}

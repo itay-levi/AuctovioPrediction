@@ -24,6 +24,11 @@ import { createSubscription, cancelSubscription } from "../services/billing.serv
 import { FEATURE_LABELS } from "../services/gates.server";
 import { RouteErrorBoundary } from "../components/RouteErrorBoundary";
 
+// Mirror of UNLOCK_REPORT.price from billing.server.ts. We can't import the
+// constant directly because billing.server.ts is server-only and this page
+// renders client-side too.
+const UNLOCK_REPORT_PRICE = "4.99";
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const store = await getStore(session.shop);
@@ -112,9 +117,22 @@ export default function BillingPage() {
 
             {/* ── Currency & cycle note ── */}
             <Text as="p" variant="bodySm" tone="subdued">
-              All prices are in USD and billed monthly. Cancel any time from your Shopify Partner Dashboard.
-              Each paid plan includes a 7-day free trial.
+              Prices are in USD. Subscriptions are billed monthly with a 7-day free trial and can be
+              cancelled any time from your Shopify Partner Dashboard. The single-scan unlock is a
+              one-time purchase and never auto-renews.
             </Text>
+
+            {/* ── Pay-per-scan info banner (FREE-tier users only) ── */}
+            {currentTier === "FREE" && (
+              <Banner tone="info" title="Don't want a subscription yet? Pay per scan.">
+                <Text as="p" variant="bodyMd">
+                  Every analysis runs for free and you always see the score. To see the full report
+                  (friction breakdown, panelist verdicts, action plan, printable PDF) you can unlock that
+                  specific report for <strong>${UNLOCK_REPORT_PRICE}</strong> — one-time, no subscription.
+                  The unlock button appears on each completed report.
+                </Text>
+              </Banner>
+            )}
 
             {/* ── Plan cards ── */}
             <InlineStack gap="400" align="start" wrap>
@@ -136,7 +154,8 @@ export default function BillingPage() {
                       <List.Item>5-agent customer panel</List.Item>
                       <List.Item>3 analyses per month</List.Item>
                       <List.Item>30 MT budget</List.Item>
-                      <List.Item>Basic friction report</List.Item>
+                      <List.Item>Score + teaser on every report</List.Item>
+                      <List.Item>{`Unlock the full report for $${UNLOCK_REPORT_PRICE} (one-time)`}</List.Item>
                     </List>
                     {currentTier === "FREE" ? (
                       <Button disabled variant="plain">Current plan</Button>
@@ -149,6 +168,39 @@ export default function BillingPage() {
                         Downgrade to Free
                       </Button>
                     )}
+                  </BlockStack>
+                </Card>
+              </div>
+
+              {/* SINGLE SCAN UNLOCK — pay-per-report */}
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <Card>
+                  <BlockStack gap="300">
+                    <InlineStack align="space-between">
+                      <Text as="h2" variant="headingLg">Single Report</Text>
+                      <Badge tone="attention">One-time</Badge>
+                    </InlineStack>
+                    <Text as="p" variant="headingXl">
+                      {`$${UNLOCK_REPORT_PRICE}`}
+                      <Text as="span" variant="bodySm" tone="subdued"> USD / report</Text>
+                    </Text>
+                    <Divider />
+                    <List type="bullet">
+                      <List.Item>Pay only when you want the full report</List.Item>
+                      <List.Item>Full friction breakdown with % per category</List.Item>
+                      <List.Item>All 5 panelist verdicts &amp; reasoning</List.Item>
+                      <List.Item>Prioritised action plan + printable PDF</List.Item>
+                      <List.Item>No subscription · no auto-renew</List.Item>
+                    </List>
+                    <Button
+                      variant="primary"
+                      url="/app/history"
+                      disabled={currentTier === "PRO" || currentTier === "ENTERPRISE"}
+                    >
+                      {currentTier === "PRO" || currentTier === "ENTERPRISE"
+                        ? "Included in your plan"
+                        : "Go to a report to unlock"}
+                    </Button>
                   </BlockStack>
                 </Card>
               </div>
