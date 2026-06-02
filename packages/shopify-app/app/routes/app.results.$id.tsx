@@ -906,25 +906,15 @@ function LivePanelRoom({
   );
 }
 
-// ── Paywall: $4.99 one-time unlock for FREE-tier merchants ────────────────
-// Posts to /app/billing/unlock; on success Shopify returns a confirmationUrl
-// which we redirect the parent window to. We use window.top because Shopify's
-// payment confirmation has to break out of the embedded iframe.
-function PaywallCard({
-  simulationId,
-  topFrictionLabel,
-  issueCount,
-  panelistCount,
-}: {
-  simulationId: string;
-  topFrictionLabel: string | null;
-  issueCount: number;
-  panelistCount: number;
-}) {
+// ── Shared unlock checkout hook ─────────────────────────────────────────
+// POST /app/billing/unlock returns a Shopify confirmation URL. We break out
+// of the embedded iframe to land on the Shopify-hosted payment page (admin
+// won't render checkout inside its own iframe).
+function useUnlockReport(simulationId: string) {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const onUnlock = async () => {
+  const unlock = async () => {
     setSubmitting(true);
     setErr(null);
     try {
@@ -942,8 +932,6 @@ function PaywallCard({
         return;
       }
       if (data.confirmationUrl) {
-        // Shopify checkout flow expects the parent (admin) window to navigate.
-        // Fall back to current window if window.top is blocked.
         try {
           (window.top ?? window).location.href = data.confirmationUrl;
         } catch {
@@ -958,6 +946,183 @@ function PaywallCard({
       setSubmitting(false);
     }
   };
+
+  return { unlock, submitting, err };
+}
+
+// ── LockedSection: blurred-glass wrapper showing fake content underneath
+//    a frosted-glass overlay with an Unlock CTA. The fake content is fully
+//    client-side — no real data ever reaches the browser before payment. */
+function LockedSection({
+  simulationId,
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  simulationId: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  const { unlock, submitting, err } = useUnlockReport(simulationId);
+  return (
+    <div className={resultsStyles.lockedSection}>
+      <div className={resultsStyles.lockedBlurred} aria-hidden="true">
+        {children}
+      </div>
+      <div className={resultsStyles.lockedOverlay} role="region" aria-label={title}>
+        <div className={resultsStyles.lockedOverlayCard}>
+          <span className={resultsStyles.lockedOverlayIcon} aria-hidden>🔒</span>
+          <span className={resultsStyles.lockedOverlayEyebrow}>{eyebrow}</span>
+          <h3 className={resultsStyles.lockedOverlayTitle}>{title}</h3>
+          <p className={resultsStyles.lockedOverlayDesc}>{description}</p>
+          <button
+            type="button"
+            className={resultsStyles.lockedOverlayCta}
+            onClick={unlock}
+            disabled={submitting}
+          >
+            {submitting ? "Opening checkout…" : "🔓 Unlock to reveal"}
+            <span className={resultsStyles.lockedOverlayCtaPrice}>$4.99</span>
+          </button>
+          <Link to="/app/billing" className={resultsStyles.lockedOverlaySecondary}>
+            Or upgrade to Pro for unlimited
+          </Link>
+          {err && <div className={resultsStyles.lockedOverlayErr}>{err}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Faux content components — render the SHAPE of the locked content.
+//    All values are static placeholders; the blur hides exact text so
+//    merchants see depth and structure without learning anything real. */
+function FauxFrictionBreakdown() {
+  return (
+    <div className={resultsStyles.fauxFrictionRow}>
+      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#DC2626" }}>
+        <div className={resultsStyles.fauxFrictionTitle}>💰 Price Sensitivity</div>
+        <div className={resultsStyles.fauxFrictionPct}>
+          <span className={resultsStyles.fauxFrictionPctNum}>42%</span>
+          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over price</span>
+        </div>
+        <div className={resultsStyles.fauxFrictionBar}>
+          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#DC2626", width: "42%" }} />
+        </div>
+        <span className={resultsStyles.fauxFrictionObj}>
+          “Comparable products from established brands are listed 18% cheaper — I&apos;d need a strong reason to pay this premium.”
+        </span>
+      </div>
+      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#D97706" }}>
+        <div className={resultsStyles.fauxFrictionTitle}>🛡️ Trust &amp; Social Proof</div>
+        <div className={resultsStyles.fauxFrictionPct}>
+          <span className={resultsStyles.fauxFrictionPctNum}>28%</span>
+          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over trust</span>
+        </div>
+        <div className={resultsStyles.fauxFrictionBar}>
+          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#D97706", width: "28%" }} />
+        </div>
+        <span className={resultsStyles.fauxFrictionObj}>
+          “No third-party reviews visible above the fold — I can&apos;t verify other people have had good experiences here.”
+        </span>
+      </div>
+      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#16A34A" }}>
+        <div className={resultsStyles.fauxFrictionTitle}>📦 Logistics &amp; Delivery</div>
+        <div className={resultsStyles.fauxFrictionPct}>
+          <span className={resultsStyles.fauxFrictionPctNum}>11%</span>
+          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over shipping</span>
+        </div>
+        <div className={resultsStyles.fauxFrictionBar}>
+          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#16A34A", width: "11%" }} />
+        </div>
+        <span className={resultsStyles.fauxFrictionObj}>
+          “Shipping timeline is clear and the return policy is reassuring — this isn&apos;t blocking me.”
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function FauxPanelDebate() {
+  const panelists = [
+    { emoji: "💰", name: "Marcus", role: "Budget Optimizer", verdict: "REJECT" as const, line: "Twelve dollars more than the closest alternative on the same listing aggregator — that gap eats my margin for switching." },
+    { emoji: "❤️", name: "Sofia", role: "Brand Loyalist", verdict: "NEUTRAL" as const, line: "The brand voice is consistent and the product story tracks, but I want to see a single named customer before I commit." },
+    { emoji: "🔍", name: "Alex", role: "Research Analyst", verdict: "BUY" as const, line: "Spec sheet is complete, materials are disclosed, sizing chart is precise — the data covers every question I had." },
+    { emoji: "⚡", name: "Jordan", role: "Impulse Decider", verdict: "REJECT" as const, line: "First image is fine but the next three are nearly identical — I lost the urge to scroll before reaching the description." },
+    { emoji: "🎁", name: "Priya", role: "Gift Seeker", verdict: "NEUTRAL" as const, line: "Packaging looks gift-ready but there&apos;s no mention of a gift receipt or branded card option. Almost there for me." },
+  ];
+  const verdictClass: Record<typeof panelists[number]["verdict"], string> = {
+    BUY: resultsStyles.fauxDebateVerdictBuy,
+    REJECT: resultsStyles.fauxDebateVerdictReject,
+    NEUTRAL: resultsStyles.fauxDebateVerdictNeutral,
+  };
+  return (
+    <div className={resultsStyles.fauxDebateGrid}>
+      {panelists.map((p) => (
+        <div key={p.name} className={resultsStyles.fauxDebateCard}>
+          <div className={resultsStyles.fauxDebateHead}>
+            <span className={resultsStyles.fauxDebateAvatar} aria-hidden>{p.emoji}</span>
+            <div>
+              <div className={resultsStyles.fauxDebateName}>{p.name}</div>
+              <div className={resultsStyles.fauxDebateRole}>{p.role}</div>
+            </div>
+          </div>
+          <span className={`${resultsStyles.fauxDebateVerdict} ${verdictClass[p.verdict]}`}>{p.verdict}</span>
+          <span className={resultsStyles.fauxDebateLine}>“{p.line}”</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FauxActionPlan() {
+  const items = [
+    { p: "HIGH" as const, title: "Add 3 above-the-fold reviews", meta: "Trust · est. +9 score", desc: "Surface verified customer reviews near the price so first-time buyers can verify legitimacy without scrolling past the buy box." },
+    { p: "HIGH" as const, title: "Add a clear 30-day return policy", meta: "Trust · est. +6 score", desc: "Specific terms, refund method, and a single-click return form remove the biggest hesitation for first-time buyers." },
+    { p: "MED" as const, title: "Re-shoot product images at varied angles", meta: "Visual · est. +4 score", desc: "Three of the current images repeat the same angle. Add a lifestyle shot, a scale shot, and a packaging shot." },
+    { p: "MED" as const, title: "Surface materials and sizing in bullets", meta: "Detail · est. +3 score", desc: "The information is in the long description but research-driven shoppers want it as a scannable spec block." },
+    { p: "LOW" as const, title: "Offer a gift-receipt checkbox", meta: "Conversion · est. +2 score", desc: "Gift-seekers explicitly mentioned the absence of a gift option as a soft barrier." },
+  ];
+  const pClass: Record<typeof items[number]["p"], string> = {
+    HIGH: resultsStyles.fauxPlanPriorityHigh,
+    MED: resultsStyles.fauxPlanPriorityMed,
+    LOW: resultsStyles.fauxPlanPriorityLow,
+  };
+  return (
+    <div className={resultsStyles.fauxPlanList}>
+      {items.map((it, i) => (
+        <div key={i} className={resultsStyles.fauxPlanItem}>
+          <div className={resultsStyles.fauxPlanNum}>{i + 1}</div>
+          <div className={resultsStyles.fauxPlanBody}>
+            <div className={resultsStyles.fauxPlanTitle}>
+              <span className={`${resultsStyles.fauxPlanPriority} ${pClass[it.p]}`}>{it.p}</span>
+              {it.title}
+            </div>
+            <div className={resultsStyles.fauxPlanMeta}>{it.meta}</div>
+            <div className={resultsStyles.fauxPlanDesc}>{it.desc}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Paywall: $4.99 one-time unlock for FREE-tier merchants ────────────────
+function PaywallCard({
+  simulationId,
+  topFrictionLabel,
+  issueCount,
+  panelistCount,
+}: {
+  simulationId: string;
+  topFrictionLabel: string | null;
+  issueCount: number;
+  panelistCount: number;
+}) {
+  const { unlock: onUnlock, submitting, err } = useUnlockReport(simulationId);
 
   return (
     <div className={resultsStyles.paywallCard}>
@@ -1468,12 +1633,14 @@ export default function ResultsPage() {
                           {!isDone && <Text as="p" variant="bodySm" tone="subdued">Ready after analysis completes</Text>}
                         </InlineStack>
                         {isDone && !reportUnlocked ? (
-                          <div className={resultsStyles.lockedStub}>
-                            <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
-                            <span className={resultsStyles.lockedStubText}>
-                              <strong>Friction percentages, top objections, and the recommended fix per category</strong> are part of the full report. Unlock above for $4.99.
-                            </span>
-                          </div>
+                          <LockedSection
+                            simulationId={simulation.id}
+                            eyebrow="3 friction categories · locked"
+                            title="See exactly what's blocking sales"
+                            description="The exact % of your panel that dropped out per category, with every top objection in their own words and the recommended fix."
+                          >
+                            <FauxFrictionBreakdown />
+                          </LockedSection>
                         ) : isDone ? (
                           <div style={{ display: "flex", gap: "16px", alignItems: "stretch" }}>
                             {frictionCols.map(({ key, label, emoji, description, impactLine }) => {
@@ -1837,17 +2004,14 @@ export default function ResultsPage() {
           {/* ════════════ TAB 1: PANEL DEBATE ════════════ */}
           {selectedTab === 1 && isDone && !reportUnlocked && (
             <Box paddingBlockStart="400">
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Panel debate · locked</Text>
-                  <div className={resultsStyles.lockedStub}>
-                    <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
-                    <span className={resultsStyles.lockedStubText}>
-                      <strong>The full panel debate — each panelist&apos;s verdict, reasoning, and the dissenter dynamics</strong> are part of the full report. Unlock above for $4.99 to see exactly what every panelist said.
-                    </span>
-                  </div>
-                </BlockStack>
-              </Card>
+              <LockedSection
+                simulationId={simulation.id}
+                eyebrow="5 panelist verdicts · locked"
+                title="Read every panelist&apos;s full reasoning"
+                description="See exactly what each of your 5 distinct buyer archetypes said about your product — their objections, their priorities, and where the dissent landed."
+              >
+                <FauxPanelDebate />
+              </LockedSection>
             </Box>
           )}
 
@@ -1955,17 +2119,14 @@ export default function ResultsPage() {
           {/* ════════════ TAB 2: ACTION PLAN ════════════ */}
           {selectedTab === 2 && isDone && !reportUnlocked && (
             <Box paddingBlockStart="400">
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Action plan · locked</Text>
-                  <div className={resultsStyles.lockedStub}>
-                    <span className={resultsStyles.lockedStubIcon} aria-hidden>🔒</span>
-                    <span className={resultsStyles.lockedStubText}>
-                      <strong>The prioritised fix list, trust audit, and one-click policy generation</strong> are part of the full report. Unlock above for $4.99 to see every fix ranked by impact.
-                    </span>
-                  </div>
-                </BlockStack>
-              </Card>
+              <LockedSection
+                simulationId={simulation.id}
+                eyebrow="Prioritised action plan · locked"
+                title="Every fix, ranked by impact"
+                description="A complete fix list with priorities, estimated score gain, the trust audit, and one-click AI-generated policy copy you can paste into your store."
+              >
+                <FauxActionPlan />
+              </LockedSection>
             </Box>
           )}
 

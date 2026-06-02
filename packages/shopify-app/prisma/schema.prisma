@@ -3,9 +3,10 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")       // pooled — used by Prisma queries at runtime
-  directUrl = env("DIRECT_DATABASE_URL") // direct — used by prisma db push / migrate
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")          // pooled — used by Prisma queries at runtime
+  directUrl         = env("DIRECT_DATABASE_URL")   // direct — used by prisma db push / migrate
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")   // separate Neon branch for migrate dev validation
 }
 
 model Session {

@@ -1152,3 +1152,378 @@
   color: var(--rp-text-muted);
   background: var(--rp-bg);
 }
+
+/* ── Locked section: blurred fake content + frosted glass overlay ──────
+   The blurred layer renders mock content (NEVER the real data — that's
+   stripped server-side) so the merchant sees the SHAPE and DEPTH of
+   what they'd unlock. On top sits a frosted glass overlay with a clear
+   "Unlock to reveal" CTA. */
+
+.lockedSection {
+  position: relative;
+  border-radius: var(--rp-radius);
+  overflow: hidden;
+  margin-bottom: 1rem;
+  border: 1px solid var(--rp-border);
+  background: var(--rp-surface);
+  box-shadow: var(--rp-shadow);
+  min-height: 280px;
+}
+
+.lockedBlurred {
+  filter: blur(7px) saturate(1.1);
+  -webkit-filter: blur(7px) saturate(1.1);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 1.25rem 1.4rem;
+  opacity: 0.85;
+}
+
+.lockedOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  /* Frosted glass effect — semi-transparent white with backdrop blur so the
+     content underneath is softened further and the overlay reads clearly. */
+  background: linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(243,244,255,0.65) 100%);
+  backdrop-filter: blur(8px) saturate(1.4);
+  -webkit-backdrop-filter: blur(8px) saturate(1.4);
+  border-radius: var(--rp-radius);
+  z-index: 2;
+}
+
+.lockedOverlayCard {
+  position: relative;
+  max-width: 28rem;
+  width: 100%;
+  padding: 1.5rem 1.75rem 1.4rem;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #1E1B4B 0%, #312E81 55%, #4C1D95 100%);
+  box-shadow: 0 18px 48px rgba(30, 27, 75, 0.38), 0 2px 10px rgba(0, 0, 0, 0.14);
+  text-align: center;
+  overflow: hidden;
+}
+
+.lockedOverlayCard::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.32) 0%, transparent 100%),
+    radial-gradient(1px 1px at 75% 70%, rgba(255,255,255,0.24) 0%, transparent 100%),
+    radial-gradient(1px 1px at 85% 25%, rgba(255,255,255,0.18) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.lockedOverlayIcon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  margin-bottom: 0.75rem;
+  font-size: 1.2rem;
+  backdrop-filter: blur(4px);
+}
+
+.lockedOverlayEyebrow {
+  position: relative;
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #FDE68A;
+  margin-bottom: 0.3rem;
+}
+
+.lockedOverlayTitle {
+  position: relative;
+  margin: 0 0 0.35rem;
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #FFFFFF;
+  line-height: 1.25;
+}
+
+.lockedOverlayDesc {
+  position: relative;
+  margin: 0 0 1rem;
+  font-size: 0.825rem;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.92);
+}
+
+.lockedOverlayCta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.7rem 1.3rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 800;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  background: #FFFFFF;
+  color: #4338CA;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  transition: transform 0.12s ease, box-shadow 0.15s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+
+.lockedOverlayCta:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  color: #312E81;
+}
+
+.lockedOverlayCta:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.lockedOverlayCtaPrice {
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #FDE68A 0%, #FBBF24 100%);
+  color: #78350F;
+}
+
+.lockedOverlaySecondary {
+  position: relative;
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: rgba(199, 210, 254, 0.85);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.lockedOverlaySecondary:hover {
+  color: #FFFFFF;
+}
+
+.lockedOverlayErr {
+  position: relative;
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: #FECACA;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.22);
+  border: 1px solid rgba(252, 165, 165, 0.45);
+}
+
+/* ── Mock content underneath the glass ─────────────────────────────── */
+/* These styles render a realistic SHAPE of the locked section so the
+   blur reveals "depth" without leaking any real data. */
+
+.fauxFrictionRow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.85rem;
+}
+
+.fauxFrictionCard {
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid #E5E7EB;
+  background: #F9FAFB;
+  border-left-width: 4px;
+}
+
+.fauxFrictionTitle {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #111827;
+  margin-bottom: 0.4rem;
+}
+
+.fauxFrictionPct {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.fauxFrictionPctNum {
+  font-size: 1.6rem;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: #111827;
+}
+
+.fauxFrictionPctLabel {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6B7280;
+}
+
+.fauxFrictionBar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: #E5E7EB;
+  overflow: hidden;
+  margin-bottom: 0.65rem;
+}
+
+.fauxFrictionBarFill {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+}
+
+.fauxFrictionObj {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+  color: #4B5563;
+  line-height: 1.4;
+}
+
+.fauxDebateGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.fauxDebateCard {
+  padding: 0.85rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid #E5E7EB;
+  background: #FFFFFF;
+}
+
+.fauxDebateHead {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 0.5rem;
+}
+
+.fauxDebateAvatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #4338CA 0%, #6366F1 100%);
+  color: #FFFFFF;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.fauxDebateName {
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: #111827;
+}
+
+.fauxDebateRole {
+  font-size: 0.7rem;
+  color: #6B7280;
+}
+
+.fauxDebateVerdict {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  margin-bottom: 0.4rem;
+  letter-spacing: 0.04em;
+}
+
+.fauxDebateVerdictBuy { background: #D1FAE5; color: #047857; }
+.fauxDebateVerdictReject { background: #FEE2E2; color: #B91C1C; }
+.fauxDebateVerdictNeutral { background: #FEF3C7; color: #92400E; }
+
+.fauxDebateLine {
+  display: block;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #374151;
+}
+
+.fauxPlanList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.fauxPlanItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #E5E7EB;
+  background: #FFFFFF;
+}
+
+.fauxPlanNum {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #4338CA 0%, #6366F1 100%);
+  color: #FFFFFF;
+}
+
+.fauxPlanBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.fauxPlanTitle {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #111827;
+  margin-bottom: 0.15rem;
+}
+
+.fauxPlanMeta {
+  font-size: 0.72rem;
+  color: #6B7280;
+  margin-bottom: 0.25rem;
+}
+
+.fauxPlanDesc {
+  font-size: 0.78rem;
+  color: #4B5563;
+  line-height: 1.45;
+}
+
+.fauxPlanPriority {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  margin-right: 0.35rem;
+  letter-spacing: 0.04em;
+}
+.fauxPlanPriorityHigh { background: #FEE2E2; color: #B91C1C; }
+.fauxPlanPriorityMed { background: #FEF3C7; color: #92400E; }
+.fauxPlanPriorityLow { background: #DBEAFE; color: #1E40AF; }
