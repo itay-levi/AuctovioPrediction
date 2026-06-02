@@ -1,9 +1,12 @@
 import db from "../db.server";
 import { AGENT_COUNTS, SIM_LIMITS, MT_LIMITS, getMtBudgetStatus } from "./store.server";
-import { triggerSimulation } from "./engine.server";
+import { triggerSimulation, triggerTeaserSimulation } from "./engine.server";
 import type { SimulationStatus, PlanTier } from "@prisma/client";
 
 const MT_ESTIMATE_PER_AGENT = 2; // ~2 MT per agent for a full simulation
+// Cost we reserve up front for a FREE-tier teaser run. Matches the engine's
+// fixed ~1 MT cost so quota math stays honest.
+const TEASER_MT_COST = 1;
 
 /**
  * Thrown by createSimulation/createRetakeSimulation when the in-transaction
@@ -321,40 +324,167 @@ export async function createSimulation(
   }
 
   // ── Standard single simulation ───────────────────────────────────────────────
+  // For FREE-tier merchants we run the cheap fast teaser (~1 MT, ~30s) so
+  // engine spend stays aligned with revenue. The full multi-phase debate only
+  // fires after the merchant pays $4.99 to unlock — see unlockAndTriggerFullAnalysis
+  // and webhooks.engine.callback.tsx for the rest of the flow.
+  const isTeaserOnly = !isPro;
+  const reservedMt = isTeaserOnly ? TEASER_MT_COST : estimatedMt;
+
   const simulation = await _atomicCreateSimulations({
     storeId,
     tier,
     rootSimsToCreate: 1,
-    totalMtToReserve: estimatedMt,
-    insert: (tx) =>
-      tx.simulation.create({
-        data: {
-          storeId,
-          productUrl,
-          productJson: productJson as object,
-          status: "PENDING",
-          phase: 0,
-          mtCost: estimatedMt,
-          focusAreas: focusAreas.length ? focusAreas : undefined,
-        },
-      }),
+    totalMtToReserve: reservedMt,
+    insert: (tx) => {
+      // Build data object separately so the Prisma type checker can validate
+      // the base shape cleanly; cast only the optional unlock-flow fields
+      // (fullAnalysisStartedAt is added via prisma migrate after deploy).
+      const data = {
+        storeId,
+        productUrl,
+        productJson: productJson as object,
+        status: "PENDING" as SimulationStatus,
+        phase: 0,
+        mtCost: reservedMt,
+        focusAreas: focusAreas.length ? focusAreas : undefined,
+      };
+      // Paid tiers skip the teaser — mark the full run as started up front
+      // so the gating helpers can tell the two paths apart immediately.
+      const dataWithFullFlag = isPro
+        ? { ...data, fullAnalysisStartedAt: new Date() }
+        : data;
+      return tx.simulation.create({
+        data: dataWithFullFlag as Parameters<typeof tx.simulation.create>[0]["data"],
+      });
+    },
   });
-  console.info("[Sim] created", { simulationId: simulation.id, shopDomain, tier, agentCount, isLab: false });
-
-  _triggerWithErrorHandling(simulation.id, {
+  console.info("[Sim] created", {
     simulationId: simulation.id,
     shopDomain,
-    shopType: shopTypeResolved,
-    productUrl,
-    productJson,
-    agentCount,
-    callbackUrl,
-    focusAreas,
-    isPro,
-    storeContext,
+    tier,
+    mode: isTeaserOnly ? "teaser" : "full",
+    agentCount: isTeaserOnly ? 1 : agentCount,
+    isLab: false,
   });
 
+  if (isTeaserOnly) {
+    _triggerTeaserWithErrorHandling(simulation.id, {
+      simulationId: simulation.id,
+      shopDomain,
+      shopType: shopTypeResolved,
+      productUrl,
+      productJson,
+      callbackUrl,
+    });
+  } else {
+    _triggerWithErrorHandling(simulation.id, {
+      simulationId: simulation.id,
+      shopDomain,
+      shopType: shopTypeResolved,
+      productUrl,
+      productJson,
+      agentCount,
+      callbackUrl,
+      focusAreas,
+      isPro,
+      storeContext,
+    });
+  }
+
   return simulation;
+}
+
+/** Mirror of _triggerWithErrorHandling but for the fast teaser endpoint. */
+function _triggerTeaserWithErrorHandling(
+  simulationId: string,
+  payload: Parameters<typeof triggerTeaserSimulation>[0],
+) {
+  triggerTeaserSimulation(payload).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Engine] ❌ Teaser ${simulationId} failed to trigger: ${msg}`);
+    db.simulation
+      .update({
+        where: { id: simulationId },
+        data: {
+          status: "FAILED",
+          failureReason: "The quick preview could not be started. Please try again.",
+        } as Parameters<typeof db.simulation.update>[0]["data"],
+      })
+      .catch((updateErr: unknown) => {
+        console.error("[Engine] Failed to mark teaser FAILED after trigger error", {
+          simulationId,
+          err: updateErr instanceof Error ? updateErr.message : String(updateErr),
+        });
+      });
+  });
+}
+
+/**
+ * Called by the unlock callback once Shopify confirms the $4.99 charge is
+ * ACTIVE. Marks the simulation unlocked, resets its status so the engine
+ * webhook callback won't be rejected as terminal, and fires the deep
+ * multi-phase panel run. The merchant sees the LivePanelRoom while the
+ * full analysis runs; the result lands via the standard webhook.
+ */
+export async function unlockAndTriggerFullAnalysis(args: {
+  simulationId: string;
+  chargeId: string;
+  shopDomain: string;
+  shopType: string | null;
+  tier: PlanTier;
+  appUrl: string;
+}): Promise<void> {
+  const { simulationId, chargeId, shopDomain, shopType, tier, appUrl } = args;
+
+  const sim = await db.simulation.findUnique({
+    where: { id: simulationId },
+    select: {
+      id: true, productUrl: true, productJson: true, focusAreas: true,
+    },
+  });
+  if (!sim) {
+    throw new Error(`unlockAndTriggerFullAnalysis: sim ${simulationId} not found`);
+  }
+
+  const devCount = process.env.NODE_ENV === "development" && process.env.DEV_AGENT_COUNT
+    ? parseInt(process.env.DEV_AGENT_COUNT, 10)
+    : null;
+  const agentCount = devCount ?? AGENT_COUNTS[tier];
+  const estimatedMt = agentCount * MT_ESTIMATE_PER_AGENT;
+  const callbackUrl = `${appUrl}/webhooks/engine/callback`;
+
+  // Atomically flip unlock fields + reset run state. Status must move OUT of
+  // terminal (COMPLETED) so the engine webhook callback's terminal-state
+  // guard accepts the next batch of phase updates.
+  await db.simulation.update({
+    where: { id: simulationId },
+    data: {
+      unlockedAt: new Date(),
+      unlockChargeId: chargeId,
+      fullAnalysisStartedAt: new Date(),
+      status: "PENDING",
+      phase: 0,
+      mtCost: estimatedMt,
+      // Wipe teaser-only artefacts so the UI doesn't briefly show stale data.
+      score: null,
+      reportJson: undefined as unknown as object,
+    } as Parameters<typeof db.simulation.update>[0]["data"],
+  });
+
+  console.info("[Unlock] full analysis triggered", { simulationId, shopDomain, tier });
+
+  _triggerWithErrorHandling(simulationId, {
+    simulationId,
+    shopDomain,
+    shopType: shopType || "general_retail",
+    productUrl: sim.productUrl,
+    productJson: sim.productJson,
+    agentCount,
+    callbackUrl,
+    focusAreas: (sim.focusAreas as string[] | null) ?? [],
+    isPro: tier === "PRO" || tier === "ENTERPRISE" || true, // unlocked = treat as paid
+  });
 }
 
 /**

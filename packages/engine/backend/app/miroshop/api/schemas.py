@@ -27,6 +27,19 @@ class SimulateRequest(BaseModel):
     storeContext: Optional[dict] = None  # store-level pages: { returnPolicy, shippingPolicy, contactEmail }
 
 
+class TeaserRequest(BaseModel):
+    """Lightweight preview run. Single fast-model LLM call. ~1 MT, ~30s.
+    Used for FREE-tier merchants — the full multi-phase debate only runs
+    after they pay $4.99 to unlock the report. Keeps engine costs aligned
+    with revenue."""
+    simulationId: str
+    shopDomain: str
+    shopType: str
+    productUrl: str
+    productJson: dict
+    callbackUrl: str
+
+
 class DeltaRequest(BaseModel):
     simulationId: str
     originalSimulationId: str

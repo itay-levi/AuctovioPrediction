@@ -2,8 +2,7 @@ import type { LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { getStore } from "../services/store.server";
-import { getSimulation } from "../services/simulation.server";
-import { markSimulationUnlocked } from "../services/billing.server";
+import { getSimulation, unlockAndTriggerFullAnalysis } from "../services/simulation.server";
 
 // Shopify redirects here after merchant approves the one-time unlock charge.
 // SECURITY: We verify the charge is ACTIVE via the Shopify Admin API using
@@ -71,8 +70,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app/results/${simulationId}?unlockError=notConfirmed`);
   }
 
-  await markSimulationUnlocked(simulationId, chargeId);
-  console.info("[Unlock] simulation unlocked", { simulationId, chargeId, shopDomain });
+  // Mark unlocked + kick off the full multi-phase panel run. This is the
+  // expensive step we deferred during the teaser flow — we only pay for it
+  // now that the merchant has paid us. The result lands via the standard
+  // engine webhook callback at /webhooks/engine/callback.
+  const appUrl = process.env.SHOPIFY_APP_URL ?? "";
+  try {
+    await unlockAndTriggerFullAnalysis({
+      simulationId,
+      chargeId,
+      shopDomain,
+      shopType: store.shopType ?? null,
+      tier: store.planTier,
+      appUrl,
+    });
+  } catch (err) {
+    console.error("[Unlock] full-analysis trigger failed after charge accepted", {
+      simulationId,
+      chargeId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    // Charge already accepted — bail out with a soft error so support can
+    // re-trigger manually. Merchant lands on the results page either way.
+  }
+
+  console.info("[Unlock] simulation unlocked + full analysis kicked off", {
+    simulationId,
+    chargeId,
+    shopDomain,
+  });
 
   throw redirect(`/app/results/${simulationId}?unlocked=1`);
 };

@@ -558,28 +558,99 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     ? (labPartner as { recommendations?: unknown } | null)?.recommendations
     : (simulation as unknown as { recommendations?: unknown }).recommendations;
 
+  const unlocked = isReportUnlocked(
+    simulation as unknown as { unlockedAt?: Date | string | null },
+    store.planTier,
+  );
+
+  // ── SERVER-SIDE PAYWALL ENFORCEMENT ─────────────────────────────────
+  // CRITICAL: never ship the full report data to the browser when the
+  // merchant hasn't paid. Hiding it in JSX is not enough — anyone can
+  // see the network response in DevTools. Strip the gated fields here
+  // and derive a minimal "teaser-safe" snapshot.
+  //
+  // The teaser keeps: score, status/phase, productJson (which is the
+  // merchant's own product), and a top-friction *category name only*
+  // (no percentages, no objection text). Everything else is dropped.
+  const computeTopFrictionCategory = (
+    report: unknown,
+  ): "price" | "trust" | "logistics" | null => {
+    const r = report as {
+      friction?: {
+        price?: { dropoutPct?: number };
+        trust?: { dropoutPct?: number };
+        logistics?: { dropoutPct?: number };
+      };
+    } | null;
+    if (!r?.friction) return null;
+    const entries = (
+      ["price", "trust", "logistics"] as const
+    ).map((k) => ({ k, pct: r.friction?.[k]?.dropoutPct ?? 0 }));
+    entries.sort((a, b) => b.pct - a.pct);
+    return entries[0]?.pct > 0 ? entries[0].k : null;
+  };
+
+  const safeSimulation = unlocked
+    ? simulation
+    : ((): typeof simulation => {
+        const topFrictionPreview = computeTopFrictionCategory(
+          (simulation as unknown as { reportJson?: unknown }).reportJson,
+        );
+        // Same shape as the unlocked simulation, but with all gated payload
+        // fields nulled. Cast at the boundary so consumers see one stable
+        // type and TS doesn't union-narrow agentLogs item type.
+        return {
+          ...simulation,
+          // Teaser-safe derivative is read by the view as topFrictionPreview
+          // even though the Prisma row doesn't declare it.
+          topFrictionPreview,
+          // GATED — never leaks to client.
+          reportJson: null,
+          recommendations: null,
+          trustAudit: null,
+          comparisonInsight: null,
+          comparisonSummary: null,
+          productDna: null,
+          deltaParams: null,
+          synthesisText: null,
+          synthesisGeneratedAt: null,
+          retakeEvaluation: null,
+          agentLogs: [],
+        } as unknown as typeof simulation;
+      })();
+
+  // Lab partner data is equally gated — strip its rich fields too.
+  const safeLabPartner = unlocked
+    ? labPartner
+    : labPartner
+      ? {
+          id: labPartner.id,
+          status: labPartner.status,
+          score: labPartner.score,
+          reportJson: null,
+          isBaseline: labPartner.isBaseline,
+          comparisonSummary: null,
+        }
+      : null;
+
   return {
-    simulation,
+    simulation: safeSimulation,
     tier: store.planTier,
     shopDomain: store.shopDomain,
     productTitle: productJson?.title ?? "Product",
     shopType: store?.shopType ?? "default",
     isDev: process.env.NODE_ENV === "development",
-    scoreDelta,
-    resolvedKillers,
+    scoreDelta: unlocked ? scoreDelta : null,
+    resolvedKillers: unlocked ? resolvedKillers : [],
     editUrl,
-    labComparison,
+    labComparison: unlocked ? labComparison : null,
+    labPartner: safeLabPartner,
     labPartnerStatus: labPartner?.status ?? null,
     labPartnerScore: labPartner?.score ?? null,
     failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
-    retakeSims,
-    targetRecs: targetRecs ?? null,
-    // Pay-per-scan: free-tier merchants see a teaser unless they've unlocked
-    // THIS specific report ($4.99 one-time) or upgraded to Pro/Enterprise.
-    isReportUnlocked: isReportUnlocked(
-      simulation as unknown as { unlockedAt?: Date | string | null },
-      store.planTier,
-    ),
+    retakeSims: unlocked ? retakeSims : [],
+    targetRecs: unlocked ? (targetRecs ?? null) : null,
+    isReportUnlocked: unlocked,
   };
 };
 
@@ -894,22 +965,23 @@ function PaywallCard({
         Locked · Pay to reveal the full report
       </span>
       <h2 className={resultsStyles.paywallTitle}>
-        Unlock your full Customer Confidence Report
+        Unlock the full {panelistCount}-panelist debate
       </h2>
       <p className={resultsStyles.paywallSub}>
-        You&apos;re seeing the score and a sneak peek. Pay once to see exactly{" "}
-        <strong style={{ color: "#FDE68A" }}>why</strong> your panel reacted that way —
-        every objection, every fix, every panelist&apos;s full reasoning.
+        You&apos;ve seen the quick preview score. Pay once and we&apos;ll run the{" "}
+        <strong style={{ color: "#FDE68A" }}>full multi-phase panel</strong>{" "}
+        on this product — {panelistCount} distinct buyer archetypes, real debate,
+        ranked fixes. Takes 2-5 minutes once you unlock.
       </p>
       <ul className={resultsStyles.paywallBullets}>
         <li className={resultsStyles.paywallBullet}>
           Full friction breakdown — exact % per category
         </li>
         <li className={resultsStyles.paywallBullet}>
-          {`All ${panelistCount} panelists' full verdicts and reasoning`}
+          {`All ${panelistCount} panelists' verdicts, reasoning, and objections`}
         </li>
         <li className={resultsStyles.paywallBullet}>
-          {`Prioritised action plan — ${issueCount > 0 ? `${issueCount} fixes` : "specific fixes"} ranked by impact`}
+          Prioritised action plan ranked by impact
         </li>
         <li className={resultsStyles.paywallBullet}>
           {topFrictionLabel
@@ -1027,22 +1099,36 @@ export default function ResultsPage() {
 
   // ── TL;DR ────────────────────────────────────────────────────────────────────
   const synthesisText = (simulation as unknown as { synthesisText?: string | null }).synthesisText;
-  const topFrictionCat = report?.friction
+  // For locked sims the loader strips reportJson and exposes only the top
+  // friction category name via simulation.topFrictionPreview. Use that as
+  // the fallback so the teaser still renders a category chip.
+  const topFrictionFromReport: string | null = report?.friction
     ? Object.entries({
         trust: report.friction.trust?.dropoutPct ?? 0,
         price: report.friction.price?.dropoutPct ?? 0,
         logistics: report.friction.logistics?.dropoutPct ?? 0,
       }).sort(([, a], [, b]) => b - a)[0]?.[0] ?? null
     : null;
+  const topFrictionFromTeaser =
+    (simulation as unknown as { topFrictionPreview?: string | null }).topFrictionPreview ?? null;
+  const topFrictionCat = topFrictionFromReport ?? topFrictionFromTeaser;
   const topFrictionLabel: Record<string, string> = {
     trust: "trust & credibility", price: "price concerns", logistics: "shipping & logistics",
   };
   const score = simulation.score ?? 0;
+  // For locked teaser sims the loader returns a server-supplied headline.
+  // Prefer it so the merchant reads the same short copy on the dark hero.
+  const teaserHeadline =
+    (simulation as unknown as { teaserHeadline?: string | null }).teaserHeadline ?? null;
+  // Percentage is gated — only mention it when report data exists (paid view).
   const tldr = simulation.score == null ? null :
     synthesisText ? synthesisText.split(".")[0] + "." :
+    teaserHeadline ? teaserHeadline :
     score >= 80  ? `Your "${productTitle}" earned a strong ${score}/100 — your panel is mostly on board${topFrictionCat ? `, with minor friction around ${topFrictionLabel[topFrictionCat]}` : ""}.` :
     score >= 60  ? `Your "${productTitle}" scored ${score}/100 — ${topFrictionCat ? `${topFrictionLabel[topFrictionCat]} is the main barrier to more conversions` : "a few targeted fixes could push you significantly higher"}.` :
-    `Your "${productTitle}" scored ${score}/100 — ${topFrictionCat ? `${Math.round((report?.friction?.[topFrictionCat as keyof typeof report.friction] as { dropoutPct?: number })?.dropoutPct ?? 0)}% of your panel dropped out over ${topFrictionLabel[topFrictionCat]}` : "critical issues are blocking the majority of your panel"}.`;
+    report?.friction && topFrictionCat
+      ? `Your "${productTitle}" scored ${score}/100 — ${Math.round((report.friction[topFrictionCat as keyof typeof report.friction] as { dropoutPct?: number })?.dropoutPct ?? 0)}% of your panel dropped out over ${topFrictionLabel[topFrictionCat]}.`
+      : `Your "${productTitle}" scored ${score}/100 — ${topFrictionCat ? `${topFrictionLabel[topFrictionCat]} is the dominant friction.` : "critical issues are blocking the majority of your panel."}`;
   const tldrTone = score >= 80 ? "success" : score >= 60 ? "warning" : "critical";
 
   // ── Tab badge counts ─────────────────────────────────────────────────────────

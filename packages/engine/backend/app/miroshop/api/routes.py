@@ -24,7 +24,7 @@ from ..services.listing_gap_analyzer import analyze_listing_gaps, format_gap_con
 from ..services.recommendation_engine import generate_recommendations
 from ..services.comparison_engine import generate_comparison_insight
 from ..services.dna_extractor import extract_product_dna, dna_to_dict, dna_from_dict
-from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest, AuditEvaluateRequest
+from .schemas import SimulateRequest, DeltaRequest, ClassifyRequest, SynthesizeRequest, LabCompareRequest, AuditEvaluateRequest, TeaserRequest
 
 logger = logging.getLogger("miroshop.routes")
 bp = Blueprint("miroshop", __name__, url_prefix="/miroshop")
@@ -670,6 +670,135 @@ def _run_simulation(req: SimulateRequest, archetypes: list | None, delta_context
             )
     finally:
         _simulation_semaphore.release()
+
+
+# ── /miroshop/teaser ─────────────────────────────────────────────────────────
+# Lightweight preview run for FREE-tier merchants. One fast-model LLM call
+# returns a score, top friction category, and a 1-sentence headline. This is
+# what the merchant sees before they pay $4.99. The deep multi-phase debate
+# (existing /miroshop/simulate) only runs after the unlock callback fires.
+# Cost target: ~1 MT, ~30 seconds.
+
+_TEASER_PROMPT_TEMPLATE = (
+    "You are a generic online shopper looking at this product page. "
+    "Give a SINGLE honest first-glance reaction in JSON.\n\n"
+    "Product title: {title}\n"
+    "Price: {price}\n"
+    "Description (truncated): {description}\n\n"
+    "Output ONLY a JSON object with this exact shape (no markdown, no commentary):\n"
+    "{{\n"
+    '  "score": <integer 0-100, your panel-buy-rate estimate — high = most shoppers would buy>,\n'
+    '  "top_friction": <one of "price", "trust", "logistics">,\n'
+    '  "headline": <ONE short sentence (max 18 words) summarising the dominant friction in plain English>\n'
+    "}}"
+)
+
+
+def _run_teaser(req: TeaserRequest) -> None:
+    """Single fast-LLM call. Posts result back via the standard callback path."""
+    try:
+        product_title = (req.productJson.get("title") or "Product").strip()[:120]
+        # Extract first variant price defensively (could be missing, string, null).
+        price_raw = _get_base_price(req.productJson)
+        price_label = f"${price_raw:.2f}" if price_raw > 0 else "n/a"
+        description_html = (req.productJson.get("descriptionHtml") or req.productJson.get("description") or "").strip()
+        # Strip basic HTML and cap to ~600 chars so the prompt stays small/cheap.
+        import re as _re
+        description_text = _re.sub(r"<[^>]+>", " ", description_html)
+        description_text = _re.sub(r"\s+", " ", description_text).strip()[:600]
+
+        prompt = _TEASER_PROMPT_TEMPLATE.format(
+            title=product_title,
+            price=price_label,
+            description=description_text or "(no description provided)",
+        )
+
+        fast_llm = _make_fast_llm()
+        raw = fast_llm.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=180,
+        )
+
+        # Parse JSON defensively. If the LLM returns garbage, fail soft with a
+        # neutral teaser the merchant can still read.
+        import json as _json
+        score = 65
+        top_friction = "trust"
+        headline = "Mixed signals from a generic first-glance review."
+        try:
+            # Strip any accidental markdown fence
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                if cleaned.lower().startswith("json"):
+                    cleaned = cleaned[4:].strip()
+            parsed = _json.loads(cleaned)
+            s = int(parsed.get("score", 65))
+            score = max(0, min(100, s))
+            tf = str(parsed.get("top_friction", "trust")).lower().strip()
+            if tf in ("price", "trust", "logistics"):
+                top_friction = tf
+            hl = str(parsed.get("headline", headline)).strip()
+            if hl:
+                headline = hl[:280]
+        except Exception as parse_err:
+            logger.warning(
+                "[Teaser] LLM JSON parse failed for sim %s: %s — raw=%r",
+                req.simulationId, parse_err, raw[:200],
+            )
+
+        # Build a teaser-safe reportJson stub that contains ONLY the top
+        # friction category. The full friction breakdown stays empty so
+        # the Shopify side can't accidentally leak detail.
+        teaser_report = {
+            "friction": {
+                top_friction: {"dropoutPct": 1, "topObjections": []}
+            },
+            "isTeaser": True,
+            "teaserHeadline": headline,
+        }
+
+        post_phase_update(
+            callback_url=req.callbackUrl,
+            api_key=getattr(Config, "SHOPIFY_APP_API_KEY", None),
+            simulation_id=req.simulationId,
+            phase=3,
+            status="COMPLETED",
+            score=score,
+            report_json=teaser_report,
+            actual_mt_cost=1,
+        )
+        logger.info(
+            "[Teaser] sim=%s score=%d top=%s mt=1",
+            req.simulationId, score, top_friction,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[Teaser] failed for sim %s: %s", req.simulationId, e)
+        post_phase_update(
+            callback_url=req.callbackUrl,
+            api_key=getattr(Config, "SHOPIFY_APP_API_KEY", None),
+            simulation_id=req.simulationId,
+            phase=0,
+            status="FAILED",
+            failure_reason="The quick preview hit an error. Please try again.",
+        )
+
+
+@bp.post("/teaser")
+@_require_auth
+def teaser():
+    """Quick preview endpoint — see _run_teaser docstring above."""
+    try:
+        req = TeaserRequest(**request.get_json(force=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    thread = threading.Thread(target=_run_teaser, args=(req,), daemon=True)
+    thread.start()
+    # Return 202 immediately. Cost is fixed at ~1 MT so we can advertise it
+    # confidently before the run completes.
+    return jsonify({"queued": True, "estimatedMtCost": 1}), 202
 
 
 @bp.post("/simulate")

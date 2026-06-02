@@ -78,6 +78,14 @@ model Simulation {
   // one-time charge sets these fields and unlocks the full report for this row.
   unlockedAt           DateTime?
   unlockChargeId       String?          // Shopify AppPurchaseOneTime gid for audit/refund
+  // Teaser-vs-full architecture: FREE-tier merchants get a fast cheap teaser
+  // analysis (1 LLM call, ~30s, ~1 MT) up front. Only after they pay $4.99
+  // does the deep multi-phase panel run. fullAnalysisStartedAt is the
+  // sentinel — null means "teaser only, no expensive run yet".
+  fullAnalysisStartedAt DateTime?
+  // 1-sentence merchant-facing summary from the cheap teaser call.
+  // Safe to show without unlock.
+  teaserHeadline       String?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   agentLogs            AgentLog[]
