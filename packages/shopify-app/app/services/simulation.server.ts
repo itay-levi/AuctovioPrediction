@@ -168,8 +168,12 @@ async function _atomicCreateSimulations<T>(args: {
   insert: (tx: Parameters<Parameters<typeof db.$transaction>[0]>[0]) => Promise<T>;
 }): Promise<T> {
   const { storeId, tier, rootSimsToCreate, totalMtToReserve, insert } = args;
+  // Dev bypass — canRunSimulation already skips checks in dev, this mirrors it
+  // so the atomic recheck inside the transaction doesn't re-introduce the
+  // limit and break local testing of paid flows.
+  const isDev = process.env.NODE_ENV === "development";
   return db.$transaction(async (tx) => {
-    if (rootSimsToCreate > 0) {
+    if (!isDev && rootSimsToCreate > 0) {
       const monthStart = _monthStart();
       const slotCount = await tx.simulation.count({
         where: {
@@ -187,7 +191,7 @@ async function _atomicCreateSimulations<T>(args: {
       }
     }
 
-    if (totalMtToReserve > 0) {
+    if (!isDev && totalMtToReserve > 0) {
       const monthStart = _monthStart();
       const mtAgg = await tx.simulation.aggregate({
         where: {
