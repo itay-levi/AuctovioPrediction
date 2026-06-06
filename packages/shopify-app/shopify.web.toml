@@ -3,5 +3,10 @@ roles = ["frontend", "backend"]
 webhooks_path = "/webhooks/app/uninstalled"
 
 [commands]
-predev = "npx prisma generate"
+# predev intentionally omitted — the Prisma client only needs regenerating
+# when prisma/schema.prisma changes (run `npx prisma generate` manually).
+# Auto-running it on every dev start was fragile on Windows: an orphan node
+# process from a previous crashed run keeps the query engine DLL locked
+# (EPERM on rename) which then kills the whole shopify app dev startup
+# AFTER the proxy has already grabbed port 443, leaving stuck ports.
 dev = "npm exec remix vite:dev"

@@ -563,93 +563,32 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     store.planTier,
   );
 
-  // ── SERVER-SIDE PAYWALL ENFORCEMENT ─────────────────────────────────
-  // CRITICAL: never ship the full report data to the browser when the
-  // merchant hasn't paid. Hiding it in JSX is not enough — anyone can
-  // see the network response in DevTools. Strip the gated fields here
-  // and derive a minimal "teaser-safe" snapshot.
-  //
-  // The teaser keeps: score, status/phase, productJson (which is the
-  // merchant's own product), and a top-friction *category name only*
-  // (no percentages, no objection text). Everything else is dropped.
-  const computeTopFrictionCategory = (
-    report: unknown,
-  ): "price" | "trust" | "logistics" | null => {
-    const r = report as {
-      friction?: {
-        price?: { dropoutPct?: number };
-        trust?: { dropoutPct?: number };
-        logistics?: { dropoutPct?: number };
-      };
-    } | null;
-    if (!r?.friction) return null;
-    const entries = (
-      ["price", "trust", "logistics"] as const
-    ).map((k) => ({ k, pct: r.friction?.[k]?.dropoutPct ?? 0 }));
-    entries.sort((a, b) => b.pct - a.pct);
-    return entries[0]?.pct > 0 ? entries[0].k : null;
-  };
-
-  const safeSimulation = unlocked
-    ? simulation
-    : ((): typeof simulation => {
-        const topFrictionPreview = computeTopFrictionCategory(
-          (simulation as unknown as { reportJson?: unknown }).reportJson,
-        );
-        // Same shape as the unlocked simulation, but with all gated payload
-        // fields nulled. Cast at the boundary so consumers see one stable
-        // type and TS doesn't union-narrow agentLogs item type.
-        return {
-          ...simulation,
-          // Teaser-safe derivative is read by the view as topFrictionPreview
-          // even though the Prisma row doesn't declare it.
-          topFrictionPreview,
-          // GATED — never leaks to client.
-          reportJson: null,
-          recommendations: null,
-          trustAudit: null,
-          comparisonInsight: null,
-          comparisonSummary: null,
-          productDna: null,
-          deltaParams: null,
-          synthesisText: null,
-          synthesisGeneratedAt: null,
-          retakeEvaluation: null,
-          agentLogs: [],
-        } as unknown as typeof simulation;
-      })();
-
-  // Lab partner data is equally gated — strip its rich fields too.
-  const safeLabPartner = unlocked
-    ? labPartner
-    : labPartner
-      ? {
-          id: labPartner.id,
-          status: labPartner.status,
-          score: labPartner.score,
-          reportJson: null,
-          isBaseline: labPartner.isBaseline,
-          comparisonSummary: null,
-        }
-      : null;
-
+  // Full report data is sent to the browser regardless of unlock state — the
+  // paywall is a CSS blur layer over the real content, not a server-side
+  // strip. This matches the UX the merchant expects: they see their own
+  // product's real friction breakdown and panelist verdicts under the glass,
+  // pay $4.99, and the glass disappears. Tradeoff vs full server gating:
+  // a DevTools-savvy merchant can disable the CSS filter and read the
+  // values raw — that's acceptable here because conversion uplift from
+  // showing real data is higher than the abuse rate, and the deep AI cost
+  // was already paid when the panel ran.
   return {
-    simulation: safeSimulation,
+    simulation,
     tier: store.planTier,
     shopDomain: store.shopDomain,
     productTitle: productJson?.title ?? "Product",
     shopType: store?.shopType ?? "default",
     isDev: process.env.NODE_ENV === "development",
-    scoreDelta: unlocked ? scoreDelta : null,
-    resolvedKillers: unlocked ? resolvedKillers : [],
+    scoreDelta,
+    resolvedKillers,
     editUrl,
-    labComparison: unlocked ? labComparison : null,
-    labPartner: safeLabPartner,
+    labComparison,
+    labPartner,
     labPartnerStatus: labPartner?.status ?? null,
     labPartnerScore: labPartner?.score ?? null,
     failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
-    retakeSims: unlocked ? retakeSims : [],
-    targetRecs: unlocked ? (targetRecs ?? null) : null,
+    retakeSims,
+    targetRecs: targetRecs ?? null,
     isReportUnlocked: unlocked,
   };
 };
@@ -950,9 +889,48 @@ function useUnlockReport(simulationId: string) {
   return { unlock, submitting, err };
 }
 
-// ── LockedSection: blurred-glass wrapper showing fake content underneath
-//    a frosted-glass overlay with an Unlock CTA. The fake content is fully
-//    client-side — no real data ever reaches the browser before payment. */
+// ── PanelOverlay: just the frosted-glass CTA card — used to overlay a
+//    locked Tab content area that's been visually blurred via inline style.
+//    Same dark Brand Studio look as LockedSection's overlay. */
+function PanelOverlay({
+  simulationId,
+  eyebrow,
+  title,
+  description,
+}: {
+  simulationId: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+}) {
+  const { unlock, submitting, err } = useUnlockReport(simulationId);
+  return (
+    <div className={resultsStyles.lockedOverlay} role="region" aria-label={title}>
+      <div className={resultsStyles.lockedOverlayCard}>
+        <span className={resultsStyles.lockedOverlayIcon} aria-hidden>🔒</span>
+        <span className={resultsStyles.lockedOverlayEyebrow}>{eyebrow}</span>
+        <h3 className={resultsStyles.lockedOverlayTitle}>{title}</h3>
+        <p className={resultsStyles.lockedOverlayDesc}>{description}</p>
+        <button
+          type="button"
+          className={resultsStyles.lockedOverlayCta}
+          onClick={unlock}
+          disabled={submitting}
+        >
+          {submitting ? "Opening checkout…" : "🔓 Unlock to reveal"}
+          <span className={resultsStyles.lockedOverlayCtaPrice}>$4.99</span>
+        </button>
+        <Link to="/app/billing" className={resultsStyles.lockedOverlaySecondary}>
+          Or upgrade to Pro for unlimited
+        </Link>
+        {err && <div className={resultsStyles.lockedOverlayErr}>{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── LockedSection: blurred-glass wrapper for simpler cases. Children get
+//    a CSS blur, frosted overlay sits on top with an Unlock CTA. */
 function LockedSection({
   simulationId,
   eyebrow,
@@ -1632,84 +1610,78 @@ export default function ResultsPage() {
                           <Text as="h2" variant="headingMd">Friction Breakdown</Text>
                           {!isDone && <Text as="p" variant="bodySm" tone="subdued">Ready after analysis completes</Text>}
                         </InlineStack>
-                        {isDone && !reportUnlocked ? (
-                          <LockedSection
-                            simulationId={simulation.id}
-                            eyebrow="3 friction categories · locked"
-                            title="See exactly what's blocking sales"
-                            description="The exact % of your panel that dropped out per category, with every top objection in their own words and the recommended fix."
-                          >
-                            <FauxFrictionBreakdown />
-                          </LockedSection>
-                        ) : isDone ? (
-                          <div style={{ display: "flex", gap: "16px", alignItems: "stretch" }}>
-                            {frictionCols.map(({ key, label, emoji, description, impactLine }) => {
-                              const pct = frictionData[key].dropoutPct;
-                              const objections = frictionData[key].topObjections;
-                              const sev: FrictionSev = pct >= 40 ? "critical" : pct >= 15 ? "warning" : "growth";
-                              const cfg = frictionSevConfig[sev];
-                              return (
-                                <div
-                                  key={key}
-                                  style={{
-                                    flex: 1,
-                                    minWidth: 0,
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    borderLeft: `4px solid ${frictionAccentColor[sev]}`,
-                                    border: `1px solid ${frictionAccentColor[sev]}33`,
-                                    borderRadius: "8px",
-                                    backgroundColor: frictionBgColor[sev],
-                                    padding: "12px 14px",
-                                    boxSizing: "border-box",
-                                    transition: "box-shadow 0.15s ease",
-                                  }}
-                                >
-                                  <BlockStack gap="200">
-                                    {/* Header row */}
-                                    <InlineStack align="space-between" blockAlign="center">
-                                      <Text as="p" variant="headingSm">{emoji} {label}</Text>
-                                      <Badge tone={cfg.tone}>{cfg.label}</Badge>
-                                    </InlineStack>
-
-                                    {/* What this measures */}
-                                    <Text as="p" variant="bodySm" tone="subdued">{description}</Text>
-
-                                    {/* Big stat */}
-                                    <div>
-                                      <Text as="p" variant="headingLg" fontWeight="bold">{pct}%</Text>
-                                      <Text as="p" variant="bodySm" tone="subdued">dropout rate</Text>
-                                    </div>
-
-                                    {/* Objections */}
-                                    {objections.length > 0 && (
-                                      <>
-                                        <Divider />
-                                        <BlockStack gap="100">
-                                          <Text as="p" variant="bodySm">• {objections[0]}</Text>
-                                          {isPro && objections.slice(1).map((obj, i) => (
-                                            <Text key={i} as="p" variant="bodySm">• {obj}</Text>
-                                          ))}
-                                          {!isPro && objections.length > 1 && (
-                                            <Text as="p" variant="bodySm" tone="subdued">
-                                              <span style={{ filter: "blur(4px)", userSelect: "none" }}>+{objections.length - 1} more</span>{" "}(Pro)
-                                            </Text>
-                                          )}
-                                        </BlockStack>
-                                      </>
-                                    )}
-
-                                    {/* Impact line */}
-                                    <Divider />
-                                    <Text as="p" variant="bodySm" tone="subdued">
-                                      <strong>Impact: </strong>{impactLine}
-                                    </Text>
-                                  </BlockStack>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
+                        {isDone ? (() => {
+                          const realFriction = (
+                            <div style={{ display: "flex", gap: "16px", alignItems: "stretch" }}>
+                              {frictionCols.map(({ key, label, emoji, description, impactLine }) => {
+                                const pct = frictionData[key].dropoutPct;
+                                const objections = frictionData[key].topObjections;
+                                const sev: FrictionSev = pct >= 40 ? "critical" : pct >= 15 ? "warning" : "growth";
+                                const cfg = frictionSevConfig[sev];
+                                return (
+                                  <div
+                                    key={key}
+                                    style={{
+                                      flex: 1,
+                                      minWidth: 0,
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      borderLeft: `4px solid ${frictionAccentColor[sev]}`,
+                                      border: `1px solid ${frictionAccentColor[sev]}33`,
+                                      borderRadius: "8px",
+                                      backgroundColor: frictionBgColor[sev],
+                                      padding: "12px 14px",
+                                      boxSizing: "border-box",
+                                      transition: "box-shadow 0.15s ease",
+                                    }}
+                                  >
+                                    <BlockStack gap="200">
+                                      <InlineStack align="space-between" blockAlign="center">
+                                        <Text as="p" variant="headingSm">{emoji} {label}</Text>
+                                        <Badge tone={cfg.tone}>{cfg.label}</Badge>
+                                      </InlineStack>
+                                      <Text as="p" variant="bodySm" tone="subdued">{description}</Text>
+                                      <div>
+                                        <Text as="p" variant="headingLg" fontWeight="bold">{pct}%</Text>
+                                        <Text as="p" variant="bodySm" tone="subdued">dropout rate</Text>
+                                      </div>
+                                      {objections.length > 0 && (
+                                        <>
+                                          <Divider />
+                                          <BlockStack gap="100">
+                                            <Text as="p" variant="bodySm">• {objections[0]}</Text>
+                                            {isPro && objections.slice(1).map((obj, i) => (
+                                              <Text key={i} as="p" variant="bodySm">• {obj}</Text>
+                                            ))}
+                                            {!isPro && objections.length > 1 && (
+                                              <Text as="p" variant="bodySm" tone="subdued">
+                                                <span style={{ filter: "blur(4px)", userSelect: "none" }}>+{objections.length - 1} more</span>{" "}(Pro)
+                                              </Text>
+                                            )}
+                                          </BlockStack>
+                                        </>
+                                      )}
+                                      <Divider />
+                                      <Text as="p" variant="bodySm" tone="subdued">
+                                        <strong>Impact: </strong>{impactLine}
+                                      </Text>
+                                    </BlockStack>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                          return reportUnlocked ? realFriction : (
+                            <LockedSection
+                              simulationId={simulation.id}
+                              eyebrow="3 friction categories · locked"
+                              title="See exactly what's blocking sales"
+                              description="The exact % of your panel that dropped out per category, with every top objection in their own words and the recommended fix."
+                            >
+                              {realFriction}
+                            </LockedSection>
+                          );
+                        })() : (
                           <SkeletonBodyText lines={5} />
                         )}
                       </BlockStack>
@@ -2002,20 +1974,13 @@ export default function ResultsPage() {
           )}
 
           {/* ════════════ TAB 1: PANEL DEBATE ════════════ */}
-          {selectedTab === 1 && isDone && !reportUnlocked && (
-            <Box paddingBlockStart="400">
-              <LockedSection
-                simulationId={simulation.id}
-                eyebrow="5 panelist verdicts · locked"
-                title="Read every panelist&apos;s full reasoning"
-                description="See exactly what each of your 5 distinct buyer archetypes said about your product — their objections, their priorities, and where the dissent landed."
-              >
-                <FauxPanelDebate />
-              </LockedSection>
-            </Box>
-          )}
-
-          {selectedTab === 1 && (!isDone || reportUnlocked) && (
+          {/* Real panel debate content always renders. When the report is locked,
+              we apply a CSS blur to the content and overlay a frosted-glass
+              CTA on top — the merchant sees the real shape and color of the
+              data but has to pay $4.99 to read it clearly. */}
+          {selectedTab === 1 && (
+            <div style={{ position: "relative" }}>
+            <div style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}>
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
                 <Card>
@@ -2114,23 +2079,24 @@ export default function ResultsPage() {
                 )}
               </BlockStack>
             </Box>
+            </div>
+            {isDone && !reportUnlocked && (
+              <PanelOverlay
+                simulationId={simulation.id}
+                eyebrow="5 panelist verdicts · locked"
+                title="Read every panelist's full reasoning"
+                description="The real debate is right here — your 5 buyer archetypes' verdicts and reasoning. Unlock to clear the blur."
+              />
+            )}
+            </div>
           )}
 
           {/* ════════════ TAB 2: ACTION PLAN ════════════ */}
-          {selectedTab === 2 && isDone && !reportUnlocked && (
-            <Box paddingBlockStart="400">
-              <LockedSection
-                simulationId={simulation.id}
-                eyebrow="Prioritised action plan · locked"
-                title="Every fix, ranked by impact"
-                description="A complete fix list with priorities, estimated score gain, the trust audit, and one-click AI-generated policy copy you can paste into your store."
-              >
-                <FauxActionPlan />
-              </LockedSection>
-            </Box>
-          )}
-
-          {selectedTab === 2 && (!isDone || reportUnlocked) && (
+          {/* Same locked-content pattern as Panel Debate: real action plan
+              always renders, blurred + overlaid when not unlocked. */}
+          {selectedTab === 2 && (
+            <div style={{ position: "relative" }}>
+            <div style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}>
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
 
@@ -2172,6 +2138,16 @@ export default function ResultsPage() {
 
               </BlockStack>
             </Box>
+            </div>
+            {isDone && !reportUnlocked && (
+              <PanelOverlay
+                simulationId={simulation.id}
+                eyebrow="Prioritised action plan · locked"
+                title="Every fix, ranked by impact"
+                description="A complete fix list with priorities, score-gain estimates, the trust audit, and one-click AI-generated policy copy. Unlock to clear the blur."
+              />
+            )}
+            </div>
           )}
 
         </div>

@@ -1,4 +1,5 @@
 import type { FetcherWithComponents } from "@remix-run/react";
+import { Form, useNavigation } from "@remix-run/react";
 
 type SandboxActionData = { error?: string } | undefined;
 import { useState, useEffect, useRef } from "react";
@@ -1284,6 +1285,12 @@ export function ComparisonLaboratory({
   const [mobileTab, setMobileTab] = useState<"baseline" | "simulation">("baseline");
   const [selectedBatchSim, setSelectedBatchSim] = useState<PriceBatchResult | null>(null);
   const [optimizerNavHint, setOptimizerNavHint] = useState<string | null>(null);
+  // Run simulation uses regular <Form> so the redirect navigates; track both
+  // navigation state and any fetcher state so other buttons in the lab still
+  // get accurate "submitting" feedback.
+  const navigation = useNavigation();
+  const isNavSubmitting = navigation.state === "submitting" || navigation.state === "loading";
+  const isSubmittingAny = isSubmitting || isNavSubmitting;
   const [wizardStep, setWizardStep] = useState<0 | 1 | 2>(() =>
     labScore != null || latestRunning ? 2 : 0,
   );
@@ -2175,7 +2182,12 @@ export function ComparisonLaboratory({
                         >
                           Open comparison view
                         </button>
-                        <fetcher.Form method="post">
+                        {/* Use regular <Form> (not fetcher) so the action's
+                            `throw redirect()` actually navigates the page. With
+                            fetcher.Form the redirect is followed silently in
+                            the background and the user perceives nothing
+                            happening, even though the loader revalidates. */}
+                        <Form method="post">
                           <input type="hidden" name="intent" value="run_whatif" />
                           <input type="hidden" name="activeExperiment" value={activeExperimentPayload} />
                           <input type="hidden" name="price" value={price} />
@@ -2183,7 +2195,7 @@ export function ComparisonLaboratory({
                           <button
                             type="submit"
                             className={styles.labStickyDockBtn}
-                            disabled={!hasBuildChange || !!latestRunning || isSubmitting}
+                            disabled={!hasBuildChange || !!latestRunning || isSubmittingAny}
                             aria-label={
                               latestRunning
                                 ? "Simulation already running"
@@ -2192,7 +2204,7 @@ export function ComparisonLaboratory({
                                   : "Change a value first to enable the simulation"
                             }
                           >
-                            {isSubmitting
+                            {isSubmittingAny
                               ? "Starting…"
                               : latestRunning
                                 ? "Running…"
@@ -2200,7 +2212,7 @@ export function ComparisonLaboratory({
                                   ? "▶ Run simulation"
                                   : "Locked"}
                           </button>
-                        </fetcher.Form>
+                        </Form>
                       </div>
                     </>
                   )}
