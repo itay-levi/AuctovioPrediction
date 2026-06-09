@@ -419,8 +419,7 @@ export async function createRetakeSimulation(
     rootSimsToCreate: 0, // Retakes don't consume monthly slot quota
     totalMtToReserve: estimatedMt,
     insert: (tx) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (tx as any).simulation.create({
+      tx.simulation.create({
         data: {
           storeId: originalSim.storeId,
           productUrl: originalSim.productUrl,
@@ -431,7 +430,7 @@ export async function createRetakeSimulation(
           originalSimulationId: originalSim.id,
           simulationType: "RETAKE",
         },
-      }) as Promise<{ id: string; storeId: string; productUrl: string; status: SimulationStatus }>,
+      }),
   });
   console.info("[Sim] retake created", { simulationId: retakeSim.id, shopDomain, originalSimulationId: originalSim.id, tier });
 

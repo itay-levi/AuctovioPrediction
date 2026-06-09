@@ -141,20 +141,5 @@ export async function createReportUnlockCharge(
   return result.confirmationUrl;
 }
 
-/**
- * Mark a simulation as fully unlocked. Called after the unlock callback
- * verifies the charge is ACTIVE on Shopify. Idempotent — calling twice
- * doesn't double-unlock.
- */
-export async function markSimulationUnlocked(
-  simulationId: string,
-  chargeId: string,
-): Promise<void> {
-  await db.simulation.update({
-    where: { id: simulationId },
-    data: {
-      unlockedAt: new Date(),
-      unlockChargeId: chargeId,
-    } as Parameters<typeof db.simulation.update>[0]["data"],
-  });
-}
+// Note: simulation-unlock logic lives in services/simulation.server.ts
+// (unlockSimulation). This file owns Shopify-side billing only.

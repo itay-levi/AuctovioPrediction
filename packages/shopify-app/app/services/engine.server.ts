@@ -130,41 +130,6 @@ export async function triggerSimulation(
   });
 }
 
-export interface TriggerTeaserPayload {
-  simulationId: string;
-  shopDomain: string;
-  shopType: string;
-  productUrl: string;
-  productJson: unknown;
-  callbackUrl: string;
-}
-
-/**
- * Fast, cheap preview. One LLM call on the fast model — used for FREE-tier
- * merchants before they decide to pay $4.99 to unlock the full report.
- * Engine cost is fixed at ~1 MT. Result lands via the standard webhook
- * callback (status COMPLETED + score + minimal report stub).
- */
-export async function triggerTeaserSimulation(
-  payload: TriggerTeaserPayload,
-): Promise<{ queued: boolean; estimatedMtCost: number }> {
-  return engineBreaker.execute(async () => {
-    const res = await fetch(`${ENGINE_URL}/miroshop/teaser`, {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Engine teaser error ${res.status}: ${text}`);
-    }
-
-    return res.json() as Promise<{ queued: boolean; estimatedMtCost: number }>;
-  });
-}
-
 export interface GenerateFixResult {
   heading: string;
   text: string;

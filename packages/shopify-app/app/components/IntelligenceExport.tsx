@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useFetcher } from "@remix-run/react";
 import {
   Card,
@@ -63,10 +63,15 @@ export function IntelligenceExport({
 
   const isGenerating = fetcher.state !== "idle";
 
-  // When fetcher completes, capture the synthesis
-  if (fetcher.data?.synthesis && synthesis !== fetcher.data.synthesis) {
-    setSynthesis(fetcher.data.synthesis);
-  }
+  // When fetcher completes, capture the synthesis. Must be useEffect, not
+  // bare if-then-setState during render — the latter triggers a React strict-
+  // mode warning and risks an extra render pass on every parent state change.
+  useEffect(() => {
+    const incoming = fetcher.data?.synthesis;
+    if (incoming && synthesis !== incoming) {
+      setSynthesis(incoming);
+    }
+  }, [fetcher.data?.synthesis, synthesis]);
 
   const handleCsvExport = useCallback(() => {
     const csv = generateCsv(agentLogs);

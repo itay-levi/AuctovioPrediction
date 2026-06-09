@@ -36,10 +36,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const regenerate = formData.get("regenerate") === "1";
 
   // Return cached synthesis unless regenerate requested
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sim = simulation as any;
-  if (sim.synthesisText && !regenerate) {
-    return Response.json({ synthesis: sim.synthesisText as string });
+  if (simulation.synthesisText && !regenerate) {
+    return Response.json({ synthesis: simulation.synthesisText });
   }
 
   const productJson = simulation.productJson as { title?: string } | null;
@@ -90,9 +88,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     );
   }
 
-  // Store permanently (cast needed until Prisma client regenerates with new columns)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (db.simulation.update as any)({
+  await db.simulation.update({
     where: { id: simulation.id },
     data: { synthesisText: synthesis, synthesisGeneratedAt: new Date() },
   });

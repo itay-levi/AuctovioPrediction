@@ -437,6 +437,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
+  // Unlock-callback redirects land here with ?unlocked=1 on success or
+  // ?unlockError=missingCharge|notConfirmed|notFound|missingSim on failure.
+  // Surface as banners so the merchant gets feedback instead of just seeing
+  // the blur disappear (or worse, nothing change after a failed verify).
+  const url = new URL(request.url);
+  const unlockSuccess = url.searchParams.get("unlocked") === "1";
+  const unlockErrorParam = url.searchParams.get("unlockError");
+  const unlockErrorMessage =
+    unlockErrorParam === "missingCharge" ? "Shopify did not confirm the charge — please try again." :
+    unlockErrorParam === "notConfirmed" ? "Your payment could not be verified with Shopify. You have not been charged." :
+    unlockErrorParam === "notFound" ? "We couldn't find the report you were unlocking." :
+    unlockErrorParam === "missingSim" ? "Unlock link was missing the report ID — please go back and click Unlock again." :
+    null;
+
   const [simulation, store] = await Promise.all([
     getSimulation(params.id!),
     getStore(shopDomain),
@@ -553,10 +567,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     select: { id: true, status: true, score: true, retakeEvaluation: true, createdAt: true },
   }) : [];
 
-  // Target sim recs for audience-targeted actions
-  const targetRecs = simulation.isBaseline
-    ? (labPartner as { recommendations?: unknown } | null)?.recommendations
-    : (simulation as unknown as { recommendations?: unknown }).recommendations;
 
   const unlocked = isReportUnlocked(
     simulation as unknown as { unlockedAt?: Date | string | null },
@@ -588,8 +598,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     labPartnerScore: labPartner?.score ?? null,
     failureReason: (simulation as unknown as { failureReason?: string | null }).failureReason ?? null,
     retakeSims,
-    targetRecs: targetRecs ?? null,
     isReportUnlocked: unlocked,
+    unlockSuccess,
+    unlockErrorMessage,
   };
 };
 
@@ -975,119 +986,6 @@ function LockedSection({
   );
 }
 
-// ── Faux content components — render the SHAPE of the locked content.
-//    All values are static placeholders; the blur hides exact text so
-//    merchants see depth and structure without learning anything real. */
-function FauxFrictionBreakdown() {
-  return (
-    <div className={resultsStyles.fauxFrictionRow}>
-      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#DC2626" }}>
-        <div className={resultsStyles.fauxFrictionTitle}>💰 Price Sensitivity</div>
-        <div className={resultsStyles.fauxFrictionPct}>
-          <span className={resultsStyles.fauxFrictionPctNum}>42%</span>
-          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over price</span>
-        </div>
-        <div className={resultsStyles.fauxFrictionBar}>
-          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#DC2626", width: "42%" }} />
-        </div>
-        <span className={resultsStyles.fauxFrictionObj}>
-          “Comparable products from established brands are listed 18% cheaper — I&apos;d need a strong reason to pay this premium.”
-        </span>
-      </div>
-      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#D97706" }}>
-        <div className={resultsStyles.fauxFrictionTitle}>🛡️ Trust &amp; Social Proof</div>
-        <div className={resultsStyles.fauxFrictionPct}>
-          <span className={resultsStyles.fauxFrictionPctNum}>28%</span>
-          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over trust</span>
-        </div>
-        <div className={resultsStyles.fauxFrictionBar}>
-          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#D97706", width: "28%" }} />
-        </div>
-        <span className={resultsStyles.fauxFrictionObj}>
-          “No third-party reviews visible above the fold — I can&apos;t verify other people have had good experiences here.”
-        </span>
-      </div>
-      <div className={resultsStyles.fauxFrictionCard} style={{ borderLeftColor: "#16A34A" }}>
-        <div className={resultsStyles.fauxFrictionTitle}>📦 Logistics &amp; Delivery</div>
-        <div className={resultsStyles.fauxFrictionPct}>
-          <span className={resultsStyles.fauxFrictionPctNum}>11%</span>
-          <span className={resultsStyles.fauxFrictionPctLabel}>dropped over shipping</span>
-        </div>
-        <div className={resultsStyles.fauxFrictionBar}>
-          <div className={resultsStyles.fauxFrictionBarFill} style={{ background: "#16A34A", width: "11%" }} />
-        </div>
-        <span className={resultsStyles.fauxFrictionObj}>
-          “Shipping timeline is clear and the return policy is reassuring — this isn&apos;t blocking me.”
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function FauxPanelDebate() {
-  const panelists = [
-    { emoji: "💰", name: "Marcus", role: "Budget Optimizer", verdict: "REJECT" as const, line: "Twelve dollars more than the closest alternative on the same listing aggregator — that gap eats my margin for switching." },
-    { emoji: "❤️", name: "Sofia", role: "Brand Loyalist", verdict: "NEUTRAL" as const, line: "The brand voice is consistent and the product story tracks, but I want to see a single named customer before I commit." },
-    { emoji: "🔍", name: "Alex", role: "Research Analyst", verdict: "BUY" as const, line: "Spec sheet is complete, materials are disclosed, sizing chart is precise — the data covers every question I had." },
-    { emoji: "⚡", name: "Jordan", role: "Impulse Decider", verdict: "REJECT" as const, line: "First image is fine but the next three are nearly identical — I lost the urge to scroll before reaching the description." },
-    { emoji: "🎁", name: "Priya", role: "Gift Seeker", verdict: "NEUTRAL" as const, line: "Packaging looks gift-ready but there&apos;s no mention of a gift receipt or branded card option. Almost there for me." },
-  ];
-  const verdictClass: Record<typeof panelists[number]["verdict"], string> = {
-    BUY: resultsStyles.fauxDebateVerdictBuy,
-    REJECT: resultsStyles.fauxDebateVerdictReject,
-    NEUTRAL: resultsStyles.fauxDebateVerdictNeutral,
-  };
-  return (
-    <div className={resultsStyles.fauxDebateGrid}>
-      {panelists.map((p) => (
-        <div key={p.name} className={resultsStyles.fauxDebateCard}>
-          <div className={resultsStyles.fauxDebateHead}>
-            <span className={resultsStyles.fauxDebateAvatar} aria-hidden>{p.emoji}</span>
-            <div>
-              <div className={resultsStyles.fauxDebateName}>{p.name}</div>
-              <div className={resultsStyles.fauxDebateRole}>{p.role}</div>
-            </div>
-          </div>
-          <span className={`${resultsStyles.fauxDebateVerdict} ${verdictClass[p.verdict]}`}>{p.verdict}</span>
-          <span className={resultsStyles.fauxDebateLine}>“{p.line}”</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function FauxActionPlan() {
-  const items = [
-    { p: "HIGH" as const, title: "Add 3 above-the-fold reviews", meta: "Trust · est. +9 score", desc: "Surface verified customer reviews near the price so first-time buyers can verify legitimacy without scrolling past the buy box." },
-    { p: "HIGH" as const, title: "Add a clear 30-day return policy", meta: "Trust · est. +6 score", desc: "Specific terms, refund method, and a single-click return form remove the biggest hesitation for first-time buyers." },
-    { p: "MED" as const, title: "Re-shoot product images at varied angles", meta: "Visual · est. +4 score", desc: "Three of the current images repeat the same angle. Add a lifestyle shot, a scale shot, and a packaging shot." },
-    { p: "MED" as const, title: "Surface materials and sizing in bullets", meta: "Detail · est. +3 score", desc: "The information is in the long description but research-driven shoppers want it as a scannable spec block." },
-    { p: "LOW" as const, title: "Offer a gift-receipt checkbox", meta: "Conversion · est. +2 score", desc: "Gift-seekers explicitly mentioned the absence of a gift option as a soft barrier." },
-  ];
-  const pClass: Record<typeof items[number]["p"], string> = {
-    HIGH: resultsStyles.fauxPlanPriorityHigh,
-    MED: resultsStyles.fauxPlanPriorityMed,
-    LOW: resultsStyles.fauxPlanPriorityLow,
-  };
-  return (
-    <div className={resultsStyles.fauxPlanList}>
-      {items.map((it, i) => (
-        <div key={i} className={resultsStyles.fauxPlanItem}>
-          <div className={resultsStyles.fauxPlanNum}>{i + 1}</div>
-          <div className={resultsStyles.fauxPlanBody}>
-            <div className={resultsStyles.fauxPlanTitle}>
-              <span className={`${resultsStyles.fauxPlanPriority} ${pClass[it.p]}`}>{it.p}</span>
-              {it.title}
-            </div>
-            <div className={resultsStyles.fauxPlanMeta}>{it.meta}</div>
-            <div className={resultsStyles.fauxPlanDesc}>{it.desc}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Paywall: $4.99 one-time unlock for FREE-tier merchants ────────────────
 function PaywallCard({
   simulationId,
@@ -1158,7 +1056,7 @@ function PaywallCard({
 }
 
 export default function ResultsPage() {
-  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason, retakeSims, isReportUnlocked: reportUnlocked } = useLoaderData<typeof loader>();
+  const { simulation, tier, shopDomain, productTitle, isDev, scoreDelta, resolvedKillers, editUrl, labComparison, labPartnerStatus, labPartnerScore, failureReason, retakeSims, isReportUnlocked: reportUnlocked, unlockSuccess, unlockErrorMessage } = useLoaderData<typeof loader>();
   const { revalidate } = useRevalidator();
   const retakeFetcher = useFetcher<typeof action>();
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -1241,32 +1139,20 @@ export default function ResultsPage() {
   }
 
   // ── TL;DR ────────────────────────────────────────────────────────────────────
-  const synthesisText = (simulation as unknown as { synthesisText?: string | null }).synthesisText;
-  // For locked sims the loader strips reportJson and exposes only the top
-  // friction category name via simulation.topFrictionPreview. Use that as
-  // the fallback so the teaser still renders a category chip.
-  const topFrictionFromReport: string | null = report?.friction
+  const synthesisText = simulation.synthesisText;
+  const topFrictionCat: string | null = report?.friction
     ? Object.entries({
         trust: report.friction.trust?.dropoutPct ?? 0,
         price: report.friction.price?.dropoutPct ?? 0,
         logistics: report.friction.logistics?.dropoutPct ?? 0,
       }).sort(([, a], [, b]) => b - a)[0]?.[0] ?? null
     : null;
-  const topFrictionFromTeaser =
-    (simulation as unknown as { topFrictionPreview?: string | null }).topFrictionPreview ?? null;
-  const topFrictionCat = topFrictionFromReport ?? topFrictionFromTeaser;
   const topFrictionLabel: Record<string, string> = {
     trust: "trust & credibility", price: "price concerns", logistics: "shipping & logistics",
   };
   const score = simulation.score ?? 0;
-  // For locked teaser sims the loader returns a server-supplied headline.
-  // Prefer it so the merchant reads the same short copy on the dark hero.
-  const teaserHeadline =
-    (simulation as unknown as { teaserHeadline?: string | null }).teaserHeadline ?? null;
-  // Percentage is gated — only mention it when report data exists (paid view).
   const tldr = simulation.score == null ? null :
     synthesisText ? synthesisText.split(".")[0] + "." :
-    teaserHeadline ? teaserHeadline :
     score >= 80  ? `Your "${productTitle}" earned a strong ${score}/100 — your panel is mostly on board${topFrictionCat ? `, with minor friction around ${topFrictionLabel[topFrictionCat]}` : ""}.` :
     score >= 60  ? `Your "${productTitle}" scored ${score}/100 — ${topFrictionCat ? `${topFrictionLabel[topFrictionCat]} is the main barrier to more conversions` : "a few targeted fixes could push you significantly higher"}.` :
     report?.friction && topFrictionCat
@@ -1353,6 +1239,20 @@ export default function ResultsPage() {
         title={isDone ? `Results — ${productTitle}` : `Analysing — ${productTitle}`}
       />
       <BlockStack gap="400">
+
+        {/* ── Unlock callback feedback (?unlocked=1 / ?unlockError=...) ── */}
+        {unlockSuccess && (
+          <Banner tone="success" title="Report unlocked">
+            <Text as="p" variant="bodyMd">
+              Your payment was confirmed and the full report is now visible. Thanks for the support!
+            </Text>
+          </Banner>
+        )}
+        {unlockErrorMessage && (
+          <Banner tone="critical" title="Could not unlock report">
+            <Text as="p" variant="bodyMd">{unlockErrorMessage}</Text>
+          </Banner>
+        )}
 
         {/* ── Brand Studio score hero ── */}
         {(() => {
@@ -1980,7 +1880,12 @@ export default function ResultsPage() {
               data but has to pay $4.99 to read it clearly. */}
           {selectedTab === 1 && (
             <div style={{ position: "relative" }}>
-            <div style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}>
+            <div
+              style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}
+              // inert: removes the subtree from sequential focus + AT — so
+              // keyboard / screen-reader users can't tab past the paywall.
+              {...(isDone && !reportUnlocked ? { inert: "" as unknown as undefined, "aria-hidden": true } : {})}
+            >
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
                 <Card>
@@ -2096,7 +2001,10 @@ export default function ResultsPage() {
               always renders, blurred + overlaid when not unlocked. */}
           {selectedTab === 2 && (
             <div style={{ position: "relative" }}>
-            <div style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}>
+            <div
+              style={isDone && !reportUnlocked ? { filter: "blur(7px) saturate(1.1)", pointerEvents: "none", userSelect: "none", opacity: 0.85 } : undefined}
+              {...(isDone && !reportUnlocked ? { inert: "" as unknown as undefined, "aria-hidden": true } : {})}
+            >
             <Box paddingBlockStart="400">
               <BlockStack gap="400">
 

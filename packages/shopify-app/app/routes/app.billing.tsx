@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher } from "@remix-run/react";
+import { useLoaderData, useFetcher, Form, useNavigation, useSubmit } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -72,7 +72,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function BillingPage() {
   const { currentTier, paymentError, justDowngraded, featureMessage } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const isSubmitting = fetcher.state !== "idle";
+  // Both navigation (subscription/cancel via <Form>) and fetcher (legacy
+  // forms) contribute to the loading state. The subscription buttons use
+  // <Form> so the action's `throw redirect(confirmationUrl)` actually
+  // navigates the merchant to Shopify's hosted checkout page — with
+  // fetcher.Form the redirect was followed silently and the button just
+  // spun forever.
+  const navigation = useNavigation();
+  const submit = useSubmit();
+  const isNavSubmitting = navigation.state !== "idle";
+  const isSubmitting = fetcher.state !== "idle" || isNavSubmitting;
   const [showDowngradeModal, setShowDowngradeModal] = useState(false);
 
   return (
@@ -203,7 +212,7 @@ export default function BillingPage() {
                       <List.Item>What-If Sandbox</List.Item>
                       <List.Item>Price Optimizer</List.Item>
                     </List>
-                    <fetcher.Form method="post">
+                    <Form method="post">
                       <input type="hidden" name="plan" value="PRO" />
                       <Button
                         variant="primary"
@@ -217,7 +226,7 @@ export default function BillingPage() {
                           ? "Already on higher plan"
                           : "Start 7-day free trial"}
                       </Button>
-                    </fetcher.Form>
+                    </Form>
                     {currentTier === "PRO" && (
                       <Button
                         variant="plain"
@@ -257,7 +266,7 @@ export default function BillingPage() {
                       <List.Item>Weekly email digest</List.Item>
                       <List.Item>Priority queue</List.Item>
                     </List>
-                    <fetcher.Form method="post">
+                    <Form method="post">
                       <input type="hidden" name="plan" value="ENTERPRISE" />
                       <Button
                         variant="primary"
@@ -269,7 +278,7 @@ export default function BillingPage() {
                           ? "Current plan"
                           : "Start 7-day free trial"}
                       </Button>
-                    </fetcher.Form>
+                    </Form>
                     {currentTier === "ENTERPRISE" && (
                       <Button
                         variant="plain"
@@ -296,9 +305,14 @@ export default function BillingPage() {
           content: "Yes, cancel subscription",
           destructive: true,
           onAction: () => {
+            // Use useSubmit (navigation-style) so the action's redirect to
+            // /app/billing?downgraded=1 actually navigates the page and the
+            // "Subscription cancelled" banner appears. With fetcher.submit
+            // the redirect was followed silently and the modal closed
+            // without any visible confirmation.
             const form = new FormData();
             form.append("intent", "downgrade");
-            fetcher.submit(form, { method: "POST" });
+            submit(form, { method: "POST" });
             setShowDowngradeModal(false);
           },
         }}
