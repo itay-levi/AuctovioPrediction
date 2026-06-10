@@ -85,10 +85,15 @@ type CallbackStatus = (typeof VALID_STATUSES)[number];
 // Called by Auctovio engine (Groq) when a simulation phase completes
 // Auth: Bearer token (ENGINE_API_KEY)
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const t0 = Date.now();
   // Verify engine secret — always required; fail closed if ENV is missing
   const authHeader = request.headers.get("Authorization");
   const expectedKey = process.env.ENGINE_API_KEY;
   if (!expectedKey || authHeader !== `Bearer ${expectedKey}`) {
+    console.warn("[Webhook:engine_unauthorized]", {
+      hasExpectedKey: !!expectedKey,
+      hasAuthHeader: !!authHeader,
+    });
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -96,6 +101,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     body = (await request.json()) as CallbackBody;
   } catch {
+    console.warn("[Webhook:engine_bad_json]");
     return new Response("Invalid JSON", { status: 400 });
   }
 
@@ -106,10 +112,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } = body;
 
   if (!simulationId || typeof simulationId !== "string") {
+    console.warn("[Webhook:engine_missing_sim_id]");
     return new Response("Missing simulationId", { status: 400 });
   }
 
   if (!status || !(VALID_STATUSES as readonly string[]).includes(status)) {
+    console.warn("[Webhook:engine_invalid_status]", { simulationId, status });
     return new Response("Invalid status", { status: 400 });
   }
 
@@ -128,12 +136,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     select: { status: true, storeId: true, simulationType: true },
   });
   if (!existing) {
+    console.warn("[Webhook:engine_sim_not_found]", { simulationId });
     return new Response("Simulation not found", { status: 404 });
   }
   const currentStatus = existing.status;
   const isAlreadyTerminal = currentStatus === "COMPLETED" || currentStatus === "FAILED";
   if (isAlreadyTerminal) {
-    console.info("[EngineCallback] ignored: sim already terminal", {
+    console.info("[Webhook:engine_ignored_terminal]", {
       simulationId,
       currentStatus,
       incomingStatus,
@@ -141,7 +150,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
-  console.info("[EngineCallback] received", {
+  console.info("[Webhook:engine_received]", {
     simulationId,
     phase: phase ?? 0,
     status: incomingStatus,
@@ -183,7 +192,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // The terminal-state guard above already ensures this branch only runs
       // once per simulation, so the MT charge cannot double-bill on retry.
       await incrementMtUsage(sim.store.shopDomain, safeMt);
-      console.info("[EngineCallback] MT charged", {
+      console.info("[Webhook:engine_mt_charged]", {
         simulationId,
         shopDomain: sim.store.shopDomain,
         mt: safeMt,
@@ -191,8 +200,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     if (sim?.simulationType === "RETAKE" && sim.originalSimulationId) {
+      console.info("[Webhook:retake_eval_triggered]", { simulationId });
       _triggerRetakeEvaluation(sim).catch((err: unknown) => {
-        console.error("[Retake] Evaluation trigger failed", {
+        console.error("[Webhook:retake_eval_trigger_failed]", {
           simulationId,
           err: err instanceof Error ? err.message : String(err),
         });
@@ -200,5 +210,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  console.info("[Webhook:engine_done]", { simulationId, status: incomingStatus, totalMs: Date.now() - t0 });
   return new Response(null, { status: 200 });
 };

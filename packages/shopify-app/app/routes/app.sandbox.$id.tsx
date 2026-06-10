@@ -277,6 +277,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
+  const t0 = Date.now();
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
@@ -284,6 +285,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const intent = (formData.get("intent") as string | null) ?? "run_whatif";
+  console.info("[Sandbox:received]", { shopDomain, simulationId: params.id, intent });
 
   // Bound numeric inputs — these flow into engine prompts. Reject extreme values
   // (e.g. negative prices, 999-day shipping) and silently clamp to safe ranges.
@@ -336,6 +338,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   // count against the monthly analysis slot quota.
   const { allowed, reason } = await canRunSimulation(shopDomain, store.id, simsToCreate, false);
   if (!allowed) {
+    console.warn("[Sandbox:quota_denied]", { shopDomain, intent, simsToCreate, reason });
     return { error: reason };
   }
 
@@ -513,6 +516,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       deltaParams: deltaParams as object,
     },
   });
+  console.info("[Sandbox:whatif_created]", {
+    shopDomain,
+    originalSimulationId: originalSim.id,
+    deltaSimulationId: deltaSim.id,
+    priceOverride,
+    shippingDays,
+    activeExperiment: activeExperiment ? activeExperiment.slice(0, 80) + "…" : null,
+  });
 
   triggerDeltaSimulation({
     simulationId: deltaSim.id,
@@ -532,7 +543,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     isPro: tier === "PRO" || tier === "ENTERPRISE",
     skipFloor: true,
   }).catch((err: unknown) => {
-    console.error("[Engine] Delta trigger failed:", err);
+    console.error("[Sandbox:whatif_engine_failed]", {
+      deltaSimulationId: deltaSim.id,
+      err: err instanceof Error ? err.message : String(err),
+    });
     db.simulation
       .update({
         where: { id: deltaSim.id },
@@ -541,9 +555,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           failureReason: "The scenario could not be started. Please try again.",
         } as Parameters<typeof db.simulation.update>[0]["data"],
       })
-      .catch(() => {});
+      .catch((e) => console.error("[Sandbox:whatif_failed_mark_err]", { err: String(e) }));
   });
 
+  console.info("[Sandbox:whatif_redirect]", { simulationId: originalSim.id, totalMs: Date.now() - t0 });
   throw redirect(`/app/sandbox/${originalSim.id}`);
 };
 

@@ -101,10 +101,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const t0 = Date.now();
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
   const formData = await request.formData();
   const productId = formData.get("productId") as string;
+  console.info("[Simulate:received]", { shopDomain, productId, ms: Date.now() - t0 });
 
   const [store, products, budget] = await Promise.all([
     getStore(shopDomain),
@@ -113,11 +115,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   ]);
 
   if (!store || !budget) {
+    console.warn("[Simulate:rejected] no store/budget", { shopDomain });
     return { error: "Store not found. Please reinstall the app." };
   }
 
   const product = products.find((p) => p.id === productId);
   if (!product) {
+    console.warn("[Simulate:rejected] product not found", { shopDomain, productId, listed: products.length });
     return { error: "Product not found." };
   }
 
@@ -178,6 +182,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const sims = labConfig ? 2 : 1;
   const { allowed, reason } = await canRunSimulation(shopDomain, store.id, sims);
   if (!allowed) {
+    console.warn("[Simulate:quota_denied]", { shopDomain, tier: budget.tier, sims, reason });
     return { error: reason };
   }
 
@@ -201,11 +206,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   } catch (err) {
     if (err instanceof QuotaExceededError) {
+      console.warn("[Simulate:quota_exceeded_atomic]", { shopDomain, reason: err.reason });
       return { error: err.reason };
     }
+    console.error("[Simulate:create_failed]", { shopDomain, err: err instanceof Error ? err.message : String(err) });
     throw err;
   }
 
+  console.info("[Simulate:created]", {
+    shopDomain,
+    simulationId: simulation.id,
+    tier: budget.tier,
+    isLab: !!labConfig,
+    totalMs: Date.now() - t0,
+  });
   throw redirect(`/app/results/${simulation.id}`);
 };
 

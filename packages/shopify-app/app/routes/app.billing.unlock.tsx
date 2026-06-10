@@ -15,14 +15,17 @@ export const loader = async () => {
 // Creates a Shopify one-time charge of $4.99 to unlock the full report for
 // the given simulation. Returns { confirmationUrl } so the client can navigate.
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const t0 = Date.now();
   const { admin, session } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const formData = await request.formData();
   const simulationId = formData.get("simulationId");
   if (typeof simulationId !== "string" || !simulationId) {
+    console.warn("[Unlock:bad_request_missing_sim]", { shopDomain });
     return json({ error: "Missing simulationId" }, { status: 400 });
   }
+  console.info("[Unlock:started]", { shopDomain, simulationId });
 
   // Validate the simulation belongs to this shop before billing the merchant.
   const [sim, store] = await Promise.all([
@@ -30,11 +33,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     getStore(shopDomain),
   ]);
   if (!sim || !store || sim.storeId !== store.id) {
+    console.warn("[Unlock:sim_not_found_or_foreign]", {
+      shopDomain,
+      simulationId,
+      simFound: !!sim,
+      storeFound: !!store,
+      ownerMatch: sim?.storeId === store?.id,
+    });
     return json({ error: "Simulation not found" }, { status: 404 });
   }
 
   // Already unlocked (or merchant is on Pro/Enterprise) — no charge needed.
   if (isReportUnlocked(sim as unknown as { unlockedAt?: Date | string | null }, store.planTier)) {
+    console.info("[Unlock:already_unlocked]", {
+      shopDomain,
+      simulationId,
+      tier: store.planTier,
+    });
     return json({ confirmationUrl: null, alreadyUnlocked: true });
   }
 
@@ -45,9 +60,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const confirmationUrl = await createReportUnlockCharge(admin, returnUrl);
+    console.info("[Unlock:charge_created]", {
+      shopDomain,
+      simulationId,
+      hasConfirmationUrl: !!confirmationUrl,
+      totalMs: Date.now() - t0,
+    });
     return json({ confirmationUrl });
   } catch (err) {
-    console.error("[Unlock] createReportUnlockCharge failed", {
+    console.error("[Unlock:charge_create_failed]", {
       shopDomain,
       simulationId,
       err: err instanceof Error ? err.message : String(err),

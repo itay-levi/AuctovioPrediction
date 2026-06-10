@@ -113,20 +113,51 @@ export interface AgentLogEntry {
 export async function triggerSimulation(
   payload: TriggerSimulationPayload
 ): Promise<{ queued: boolean; estimatedMtCost: number }> {
+  const t0 = Date.now();
   return engineBreaker.execute(async () => {
-    const res = await fetch(`${ENGINE_URL}/miroshop/simulate`, {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10_000), // engine must accept within 10s (just queue, not run)
+    console.info("[Engine:simulate_call]", {
+      simulationId: payload.simulationId,
+      shopDomain: payload.shopDomain,
+      agentCount: payload.agentCount,
+      isPro: !!payload.isPro,
+      isLab: !!payload.labConfig,
     });
+    try {
+      const res = await fetch(`${ENGINE_URL}/miroshop/simulate`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10_000), // engine must accept within 10s (just queue, not run)
+      });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Engine error ${res.status}: ${text}`);
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("[Engine:simulate_call_failed]", {
+          simulationId: payload.simulationId,
+          status: res.status,
+          body: text.slice(0, 200),
+        });
+        throw new Error(`Engine error ${res.status}: ${text}`);
+      }
+
+      const result = (await res.json()) as { queued: boolean; estimatedMtCost: number };
+      console.info("[Engine:simulate_call_ok]", {
+        simulationId: payload.simulationId,
+        queued: result.queued,
+        estimatedMtCost: result.estimatedMtCost,
+        ms: Date.now() - t0,
+      });
+      return result;
+    } catch (err) {
+      // engineBreaker.execute swallows on throw; log so circuit-breaker trips
+      // are visible.
+      console.error("[Engine:simulate_call_threw]", {
+        simulationId: payload.simulationId,
+        err: err instanceof Error ? err.message : String(err),
+        ms: Date.now() - t0,
+      });
+      throw err;
     }
-
-    return res.json() as Promise<{ queued: boolean; estimatedMtCost: number }>;
   });
 }
 
